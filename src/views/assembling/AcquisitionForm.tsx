@@ -102,10 +102,11 @@ export function AcquisitionForm({ project, onSaved }: Props) {
       );
       setSuggestResult(result);
     } catch (e: any) {
+      const msg: string = e?.message ?? String(e);
       setSuggestError(
-        e?.message?.includes("chat model")
+        msg.includes("chat model")
           ? "Pick a chat model in Settings first."
-          : e?.message?.includes("LM Studio") || e?.message?.includes("loopback")
+          : msg.includes("Connection refused") || msg.includes("error sending request") || msg.includes("connect error")
           ? "Could not reach LM Studio — check Settings."
           : "The model returned an unexpected response. Try again.",
       );

@@ -145,6 +145,11 @@ pub async fn suggest_query(
     .cloned()
     .collect::<Vec<_>>()
     .join("\n");
+    let rqs_block = if rqs_block.is_empty() {
+        "(not specified)".to_string()
+    } else {
+        rqs_block
+    };
 
     let system = format!(
         "You are a systematic literature review expert helping a researcher build a boolean search query. \
