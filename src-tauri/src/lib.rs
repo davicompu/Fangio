@@ -723,6 +723,17 @@ async fn suggest_boolean_query(
     )
     .await
     .map_err(err)?;
+    db.record_telemetry(
+        "suggest.boolean_query",
+        &serde_json::json!({
+            "n_databases": args.databases.len(),
+            "had_existing_query": args.existing_query.is_some(),
+            "model": result.model,
+            "latency_ms": result.latency_ms,
+        }),
+    )
+    .await
+    .ok();
     Ok(result)
 }
 
