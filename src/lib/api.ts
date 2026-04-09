@@ -189,6 +189,13 @@ export interface SuggestResult {
   raw: string;
 }
 
+export interface SuggestQueryResult {
+  query: string;
+  rationale: string;
+  model: string | null;
+  latency_ms: number;
+}
+
 export interface PdfRow {
   id: number;
   filename: string;
@@ -371,6 +378,11 @@ export const api = {
   },
   suggestCodes(article_id: number, dimension: string) {
     return invoke<SuggestResult>("suggest_codes", { args: { article_id, dimension } });
+  },
+  suggestBooleanQuery(databases: string[], existingQuery: string | null) {
+    return invoke<SuggestQueryResult>("suggest_boolean_query", {
+      args: { databases, existing_query: existingQuery },
+    });
   },
   // ── Assessing stage ──
   addPdf(path: string) {
