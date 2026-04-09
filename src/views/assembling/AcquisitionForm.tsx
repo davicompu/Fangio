@@ -1,12 +1,11 @@
 import { useState, useRef } from "react";
 import { motion } from "framer-motion";
 import { Calendar, Database, Globe, Lightbulb, Save, Search, Sparkles } from "lucide-react";
-import { api, type ProjectRow } from "../../lib/api";
+import { api, type ProjectRow, type SuggestQueryResult } from "../../lib/api";
 import { Card } from "../../components/ui/Card";
 import { TextField, TextArea } from "../../components/ui/TextField";
 import { Button } from "../../components/ui/Button";
 import { QuerySuggestionModal } from "../../components/QuerySuggestionModal";
-import type { SuggestQueryResult } from "../../lib/api";
 
 interface Props {
   project: ProjectRow;
@@ -224,7 +223,8 @@ export function AcquisitionForm({ project, onSaved }: Props) {
             <button
               type="button"
               onClick={handleSuggest}
-              className="no-drag flex items-center gap-1.5 px-3 py-1.5 rounded-[var(--radius-sm)] text-[12px] font-medium text-[var(--color-accent-600)] border border-[var(--color-accent-300)] bg-[var(--color-accent-50)] hover:bg-[var(--color-accent-100)] transition-paper"
+              disabled={modalOpen}
+              className="no-drag flex items-center gap-1.5 px-3 py-1.5 rounded-[var(--radius-sm)] text-[12px] font-medium text-[var(--color-accent-600)] border border-[var(--color-accent-300)] bg-[var(--color-accent-50)] hover:bg-[var(--color-accent-100)] transition-paper disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <Sparkles size={12} strokeWidth={2} />
               {query.trim() ? "Advise" : "Suggest"}
@@ -234,7 +234,7 @@ export function AcquisitionForm({ project, onSaved }: Props) {
             <TextArea
               label="Query"
               value={query}
-              onChange={(e) => setQuery(e.target.value)}
+              onChange={(e) => { setQuery(e.target.value); previousQuery.current = null; }}
               onKeyDown={handleQueryKeyDown}
               rows={6}
               placeholder={`("social commerce" OR "s-commerce" OR "social shopping")\nAND ("consumer behavi*" OR "buyer behavi*")\nAND ("engagement" OR "purchase" OR "intention")`}
