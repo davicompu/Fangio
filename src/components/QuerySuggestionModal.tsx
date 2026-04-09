@@ -36,7 +36,7 @@ export function QuerySuggestionModal({ open, mode, result, error, onAccept, onDi
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             transition={{ duration: 0.15 }}
-            className="fixed inset-0 bg-black/30 z-40"
+            className="fixed inset-0 bg-[var(--color-ink-900)]/30 backdrop-blur-sm z-40"
             onClick={onDismiss}
           />
 
@@ -49,7 +49,12 @@ export function QuerySuggestionModal({ open, mode, result, error, onAccept, onDi
             transition={{ duration: 0.2, ease: [0.2, 0.7, 0.2, 1] }}
             className="fixed inset-0 z-50 flex items-center justify-center p-6 pointer-events-none"
           >
-            <Card className="pointer-events-auto w-full max-w-2xl p-6 shadow-[var(--shadow-paper)]">
+            <Card
+              role="dialog"
+              aria-modal="true"
+              aria-label={mode === "suggest" ? "AI Suggestion" : "AI Advisement"}
+              className="pointer-events-auto w-full max-w-2xl p-6 shadow-[var(--shadow-paper)]"
+            >
               {/* Header */}
               <div className="flex items-start justify-between mb-4">
                 <div className="flex items-center gap-2">
@@ -77,8 +82,15 @@ export function QuerySuggestionModal({ open, mode, result, error, onAccept, onDi
 
               {/* Error state */}
               {error && (
-                <div className="px-4 py-3 rounded-[var(--radius-sm)] bg-[var(--color-accent-50)] border border-[var(--color-accent-300)] text-[13px] text-[var(--color-accent-700)]">
-                  {error}
+                <div>
+                  <div className="px-4 py-3 rounded-[var(--radius-sm)] bg-[var(--color-accent-50)] border border-[var(--color-accent-300)] text-[13px] text-[var(--color-accent-700)]">
+                    {error}
+                  </div>
+                  <div className="mt-4">
+                    <Button variant="ghost" size="sm" onClick={onDismiss}>
+                      Dismiss
+                    </Button>
+                  </div>
                 </div>
               )}
 
@@ -104,14 +116,7 @@ export function QuerySuggestionModal({ open, mode, result, error, onAccept, onDi
                 </>
               )}
 
-              {/* Error state dismiss button */}
-              {error && (
-                <div className="mt-4">
-                  <Button variant="ghost" size="sm" onClick={onDismiss}>
-                    Dismiss
-                  </Button>
-                </div>
-              )}
+
             </Card>
           </motion.div>
         </>
