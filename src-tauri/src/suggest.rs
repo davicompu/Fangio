@@ -113,6 +113,7 @@ Respond ONLY with a JSON array of objects, each with keys: code (string), ration
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn suggest_query(
     base_url: &str,
     model: &str,
@@ -205,10 +206,21 @@ fn parse_query_result(s: &str) -> Option<(String, String)> {
     let mut end = None;
     for i in start..bytes.len() {
         let c = bytes[i];
-        if esc { esc = false; continue; }
-        if c == b'\\' { esc = true; continue; }
-        if c == b'"' { in_str = !in_str; continue; }
-        if in_str { continue; }
+        if esc {
+            esc = false;
+            continue;
+        }
+        if c == b'\\' {
+            esc = true;
+            continue;
+        }
+        if c == b'"' {
+            in_str = !in_str;
+            continue;
+        }
+        if in_str {
+            continue;
+        }
         if c == b'{' { depth += 1; }
         else if c == b'}' {
             depth -= 1;
