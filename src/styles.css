@@ -1,0 +1,206 @@
+@import "tailwindcss";
+
+@import "@fontsource-variable/inter";
+@import "@fontsource-variable/source-serif-4";
+@import "@fontsource-variable/jetbrains-mono";
+
+/* ──────────────────────────────────────────────────────────────────────────
+   Fangio design tokens
+
+   Philosophy: this is a tool researchers use for many hours per day on dense
+   textual content. It should feel like a well-bound notebook, not a SaaS
+   dashboard. Warm off-white paper, deep navy ink, restrained spot color,
+   editorial typography. Geometric sans for chrome, transitional serif for
+   editorial body content (handbook + drafts), monospace for queries and IDs.
+   ────────────────────────────────────────────────────────────────────────── */
+
+@theme {
+  /* Typography */
+  --font-sans:
+    "Inter Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+    Roboto, sans-serif;
+  --font-serif:
+    "Source Serif 4 Variable", ui-serif, Georgia, Cambria, "Times New Roman",
+    Times, serif;
+  --font-mono:
+    "JetBrains Mono Variable", ui-monospace, SFMono-Regular, "SF Mono", Menlo,
+    Consolas, monospace;
+
+  /* Paper palette — warm, low-contrast at rest, high-contrast on focus */
+  --color-paper-50:  #fbfaf7;
+  --color-paper-100: #f6f4ee;
+  --color-paper-200: #ece8dd;
+  --color-paper-300: #ddd8c7;
+  --color-paper-400: #b8b09a;
+  --color-paper-500: #8a8370;
+  --color-paper-600: #5e5847;
+  --color-paper-700: #3d3a2f;
+  --color-paper-800: #28261f;
+  --color-paper-900: #1a1814;
+
+  /* Ink — the primary action / text color */
+  --color-ink-50:   #eef0f4;
+  --color-ink-100:  #d7dbe4;
+  --color-ink-200:  #aab1c2;
+  --color-ink-400:  #5d6986;
+  --color-ink-500:  #3e4a68;
+  --color-ink-600:  #2a3450;
+  --color-ink-700:  #1c2541;
+  --color-ink-800:  #11182e;
+  --color-ink-900:  #080d1c;
+
+  /* Accent — used sparingly for the live model + critical actions.
+     A muted, slightly desaturated coral that reads warm against the paper. */
+  --color-accent-50:  #fdf1ec;
+  --color-accent-100: #f9ddd0;
+  --color-accent-300: #efa385;
+  --color-accent-500: #d96f47;
+  --color-accent-600: #b95630;
+  --color-accent-700: #8e3d20;
+
+  /* Status colors — desaturated to coexist with paper */
+  --color-ok-500:    #4f7a55;
+  --color-warn-500:  #b08a2e;
+  --color-error-500: #a64141;
+
+  /* Radius — generally generous; this is a calm interface */
+  --radius-xs: 0.25rem;
+  --radius-sm: 0.5rem;
+  --radius-md: 0.75rem;
+  --radius-lg: 1rem;
+  --radius-xl: 1.5rem;
+
+  /* Elevation — extremely subtle, paper-on-paper */
+  --shadow-paper:
+    0 1px 0 0 rgba(60, 50, 30, 0.04),
+    0 1px 2px 0 rgba(60, 50, 30, 0.04);
+  --shadow-paper-md:
+    0 1px 0 0 rgba(60, 50, 30, 0.04),
+    0 4px 12px -4px rgba(60, 50, 30, 0.08),
+    0 12px 28px -10px rgba(60, 50, 30, 0.08);
+  --shadow-paper-lg:
+    0 1px 0 0 rgba(60, 50, 30, 0.06),
+    0 8px 24px -6px rgba(60, 50, 30, 0.12),
+    0 24px 56px -16px rgba(60, 50, 30, 0.12);
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
+   Base
+   ────────────────────────────────────────────────────────────────────────── */
+
+html, body, #root {
+  height: 100%;
+}
+
+html {
+  font-feature-settings: "ss01", "cv11", "cv02", "cv03"; /* Inter humanist set */
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+body {
+  background: var(--color-paper-50);
+  color: var(--color-ink-800);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.55;
+  letter-spacing: -0.005em;
+  /* Tauri overlay title bar leaves a transparent strip at top on macOS;
+     we paint our own chrome inside that area. */
+}
+
+* {
+  border-color: var(--color-paper-200);
+}
+
+::selection {
+  background: var(--color-ink-700);
+  color: var(--color-paper-50);
+}
+
+/* Focus rings — geometric, not glowy */
+:focus-visible {
+  outline: 2px solid var(--color-ink-700);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+button, [role="button"] {
+  cursor: default;
+}
+
+input, textarea, select {
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit;
+}
+
+textarea {
+  resize: none;
+}
+
+/* Editorial typography for handbook / draft content */
+.prose-editorial {
+  font-family: var(--font-serif);
+  font-size: 17px;
+  line-height: 1.65;
+  color: var(--color-ink-800);
+  font-feature-settings: "onum", "kern";
+}
+
+.prose-editorial h1,
+.prose-editorial h2,
+.prose-editorial h3 {
+  font-family: var(--font-sans);
+  letter-spacing: -0.018em;
+  font-weight: 600;
+  color: var(--color-ink-900);
+}
+
+/* Eyebrow / kicker text — small caps style */
+.eyebrow {
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--color-paper-500);
+}
+
+/* Hairline horizontal divider with optional centered glyph */
+.hairline {
+  height: 1px;
+  background: linear-gradient(
+    to right,
+    transparent,
+    var(--color-paper-300) 20%,
+    var(--color-paper-300) 80%,
+    transparent
+  );
+}
+
+/* Subtle paper-grain texture for elevated surfaces — barely visible */
+.paper-grain {
+  background-color: var(--color-paper-50);
+  background-image:
+    radial-gradient(rgba(60, 50, 30, 0.025) 1px, transparent 1px);
+  background-size: 14px 14px;
+}
+
+/* Window dragging on macOS overlay title bar */
+.drag-region {
+  -webkit-app-region: drag;
+}
+.no-drag {
+  -webkit-app-region: no-drag;
+}
+
+/* Smooth motion defaults */
+@media (prefers-reduced-motion: no-preference) {
+  .transition-paper {
+    transition-property:
+      background-color, border-color, color, opacity, transform, box-shadow;
+    transition-duration: 200ms;
+    transition-timing-function: cubic-bezier(0.2, 0.7, 0.2, 1);
+  }
+}
