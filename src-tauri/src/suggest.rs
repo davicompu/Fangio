@@ -26,6 +26,14 @@ pub struct SuggestResult {
     pub raw: String,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SuggestQueryResult {
+    pub query: String,
+    pub rationale: String,
+    pub model: Option<String>,
+    pub latency_ms: u64,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn suggest_codes(
     base_url: &str,
@@ -103,6 +111,116 @@ Respond ONLY with a JSON array of objects, each with keys: code (string), ration
         latency_ms: result.latency_ms,
         raw: result.content,
     })
+}
+
+pub async fn suggest_query(
+    base_url: &str,
+    model: &str,
+    domain: &str,
+    framework: &str,
+    rq_what: Option<&str>,
+    rq_how: Option<&str>,
+    rq_where: Option<&str>,
+    selected_databases: &[String],
+    existing_query: Option<&str>,
+) -> Result<SuggestQueryResult> {
+    let db_list = if selected_databases.is_empty() {
+        "(no databases selected yet)".to_string()
+    } else {
+        selected_databases
+            .iter()
+            .map(|d| format!("- {d}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    let rqs_block = [
+        rq_what.map(|q| format!("What: {q}")),
+        rq_how.map(|q| format!("How: {q}")),
+        rq_where.map(|q| format!("Where: {q}")),
+    ]
+    .iter()
+    .filter_map(|x| x.as_ref())
+    .cloned()
+    .collect::<Vec<_>>()
+    .join("\n");
+
+    let system = format!(
+        "You are a systematic literature review expert helping a researcher build a boolean search query. \
+Your queries use AND between concepts, OR between synonyms, and wildcards (*) where appropriate. \
+You return ONLY valid JSON — no prose before or after.
+
+Review domain: {domain}
+Organising framework: {framework}
+Research questions:
+{rqs_block}
+
+Target databases:
+{db_list}"
+    );
+
+    let user = match existing_query {
+        None => "Generate a boolean search query for this systematic literature review. \
+Return a JSON object with exactly two keys: \
+\"query\" (the full boolean search string, ready to paste into a database) and \
+\"rationale\" (one sentence explaining the key choices made). \
+No prose outside the JSON object.".to_string(),
+
+        Some(q) => format!(
+            "Here is the researcher's current boolean query:\n\n{q}\n\n\
+Advise and improve it: fix any weaknesses, add missing synonyms, improve structure. \
+Return a JSON object with exactly two keys: \
+\"query\" (the improved boolean search string) and \
+\"rationale\" (one sentence explaining what was changed and why). \
+No prose outside the JSON object."
+        ),
+    };
+
+    let messages = vec![
+        ChatMessage { role: "system".into(), content: system },
+        ChatMessage { role: "user".into(), content: user },
+    ];
+
+    let result = lmstudio::chat(base_url, model, &messages, Some(0.3)).await?;
+
+    let (query, rationale) = parse_query_result(&result.content)
+        .ok_or_else(|| anyhow!("could not parse JSON query result from model output"))?;
+
+    Ok(SuggestQueryResult {
+        query,
+        rationale,
+        model: result.model,
+        latency_ms: result.latency_ms,
+    })
+}
+
+/// Extract `query` and `rationale` from a JSON object in the model's response.
+/// Tolerates prose before/after the object.
+fn parse_query_result(s: &str) -> Option<(String, String)> {
+    let bytes = s.as_bytes();
+    let start = bytes.iter().position(|&b| b == b'{')?;
+    let mut depth = 0i32;
+    let mut in_str = false;
+    let mut esc = false;
+    let mut end = None;
+    for i in start..bytes.len() {
+        let c = bytes[i];
+        if esc { esc = false; continue; }
+        if c == b'\\' { esc = true; continue; }
+        if c == b'"' { in_str = !in_str; continue; }
+        if in_str { continue; }
+        if c == b'{' { depth += 1; }
+        else if c == b'}' {
+            depth -= 1;
+            if depth == 0 { end = Some(i + 1); break; }
+        }
+    }
+    let end = end?;
+    let slice = &s[start..end];
+    let v: serde_json::Value = serde_json::from_str(slice).ok()?;
+    let query = v.get("query")?.as_str()?.to_string();
+    let rationale = v.get("rationale")?.as_str()?.to_string();
+    Some((query, rationale))
 }
 
 /// Find the first JSON array in the model's response and parse it as a list
