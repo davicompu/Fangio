@@ -683,6 +683,49 @@ async fn suggest_codes(
     Ok(result)
 }
 
+#[derive(Debug, Deserialize)]
+struct SuggestQueryArgs {
+    databases: Vec<String>,
+    existing_query: Option<String>,
+}
+
+#[tauri::command]
+async fn suggest_boolean_query(
+    args: SuggestQueryArgs,
+    state: State<'_, AppState>,
+) -> Result<suggest::SuggestQueryResult, String> {
+    let db = state.current().await.ok_or("no project open")?;
+    let project = db.get_project().await.map_err(err)?;
+    let settings = db.all_settings().await.map_err(err)?;
+    let base_url = settings
+        .get("lmstudio.base_url")
+        .and_then(|v| v.as_str())
+        .unwrap_or("http://127.0.0.1:1234/v1")
+        .to_string();
+    let model = settings
+        .get("lmstudio.chat_model")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    if model.is_empty() {
+        return Err("Pick a chat model in Settings first.".into());
+    }
+    let result = suggest::suggest_query(
+        &base_url,
+        &model,
+        project.domain.as_deref().unwrap_or(""),
+        project.framework.as_deref().unwrap_or(""),
+        project.rq_what.as_deref(),
+        project.rq_how.as_deref(),
+        project.rq_where.as_deref(),
+        &args.databases,
+        args.existing_query.as_deref(),
+    )
+    .await
+    .map_err(err)?;
+    Ok(result)
+}
+
 // ── Assessing stage commands ──────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
@@ -1118,6 +1161,7 @@ pub fn run() {
             list_screening_batch,
             get_prisma_state,
             suggest_codes,
+            suggest_boolean_query,
             add_pdf,
             list_pdfs,
             delete_pdf,
