@@ -1,10 +1,12 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { motion } from "framer-motion";
-import { Calendar, Database, Globe, Lightbulb, Save, Search } from "lucide-react";
+import { Calendar, Database, Globe, Lightbulb, Save, Search, Sparkles } from "lucide-react";
 import { api, type ProjectRow } from "../../lib/api";
 import { Card } from "../../components/ui/Card";
 import { TextField, TextArea } from "../../components/ui/TextField";
 import { Button } from "../../components/ui/Button";
+import { QuerySuggestionModal } from "../../components/QuerySuggestionModal";
+import type { SuggestQueryResult } from "../../lib/api";
 
 interface Props {
   project: ProjectRow;
@@ -29,6 +31,11 @@ export function AcquisitionForm({ project, onSaved }: Props) {
   const [query, setQuery] = useState("");
   const [busy, setBusy] = useState(false);
   const [savedAt, setSavedAt] = useState<number | null>(null);
+  const [modalOpen, setModalOpen] = useState(false);
+  const [suggestResult, setSuggestResult] = useState<SuggestQueryResult | null>(null);
+  const [suggestError, setSuggestError] = useState<string | null>(null);
+  const [suggestMode, setSuggestMode] = useState<"suggest" | "advise">("suggest");
+  const previousQuery = useRef<string | null>(null);
 
   const toggleDb = (id: string) => {
     setDatabases((prev) => {
@@ -80,6 +87,44 @@ export function AcquisitionForm({ project, onSaved }: Props) {
       onSaved();
     } finally {
       setBusy(false);
+    }
+  };
+
+  const handleSuggest = async () => {
+    const mode = query.trim() ? "advise" : "suggest";
+    setSuggestMode(mode);
+    setSuggestResult(null);
+    setSuggestError(null);
+    setModalOpen(true);
+    try {
+      const result = await api.suggestBooleanQuery(
+        Array.from(databases),
+        query.trim() || null,
+      );
+      setSuggestResult(result);
+    } catch (e: any) {
+      setSuggestError(
+        e?.message?.includes("chat model")
+          ? "Pick a chat model in Settings first."
+          : e?.message?.includes("LM Studio") || e?.message?.includes("loopback")
+          ? "Could not reach LM Studio — check Settings."
+          : "The model returned an unexpected response. Try again.",
+      );
+    }
+  };
+
+  const handleAccept = (suggested: string) => {
+    previousQuery.current = query;
+    setQuery(suggested);
+    setModalOpen(false);
+    setSuggestResult(null);
+  };
+
+  const handleQueryKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === "z" && previousQuery.current !== null) {
+      e.preventDefault();
+      setQuery(previousQuery.current);
+      previousQuery.current = null;
     }
   };
 
@@ -170,19 +215,30 @@ export function AcquisitionForm({ project, onSaved }: Props) {
 
         {/* Query */}
         <section>
-          <SectionHeader
-            icon={<Search size={14} strokeWidth={1.75} />}
-            title="Boolean query"
-            description="The actual string you'll paste into each database's advanced search. You'll run the search yourself in your normal browser."
-          />
+          <div className="flex items-center justify-between mb-1.5">
+            <SectionHeader
+              icon={<Search size={14} strokeWidth={1.75} />}
+              title="Boolean query"
+              description="The actual string you'll paste into each database's advanced search. You'll run the search yourself in your normal browser."
+            />
+            <button
+              type="button"
+              onClick={handleSuggest}
+              className="no-drag flex items-center gap-1.5 px-3 py-1.5 rounded-[var(--radius-sm)] text-[12px] font-medium text-[var(--color-accent-600)] border border-[var(--color-accent-300)] bg-[var(--color-accent-50)] hover:bg-[var(--color-accent-100)] transition-paper"
+            >
+              <Sparkles size={12} strokeWidth={2} />
+              {query.trim() ? "Advise" : "Suggest"}
+            </button>
+          </div>
           <div className="mt-4">
             <TextArea
               label="Query"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={handleQueryKeyDown}
               rows={6}
               placeholder={`("social commerce" OR "s-commerce" OR "social shopping")\nAND ("consumer behavi*" OR "buyer behavi*")\nAND ("engagement" OR "purchase" OR "intention")`}
-              hint="Use OR between synonyms, AND between concepts. Wildcards (*) where supported."
+              hint='Use OR between synonyms, AND between concepts. Wildcards (*) where supported. Press Ctrl+Z after accepting a suggestion to undo.'
             />
           </div>
         </section>
@@ -240,6 +296,14 @@ export function AcquisitionForm({ project, onSaved }: Props) {
           </Card>
         </div>
       </aside>
+      <QuerySuggestionModal
+        open={modalOpen}
+        mode={suggestMode}
+        result={suggestResult}
+        error={suggestError}
+        onAccept={handleAccept}
+        onDismiss={() => { setModalOpen(false); setSuggestResult(null); setSuggestError(null); }}
+      />
     </div>
   );
 }
