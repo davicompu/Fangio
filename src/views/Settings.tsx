@@ -6,6 +6,7 @@ import {
   CircleAlert,
   Copy,
   Cpu,
+  Globe,
   HardDrive,
   Loader2,
   Lock,
@@ -260,6 +261,36 @@ export function Settings({ open: openSetting, onClose, settings, onUpdate, lm, o
                     </div>
                   </div>
                 )}
+              </section>
+
+              {/* Database access */}
+              <section>
+                <SectionHeader
+                  icon={<Globe size={14} strokeWidth={1.75} />}
+                  title="Database access"
+                  description="Paste the advanced-search URL for each database you have institutional access to. Fangio opens these in an in-app browser so you can run your boolean query without leaving the app. Leave empty if you don't have access."
+                />
+                <div className="mt-5 space-y-3">
+                  {([
+                    { key: "database.scopus.url" as const, label: "Scopus" },
+                    { key: "database.wos.url" as const, label: "Web of Science" },
+                    { key: "database.ebsco-bsc.url" as const, label: "EBSCO Business Source Complete" },
+                    { key: "database.pubmed.url" as const, label: "PubMed" },
+                    { key: "database.ieee.url" as const, label: "IEEE Xplore" },
+                    { key: "database.acm.url" as const, label: "ACM Digital Library" },
+                    { key: "database.scholar.url" as const, label: "Google Scholar" },
+                    { key: "database.sciencedirect.url" as const, label: "ScienceDirect" },
+                  ] as { key: keyof AppSettings; label: string }[]).map(({ key, label }) => (
+                    <TextField
+                      key={key}
+                      label={label}
+                      value={settings[key] as string}
+                      onChange={(e) => onUpdate(key, e.target.value)}
+                      placeholder="https://..."
+                      mono
+                    />
+                  ))}
+                </div>
               </section>
 
               {/* Network sovereignty */}

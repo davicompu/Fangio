@@ -7,6 +7,14 @@ export interface AppSettings {
   "lmstudio.embed_model": string;
   "telemetry.enabled": boolean;
   "telemetry.log_reasoning": boolean;
+  "database.scopus.url": string;
+  "database.wos.url": string;
+  "database.ebsco-bsc.url": string;
+  "database.pubmed.url": string;
+  "database.ieee.url": string;
+  "database.acm.url": string;
+  "database.scholar.url": string;
+  "database.sciencedirect.url": string;
 }
 
 const DEFAULTS: AppSettings = {
@@ -15,6 +23,14 @@ const DEFAULTS: AppSettings = {
   "lmstudio.embed_model": "",
   "telemetry.enabled": true,
   "telemetry.log_reasoning": false,
+  "database.scopus.url": "",
+  "database.wos.url": "",
+  "database.ebsco-bsc.url": "",
+  "database.pubmed.url": "",
+  "database.ieee.url": "",
+  "database.acm.url": "",
+  "database.scholar.url": "https://scholar.google.com",
+  "database.sciencedirect.url": "",
 };
 
 export interface LmState {
