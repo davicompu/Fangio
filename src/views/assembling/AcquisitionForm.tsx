@@ -1,6 +1,7 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { motion } from "framer-motion";
-import { Calendar, Database, Globe, Lightbulb, Save, Search, Sparkles } from "lucide-react";
+import { Calendar, Database, Globe, Lightbulb, Save, Search, Sparkles, X } from "lucide-react";
 import { api, type ProjectRow, type SuggestQueryResult } from "../../lib/api";
 import { Card } from "../../components/ui/Card";
 import { TextField, TextArea } from "../../components/ui/TextField";
@@ -13,6 +14,14 @@ interface Props {
   settings: AppSettings;
   onSaved: () => void;
   onOpenSettings: () => void;
+}
+
+interface DownloadBanner {
+  id: number;
+  path: string;
+  filename: string;
+  source_database: string;
+  error?: string;
 }
 
 const DATABASES = [
@@ -37,8 +46,10 @@ export function AcquisitionForm({ project, settings, onSaved, onOpenSettings }: 
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [browserDb, setBrowserDb] = useState<string | null>(null);
-  const [browserUrl, setBrowserUrl] = useState(""); // consumed by Task 6 browser panel
-  void browserUrl; // suppress unused-local until Task 6 renders the panel
+  const [browserUrl, setBrowserUrl] = useState("");
+  const [downloadBanners, setDownloadBanners] = useState<DownloadBanner[]>([]);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const bannerIdRef = useRef(0);
   const [modalOpen, setModalOpen] = useState(false);
   const [suggestResult, setSuggestResult] = useState<SuggestQueryResult | null>(null);
   const [suggestError, setSuggestError] = useState<string | null>(null);
@@ -53,6 +64,51 @@ export function AcquisitionForm({ project, settings, onSaved, onOpenSettings }: 
       return next;
     });
   };
+
+  // Listen for reference files downloaded inside the browser panel
+  useEffect(() => {
+    const unlisten = listen<{ path: string; filename: string; source_database: string }>(
+      "browser:download-ready",
+      (event) => {
+        bannerIdRef.current += 1;
+        setDownloadBanners((prev) => [
+          ...prev,
+          { ...event.payload, id: bannerIdRef.current },
+        ]);
+      },
+    );
+    return () => {
+      unlisten.then((f) => f());
+    };
+  }, []);
+
+  // Sync the native webview with the placeholder div position
+  useEffect(() => {
+    if (!browserDb || !browserUrl || !panelRef.current) return;
+    let observer: ResizeObserver | null = null;
+
+    const init = () => {
+      if (!panelRef.current) return;
+      const rect = panelRef.current.getBoundingClientRect();
+      api
+        .openBrowserPanel(browserUrl, rect.left, rect.top, rect.width, rect.height, browserDb)
+        .catch(() => {});
+
+      observer = new ResizeObserver(() => {
+        if (!panelRef.current) return;
+        const r = panelRef.current.getBoundingClientRect();
+        api.resizeBrowserPanel(r.left, r.top, r.width, r.height).catch(() => {});
+      });
+      observer.observe(panelRef.current);
+    };
+
+    requestAnimationFrame(init);
+
+    return () => {
+      observer?.disconnect();
+      api.closeBrowserPanel().catch(() => {});
+    };
+  }, [browserDb, browserUrl]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const save = async () => {
     setBusy(true);
@@ -337,41 +393,123 @@ export function AcquisitionForm({ project, settings, onSaved, onOpenSettings }: 
         </div>
       </div>
 
-      {/* Advisor side panel */}
+      {/* Right column: browser panel OR advisor card */}
       <aside>
-        <div className="sticky top-12">
-          <Card className="p-5">
-            <div className="flex items-center gap-2 mb-3">
-              <Lightbulb size={14} strokeWidth={1.75} className="text-[var(--color-accent-500)]" />
-              <span className="eyebrow">Advisor</span>
+        {browserDb ? (
+          <div className="sticky top-12 flex flex-col gap-3">
+            {/* Import banners for downloaded files */}
+            {downloadBanners.map((banner) => (
+              <motion.div
+                key={banner.id}
+                initial={{ opacity: 0, y: -6 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="p-3 rounded-[var(--radius-sm)] border border-[var(--color-ok-300)] bg-[var(--color-ok-50)] flex items-center justify-between gap-3"
+              >
+                <div className="min-w-0">
+                  <p className="text-[12px] font-medium text-[var(--color-ink-800)] truncate">
+                    {banner.filename}
+                  </p>
+                  {banner.error ? (
+                    <p className="text-[11px] text-[var(--color-warn-600)] mt-0.5">{banner.error}</p>
+                  ) : (
+                    <p className="text-[11px] text-[var(--color-paper-500)] mt-0.5">
+                      Downloaded from {banner.source_database}
+                    </p>
+                  )}
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    onClick={async () => {
+                      try {
+                        await api.commitImport(banner.path, banner.source_database);
+                        setDownloadBanners((prev) => prev.filter((b) => b.id !== banner.id));
+                        onSaved();
+                      } catch (e: unknown) {
+                        const msg = e instanceof Error ? e.message : String(e);
+                        setDownloadBanners((prev) =>
+                          prev.map((b) => (b.id === banner.id ? { ...b, error: msg } : b)),
+                        );
+                      }
+                    }}
+                  >
+                    Import
+                  </Button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setDownloadBanners((prev) => prev.filter((b) => b.id !== banner.id))
+                    }
+                    className="p-1 rounded hover:bg-[var(--color-ok-100)] transition-paper"
+                    aria-label="Dismiss"
+                  >
+                    <X size={12} strokeWidth={2} className="text-[var(--color-paper-500)]" />
+                  </button>
+                </div>
+              </motion.div>
+            ))}
+
+            {/* Browser panel header with close button */}
+            <div className="flex items-center justify-between px-1">
+              <span className="text-[11px] text-[var(--color-paper-500)] font-medium">
+                {DATABASES.find((d) => d.id === browserDb)?.label ?? browserDb}
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  setBrowserDb(null);
+                  setBrowserUrl("");
+                }}
+                className="no-drag p-1 rounded-[var(--radius-xs)] hover:bg-[var(--color-paper-200)] transition-paper"
+                aria-label="Close browser"
+              >
+                <X size={14} strokeWidth={1.75} />
+              </button>
             </div>
-            <h3 className="font-semibold text-[15px] text-[var(--color-ink-900)] mb-2 tracking-tight">
-              Run the search yourself
-            </h3>
-            <p className="prose-editorial text-[13px] leading-[1.65] text-[var(--color-paper-700)] mb-4">
-              Fangio doesn't browse library databases for you. You stay in control of your
-              institutional session. When you're ready, open each selected database in your normal
-              browser, paste the query into Advanced Search, set the date range, and export the
-              results as RIS, BibTeX, WoS tab-delimited, or Scopus CSV.
-            </p>
-            <div className="hairline my-4" />
-            <p className="prose-editorial text-[13px] leading-[1.65] text-[var(--color-paper-700)]">
-              Then come to the <strong>Importing</strong> tab and drop the export files in. The
-              dedup step will happen automatically on DOIs and you'll review the trickier
-              title-fuzzy clusters yourself.
-            </p>
-            <div className="mt-5 px-3 py-2.5 rounded-[var(--radius-sm)] bg-[var(--color-paper-100)] border border-[var(--color-paper-200)]">
-              <div className="flex items-center gap-1.5 text-[var(--color-paper-500)] mb-1">
-                <Globe size={11} strokeWidth={1.75} />
-                <span className="eyebrow">Why no automation</span>
+
+            {/* Native webview placeholder — sized to fill the column */}
+            <div
+              ref={panelRef}
+              className="rounded-[var(--radius-sm)] border border-[var(--color-paper-300)] bg-[var(--color-paper-100)]"
+              style={{ height: "calc(100vh - 260px)", minHeight: 400 }}
+            />
+          </div>
+        ) : (
+          <div className="sticky top-12">
+            <Card className="p-5">
+              <div className="flex items-center gap-2 mb-3">
+                <Lightbulb size={14} strokeWidth={1.75} className="text-[var(--color-accent-500)]" />
+                <span className="eyebrow">Advisor</span>
               </div>
-              <p className="text-[12px] text-[var(--color-paper-600)] leading-relaxed">
-                Your university policy prohibits automated retrieval from licensed databases.
-                Fangio respects that — it processes only files you've already exported yourself.
+              <h3 className="font-semibold text-[15px] text-[var(--color-ink-900)] mb-2 tracking-tight">
+                Run the search yourself
+              </h3>
+              <p className="prose-editorial text-[13px] leading-[1.65] text-[var(--color-paper-700)] mb-4">
+                Fangio doesn't browse library databases for you. You stay in control of your
+                institutional session. When you're ready, open each selected database in your normal
+                browser, paste the query into Advanced Search, set the date range, and export the
+                results as RIS, BibTeX, WoS tab-delimited, or Scopus CSV.
               </p>
-            </div>
-          </Card>
-        </div>
+              <div className="hairline my-4" />
+              <p className="prose-editorial text-[13px] leading-[1.65] text-[var(--color-paper-700)]">
+                Then come to the <strong>Importing</strong> tab and drop the export files in. The
+                dedup step will happen automatically on DOIs and you'll review the trickier
+                title-fuzzy clusters yourself.
+              </p>
+              <div className="mt-5 px-3 py-2.5 rounded-[var(--radius-sm)] bg-[var(--color-paper-100)] border border-[var(--color-paper-200)]">
+                <div className="flex items-center gap-1.5 text-[var(--color-paper-500)] mb-1">
+                  <Globe size={11} strokeWidth={1.75} />
+                  <span className="eyebrow">Why no automation</span>
+                </div>
+                <p className="text-[12px] text-[var(--color-paper-600)] leading-relaxed">
+                  Your university policy prohibits automated retrieval from licensed databases.
+                  Fangio respects that — it processes only files you've already exported yourself.
+                </p>
+              </div>
+            </Card>
+          </div>
+        )}
       </aside>
       <QuerySuggestionModal
         open={modalOpen}
