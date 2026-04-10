@@ -24,12 +24,15 @@ const DATABASES = [
 ];
 
 export function AcquisitionForm({ project, onSaved }: Props) {
-  const [databases, setDatabases] = useState<Set<string>>(new Set());
+  const [databases, setDatabases] = useState<Set<string>>(
+    () => new Set<string>(project.databases ? (JSON.parse(project.databases) as string[]) : []),
+  );
   const [start, setStart] = useState(project.search_period_start ?? "");
   const [end, setEnd] = useState(project.search_period_end ?? "");
-  const [query, setQuery] = useState("");
+  const [query, setQuery] = useState(project.boolean_query ?? "");
   const [busy, setBusy] = useState(false);
   const [savedAt, setSavedAt] = useState<number | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [suggestResult, setSuggestResult] = useState<SuggestQueryResult | null>(null);
   const [suggestError, setSuggestError] = useState<string | null>(null);
@@ -47,11 +50,12 @@ export function AcquisitionForm({ project, onSaved }: Props) {
 
   const save = async () => {
     setBusy(true);
+    setSaveError(null);
     try {
       await api.saveDecision({
         stage: "assembling",
         sub_stage: "acquisition",
-        decision_key: "assembling.databases",
+        decision_key: "project.databases",
         value_json: JSON.stringify(Array.from(databases)),
         rationale: null,
       });
@@ -73,17 +77,18 @@ export function AcquisitionForm({ project, onSaved }: Props) {
           rationale: null,
         });
       }
-      if (query.trim()) {
-        await api.saveDecision({
-          stage: "assembling",
-          sub_stage: "acquisition",
-          decision_key: "assembling.boolean_query",
-          value_json: JSON.stringify(query),
-          rationale: null,
-        });
-      }
+      await api.saveDecision({
+        stage: "assembling",
+        sub_stage: "acquisition",
+        decision_key: "project.boolean_query",
+        value_json: JSON.stringify(query),
+        rationale: null,
+      });
       setSavedAt(Date.now());
       onSaved();
+    } catch (e: unknown) {
+      setSaveError("Save failed — check that the project file is writable.");
+      console.error(e);
     } finally {
       setBusy(false);
     }
@@ -257,6 +262,9 @@ export function AcquisitionForm({ project, onSaved }: Props) {
             >
               Saved to decision log
             </motion.span>
+          )}
+          {saveError && (
+            <span className="text-[12px] text-[var(--color-warn-600)]">{saveError}</span>
           )}
         </div>
       </div>

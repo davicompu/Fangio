@@ -44,6 +44,8 @@ pub async fn clone_template(
         copy("project.rq_where", project.rq_where.as_ref()),
         copy("project.search_period_start", project.search_period_start.as_ref()),
         copy("project.search_period_end", project.search_period_end.as_ref()),
+        copy("project.boolean_query", project.boolean_query.as_ref()),
+        copy("project.databases", project.databases.as_ref()),
         copy("project.language_filter", project.language_filter.as_ref()),
         copy("project.quality_list", project.quality_list.as_ref()),
         copy("project.quality_threshold", project.quality_threshold.as_ref()),

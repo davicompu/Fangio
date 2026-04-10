@@ -17,6 +17,8 @@ export interface ProjectRow {
   rq_where: string | null;
   search_period_start: string | null;
   search_period_end: string | null;
+  boolean_query: string | null;
+  databases: string | null;
   language_filter: string | null;
   quality_list: string | null;
   quality_threshold: string | null;
