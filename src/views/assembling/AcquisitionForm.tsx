@@ -26,7 +26,7 @@ const DATABASES = [
   { id: "sciencedirect", label: "ScienceDirect", note: "Elsevier journals" },
 ];
 
-export function AcquisitionForm({ project, settings: _settings, onSaved, onOpenSettings: _onOpenSettings }: Props) {
+export function AcquisitionForm({ project, settings, onSaved, onOpenSettings }: Props) {
   const [databases, setDatabases] = useState<Set<string>>(
     () => new Set<string>(project.databases ? (JSON.parse(project.databases) as string[]) : []),
   );
@@ -36,6 +36,9 @@ export function AcquisitionForm({ project, settings: _settings, onSaved, onOpenS
   const [busy, setBusy] = useState(false);
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [browserDb, setBrowserDb] = useState<string | null>(null);
+  const [browserUrl, setBrowserUrl] = useState(""); // consumed by Task 6 browser panel
+  void browserUrl; // suppress unused-local until Task 6 renders the panel
   const [modalOpen, setModalOpen] = useState(false);
   const [suggestResult, setSuggestResult] = useState<SuggestQueryResult | null>(null);
   const [suggestError, setSuggestError] = useState<string | null>(null);
@@ -137,7 +140,7 @@ export function AcquisitionForm({ project, settings: _settings, onSaved, onOpenS
   };
 
   return (
-    <div className="grid grid-cols-[1fr_320px] gap-10 max-w-6xl">
+    <div className={`grid gap-10 ${browserDb ? "grid-cols-[1fr_minmax(0,55%)]" : "grid-cols-[1fr_320px] max-w-6xl"}`}>
       <div className="space-y-8">
         {/* Databases */}
         <section>
@@ -251,6 +254,68 @@ export function AcquisitionForm({ project, settings: _settings, onSaved, onOpenS
             />
           </div>
         </section>
+
+        {/* Run searches — only shown when databases are selected */}
+        {databases.size > 0 && (() => {
+          const searchable = DATABASES.filter(
+            (d) => databases.has(d.id) && settings[`database.${d.id}.url` as keyof typeof settings],
+          );
+          const selectedNoUrl = DATABASES.filter(
+            (d) => databases.has(d.id) && !settings[`database.${d.id}.url` as keyof typeof settings],
+          );
+          return (
+            <section>
+              <SectionHeader
+                icon={<Globe size={14} strokeWidth={1.75} />}
+                title="Run searches"
+                description="Open a database in-app to run your query and import results directly."
+              />
+              <div className="mt-4 flex flex-wrap items-center gap-2">
+                {searchable.map((d) => (
+                  <button
+                    key={d.id}
+                    type="button"
+                    onClick={() => {
+                      setBrowserDb(d.id);
+                      setBrowserUrl(
+                        settings[`database.${d.id}.url` as keyof typeof settings] as string,
+                      );
+                    }}
+                    className={
+                      "px-3 py-1.5 rounded-[var(--radius-sm)] text-[12px] font-medium transition-paper " +
+                      (browserDb === d.id
+                        ? "bg-[var(--color-ink-700)] text-white"
+                        : "bg-[var(--color-paper-100)] border border-[var(--color-paper-300)] text-[var(--color-ink-800)] hover:border-[var(--color-paper-500)]")
+                    }
+                  >
+                    {d.label}
+                  </button>
+                ))}
+                {searchable.length === 0 && (
+                  <button
+                    type="button"
+                    onClick={onOpenSettings}
+                    className="text-[12px] text-[var(--color-accent-600)] hover:underline"
+                  >
+                    No databases configured — add URLs in Settings to search here
+                  </button>
+                )}
+              </div>
+              {selectedNoUrl.length > 0 && searchable.length > 0 && (
+                <p className="mt-2 text-[11px] text-[var(--color-paper-500)]">
+                  {selectedNoUrl.map((d) => d.label).join(", ")} —{" "}
+                  <button
+                    type="button"
+                    onClick={onOpenSettings}
+                    className="underline hover:text-[var(--color-ink-700)]"
+                  >
+                    Add URL in Settings
+                  </button>
+                </p>
+              )}
+            </section>
+          );
+        })()}
 
         <div className="flex items-center gap-3 pt-2">
           <Button onClick={save} disabled={busy} variant="primary">
