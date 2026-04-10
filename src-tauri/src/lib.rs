@@ -1,6 +1,7 @@
 //! Fangio Tauri backend.
 
 mod backup;
+mod browser;
 mod clone;
 mod db;
 mod dedup;
@@ -98,6 +99,8 @@ async fn open_project(
     let db = ProjectDb::open_or_create(&path, None).await.map_err(err)?;
     lockfile::acquire(&path).map_err(err)?;
     backup::snapshot(&path).ok(); // best-effort snapshot on every open
+    // Clean up any leftover temp download files from previous sessions
+    browser::clean_temp_dir(&path.join(".tmp").join("downloads"));
     let project = db.get_project().await.map_err(err)?;
     RecentStore::touch(&path, &project.name).map_err(err)?;
     state.set(Arc::new(db)).await;
@@ -1124,6 +1127,84 @@ async fn regenerate_draft(state: State<'_, AppState>) -> Result<String, String> 
     Ok(content)
 }
 
+#[tauri::command]
+async fn open_browser_panel(
+    url: String,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    source_database: String,
+    app: tauri::AppHandle<tauri::Wry>,
+    state: State<'_, AppState>,
+    browser: State<'_, browser::BrowserState>,
+) -> Result<(), String> {
+    let workspace = state
+        .current()
+        .await
+        .ok_or("no project open")?
+        .workspace
+        .clone();
+
+    // Close any existing panel first
+    {
+        let mut guard = browser.panel.lock().map_err(|e| e.to_string())?;
+        if let Some(existing) = guard.take() {
+            browser::clean_temp_dir(&existing.temp_dir);
+            let _ = existing.webview.close();
+        }
+    }
+
+    let panel_data = browser::open_panel(
+        &app,
+        &workspace,
+        url,
+        x,
+        y,
+        width,
+        height,
+        source_database,
+    )?;
+
+    let mut guard = browser.panel.lock().map_err(|e| e.to_string())?;
+    *guard = Some(panel_data);
+    Ok(())
+}
+
+#[tauri::command]
+fn resize_browser_panel(
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    browser: State<'_, browser::BrowserState>,
+) -> Result<(), String> {
+    let guard = browser.panel.lock().map_err(|e| e.to_string())?;
+    if let Some(ref panel) = *guard {
+        panel
+            .webview
+            .set_position(tauri::LogicalPosition::new(x, y))
+            .map_err(|e| e.to_string())?;
+        panel
+            .webview
+            .set_size(tauri::LogicalSize::new(width, height))
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn close_browser_panel(
+    browser: State<'_, browser::BrowserState>,
+) -> Result<(), String> {
+    let mut guard = browser.panel.lock().map_err(|e| e.to_string())?;
+    if let Some(panel) = guard.take() {
+        browser::clean_temp_dir(&panel.temp_dir);
+        let _ = panel.webview.close();
+    }
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tracing_subscriber::fmt()
@@ -1138,6 +1219,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .manage(AppState::default())
+        .manage(browser::BrowserState::default())
         .invoke_handler(tauri::generate_handler![
             create_project,
             open_project,
@@ -1191,6 +1273,9 @@ pub fn run() {
             export_prisma_svg,
             save_draft,
             regenerate_draft,
+            open_browser_panel,
+            resize_browser_panel,
+            close_browser_panel,
         ])
         .setup(|_app| Ok(()))
         .run(tauri::generate_context!())
