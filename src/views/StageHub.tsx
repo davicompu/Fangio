@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { motion } from "framer-motion";
 import {
   ArrowUpRight,
@@ -6,12 +7,17 @@ import {
   Compass,
   Lock,
   PenLine,
+  Pencil,
   Quote,
+  Save,
   Search,
   Settings as SettingsIcon,
 } from "lucide-react";
 import type { ProjectRow } from "../lib/api";
+import { api } from "../lib/api";
 import { Card } from "../components/ui/Card";
+import { Button } from "../components/ui/Button";
+import { TextArea } from "../components/ui/TextField";
 import { cn } from "../lib/utils";
 
 interface StageHubProps {
@@ -52,6 +58,66 @@ const stages = [
 export function StageHub({ project, onOpenSettings, onProjectChanged, onEnterStage }: StageHubProps) {
   const currentStage = project.current_stage;
 
+  const [editing, setEditing] = useState(false);
+  const [draftWhat, setDraftWhat] = useState("");
+  const [draftHow, setDraftHow] = useState("");
+  const [draftWhere, setDraftWhere] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [savedAt, setSavedAt] = useState<number | null>(null);
+
+  const handleEdit = () => {
+    setDraftWhat(project.rq_what ?? "");
+    setDraftHow(project.rq_how ?? "");
+    setDraftWhere(project.rq_where ?? "");
+    setSavedAt(null);
+    setEditing(true);
+  };
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      if (draftWhat.trim()) {
+        await api.saveDecision({
+          stage: "onboarding",
+          sub_stage: null,
+          decision_key: "project.rq_what",
+          value_json: JSON.stringify(draftWhat.trim()),
+          rationale: null,
+        });
+      }
+      if (draftHow.trim()) {
+        await api.saveDecision({
+          stage: "onboarding",
+          sub_stage: null,
+          decision_key: "project.rq_how",
+          value_json: JSON.stringify(draftHow.trim()),
+          rationale: null,
+        });
+      }
+      if (draftWhere.trim()) {
+        await api.saveDecision({
+          stage: "onboarding",
+          sub_stage: null,
+          decision_key: "project.rq_where",
+          value_json: JSON.stringify(draftWhere.trim()),
+          rationale: null,
+        });
+      }
+      await onProjectChanged();
+      setSavedAt(Date.now());
+      setEditing(false);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleCancel = () => {
+    setEditing(false);
+    setDraftWhat("");
+    setDraftHow("");
+    setDraftWhere("");
+  };
+
   return (
     <div className="min-h-screen flex flex-col">
       <div className="drag-region h-10" />
@@ -81,29 +147,93 @@ export function StageHub({ project, onOpenSettings, onProjectChanged, onEnterSta
       {/* Research Question summary card — anchors the whole project */}
       <div className="px-12 mb-10">
         <Card className="p-7">
-          <div className="flex items-center gap-2 mb-4 text-[var(--color-paper-500)]">
-            <Compass size={13} strokeWidth={1.75} />
-            <span className="eyebrow">Research questions</span>
+          {/* Card header */}
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-2 text-[var(--color-paper-500)]">
+              <Compass size={13} strokeWidth={1.75} />
+              <span className="eyebrow">Research questions</span>
+            </div>
+            {!editing && (
+              <button
+                type="button"
+                onClick={handleEdit}
+                className="no-drag flex items-center gap-1.5 px-2.5 py-1.5 rounded-[var(--radius-xs)] text-[11px] font-medium text-[var(--color-paper-500)] hover:text-[var(--color-ink-700)] hover:bg-[var(--color-paper-100)] transition-paper"
+              >
+                <Pencil size={11} strokeWidth={1.75} />
+                Edit
+              </button>
+            )}
           </div>
-          <div className="space-y-4">
-            <RqLine label="What" body={project.rq_what || ""} />
-            <RqLine label="How" body={project.rq_how || ""} />
-            <RqLine label="Where" body={project.rq_where || ""} />
-          </div>
-          {project.domain && (
+
+          {/* Read-only display */}
+          {!editing && (
             <>
-              <div className="my-5 hairline" />
-              <div className="flex items-start gap-3">
-                <Quote
-                  size={13}
-                  strokeWidth={1.75}
-                  className="text-[var(--color-paper-500)] mt-1 shrink-0"
-                />
-                <p className="prose-editorial text-[14px] text-[var(--color-paper-700)] italic leading-relaxed">
-                  {project.domain}
-                </p>
+              <div className="space-y-4">
+                <RqLine label="What" body={project.rq_what || ""} />
+                <RqLine label="How" body={project.rq_how || ""} />
+                <RqLine label="Where" body={project.rq_where || ""} />
               </div>
+              {project.domain && (
+                <>
+                  <div className="my-5 hairline" />
+                  <div className="flex items-start gap-3">
+                    <Quote
+                      size={13}
+                      strokeWidth={1.75}
+                      className="text-[var(--color-paper-500)] mt-1 shrink-0"
+                    />
+                    <p className="prose-editorial text-[14px] text-[var(--color-paper-700)] italic leading-relaxed">
+                      {project.domain}
+                    </p>
+                  </div>
+                </>
+              )}
             </>
+          )}
+
+          {/* Edit mode */}
+          {editing && (
+            <div className="space-y-4">
+              <TextArea
+                label="What do we know about this domain?"
+                value={draftWhat}
+                onChange={(e) => setDraftWhat(e.target.value)}
+                rows={3}
+                placeholder="e.g., What is currently known about the antecedents, behaviours, and outcomes of consumer engagement in social commerce platforms?"
+              />
+              <TextArea
+                label="How do we know what we know?"
+                value={draftHow}
+                onChange={(e) => setDraftHow(e.target.value)}
+                rows={3}
+                placeholder="e.g., What theories, contexts, and methods have been used to study consumer behaviour in social commerce, and how has methodological rigour evolved?"
+              />
+              <TextArea
+                label="Where should this field be heading?"
+                value={draftWhere}
+                onChange={(e) => setDraftWhere(e.target.value)}
+                rows={3}
+                placeholder="e.g., What gaps, contradictions, and unexplored contexts should future research on consumer behaviour in social commerce address?"
+              />
+              <div className="flex items-center gap-3 pt-2">
+                <Button onClick={handleSave} disabled={saving} variant="primary" size="sm">
+                  <Save size={13} strokeWidth={2} />
+                  {saving ? "Saving…" : "Save"}
+                </Button>
+                <Button onClick={handleCancel} disabled={saving} variant="ghost" size="sm">
+                  Cancel
+                </Button>
+                {savedAt && (
+                  <motion.span
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    className="text-[12px] text-[var(--color-ok-500)]"
+                  >
+                    Saved to decision log
+                  </motion.span>
+                )}
+              </div>
+            </div>
           )}
         </Card>
       </div>
