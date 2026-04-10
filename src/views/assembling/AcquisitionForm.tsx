@@ -401,9 +401,9 @@ export function AcquisitionForm({ project, settings, onSaved, onOpenSettings }: 
 
       {/* Right column: browser panel OR advisor card */}
       <aside>
-        {browserDb ? (
-          <div className="sticky top-12 flex flex-col gap-3">
-            {/* Import banners for downloaded files */}
+        {/* Import banners — always visible so pending imports survive panel close */}
+        {downloadBanners.length > 0 && (
+          <div className="mb-3 flex flex-col gap-2">
             {downloadBanners.map((banner) => (
               <motion.div
                 key={banner.id}
@@ -459,7 +459,10 @@ export function AcquisitionForm({ project, settings, onSaved, onOpenSettings }: 
                 </div>
               </motion.div>
             ))}
-
+          </div>
+        )}
+        {browserDb ? (
+          <div className="sticky top-12 flex flex-col gap-3">
             {/* Browser panel header with close button */}
             <div className="flex items-center justify-between px-1">
               <span className="text-[11px] text-[var(--color-paper-500)] font-medium">
