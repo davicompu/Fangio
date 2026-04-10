@@ -64,6 +64,7 @@ export function StageHub({ project, onOpenSettings, onProjectChanged, onEnterSta
   const [draftWhere, setDraftWhere] = useState("");
   const [saving, setSaving] = useState(false);
   const [savedAt, setSavedAt] = useState<number | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   const handleEdit = () => {
     setDraftWhat(project.rq_what ?? "");
@@ -75,6 +76,7 @@ export function StageHub({ project, onOpenSettings, onProjectChanged, onEnterSta
 
   const handleSave = async () => {
     setSaving(true);
+    setSaveError(null);
     try {
       await api.saveDecision({
         stage: "onboarding",
@@ -99,7 +101,10 @@ export function StageHub({ project, onOpenSettings, onProjectChanged, onEnterSta
       });
       await onProjectChanged();
       setSavedAt(Date.now());
+      setTimeout(() => setSavedAt(null), 4000);
       setEditing(false);
+    } catch (e: unknown) {
+      setSaveError(e instanceof Error ? e.message : "Save failed. Please try again.");
     } finally {
       setSaving(false);
     }
@@ -218,6 +223,9 @@ export function StageHub({ project, onOpenSettings, onProjectChanged, onEnterSta
                   Cancel
                 </Button>
               </div>
+              {saveError && (
+                <p className="text-[12px] text-[var(--color-accent-700)] mt-1">{saveError}</p>
+              )}
             </div>
           )}
 
