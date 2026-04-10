@@ -23,7 +23,7 @@ import { cn } from "../lib/utils";
 interface StageHubProps {
   project: ProjectRow;
   onOpenSettings: () => void;
-  onProjectChanged: () => void;
+  onProjectChanged: () => Promise<void>;
   onEnterStage: (stage: "assembling" | "arranging" | "assessing") => void;
 }
 
@@ -76,33 +76,27 @@ export function StageHub({ project, onOpenSettings, onProjectChanged, onEnterSta
   const handleSave = async () => {
     setSaving(true);
     try {
-      if (draftWhat.trim()) {
-        await api.saveDecision({
-          stage: "onboarding",
-          sub_stage: null,
-          decision_key: "project.rq_what",
-          value_json: JSON.stringify(draftWhat.trim()),
-          rationale: null,
-        });
-      }
-      if (draftHow.trim()) {
-        await api.saveDecision({
-          stage: "onboarding",
-          sub_stage: null,
-          decision_key: "project.rq_how",
-          value_json: JSON.stringify(draftHow.trim()),
-          rationale: null,
-        });
-      }
-      if (draftWhere.trim()) {
-        await api.saveDecision({
-          stage: "onboarding",
-          sub_stage: null,
-          decision_key: "project.rq_where",
-          value_json: JSON.stringify(draftWhere.trim()),
-          rationale: null,
-        });
-      }
+      await api.saveDecision({
+        stage: "onboarding",
+        sub_stage: null,
+        decision_key: "project.rq_what",
+        value_json: JSON.stringify(draftWhat.trim()),
+        rationale: null,
+      });
+      await api.saveDecision({
+        stage: "onboarding",
+        sub_stage: null,
+        decision_key: "project.rq_how",
+        value_json: JSON.stringify(draftHow.trim()),
+        rationale: null,
+      });
+      await api.saveDecision({
+        stage: "onboarding",
+        sub_stage: null,
+        decision_key: "project.rq_where",
+        value_json: JSON.stringify(draftWhere.trim()),
+        rationale: null,
+      });
       await onProjectChanged();
       setSavedAt(Date.now());
       setEditing(false);
