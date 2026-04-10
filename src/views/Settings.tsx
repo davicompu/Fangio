@@ -286,6 +286,7 @@ export function Settings({ open: openSetting, onClose, settings, onUpdate, lm, o
                       label={label}
                       value={settings[key] as string}
                       onChange={(e) => onUpdate(key, e.target.value)}
+                      onBlur={(e) => onUpdate(key, e.target.value)}
                       placeholder="https://..."
                       mono
                     />
