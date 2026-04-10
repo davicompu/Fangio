@@ -24,7 +24,7 @@ use db::{
 use dedup::DedupCluster;
 use lmstudio::{ChatMessage, ChatResult, LmModel};
 use parsers::{FormatKind, ParseResult, ParsedRecord};
-use recent::{RecentProject, RecentStore};
+use recent::{RecentMeta, RecentProject, RecentStore};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -74,7 +74,8 @@ async fn create_project(
         .map_err(err)?;
     lockfile::acquire(&path).map_err(err)?;
     let project = db.get_project().await.map_err(err)?;
-    RecentStore::touch(&path, &project.name).map_err(err)?;
+    let article_count = db.article_count().await.unwrap_or(0);
+    RecentStore::touch(&path, &project.name, RecentMeta::from_project(&project, article_count)).map_err(err)?;
     state.set(Arc::new(db)).await;
     Ok(project)
 }
@@ -102,7 +103,8 @@ async fn open_project(
     // Clean up any leftover temp download files from previous sessions
     browser::clean_temp_dir(&path.join(".tmp").join("downloads"));
     let project = db.get_project().await.map_err(err)?;
-    RecentStore::touch(&path, &project.name).map_err(err)?;
+    let article_count = db.article_count().await.unwrap_or(0);
+    RecentStore::touch(&path, &project.name, RecentMeta::from_project(&project, article_count)).map_err(err)?;
     state.set(Arc::new(db)).await;
     Ok(project)
 }
@@ -142,12 +144,21 @@ async fn current_project(state: State<'_, AppState>) -> Result<Option<ProjectRow
 
 #[tauri::command]
 fn list_recent_projects() -> Result<Vec<RecentProject>, String> {
-    Ok(RecentStore::load().map_err(err)?.projects)
+    let mut store = RecentStore::load().map_err(err)?;
+    for p in &mut store.projects {
+        p.available = p.path.join(db::DB_FILENAME).exists();
+    }
+    Ok(store.projects)
 }
 
 #[tauri::command]
 fn forget_recent_project(path: String) -> Result<(), String> {
     RecentStore::forget(&PathBuf::from(path)).map_err(err)
+}
+
+#[tauri::command]
+fn clear_recent_projects() -> Result<(), String> {
+    RecentStore::clear().map_err(err)
 }
 
 #[tauri::command]
@@ -195,8 +206,8 @@ struct LmStudioStatus {
 }
 
 #[tauri::command]
-async fn lmstudio_test(base_url: String) -> Result<LmStudioStatus, String> {
-    match lmstudio::list_models(&base_url).await {
+async fn lmstudio_test(base_url: String, api_key: Option<String>) -> Result<LmStudioStatus, String> {
+    match lmstudio::list_models(&base_url, api_key.as_deref()).await {
         Ok(models) => Ok(LmStudioStatus {
             reachable: true,
             base_url,
@@ -218,6 +229,7 @@ struct ChatArgs {
     model: String,
     messages: Vec<ChatMessage>,
     temperature: Option<f32>,
+    api_key: Option<String>,
 }
 
 #[tauri::command]
@@ -225,7 +237,7 @@ async fn lmstudio_chat(
     args: ChatArgs,
     state: State<'_, AppState>,
 ) -> Result<ChatResult, String> {
-    let result = lmstudio::chat(&args.base_url, &args.model, &args.messages, args.temperature)
+    let result = lmstudio::chat(&args.base_url, &args.model, &args.messages, args.temperature, args.api_key.as_deref())
         .await
         .map_err(err)?;
     if let Some(db) = state.current().await {
@@ -639,6 +651,10 @@ async fn suggest_codes(
         .and_then(|v| v.as_str())
         .unwrap_or("http://127.0.0.1:1234/v1")
         .to_string();
+    let api_key = settings
+        .get("lmstudio.api_key")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
     let model = settings
         .get("lmstudio.chat_model")
         .and_then(|v| v.as_str())
@@ -679,6 +695,7 @@ async fn suggest_codes(
         &article.title,
         article.authors.as_deref(),
         article.abstract_text.as_deref(),
+        api_key.as_deref(),
     )
     .await
     .map_err(err)?;
@@ -716,6 +733,10 @@ async fn suggest_boolean_query(
         .and_then(|v| v.as_str())
         .unwrap_or("http://127.0.0.1:1234/v1")
         .to_string();
+    let api_key = settings
+        .get("lmstudio.api_key")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
     let model = settings
         .get("lmstudio.chat_model")
         .and_then(|v| v.as_str())
@@ -734,6 +755,7 @@ async fn suggest_boolean_query(
         project.rq_where.as_deref(),
         &args.databases,
         args.existing_query.as_deref(),
+        api_key.as_deref(),
     )
     .await
     .map_err(err)?;
@@ -860,6 +882,10 @@ async fn embed_pdf(pdf_id: i64, state: State<'_, AppState>) -> Result<EmbedResul
         .and_then(|v| v.as_str())
         .unwrap_or("http://127.0.0.1:1234/v1")
         .to_string();
+    let api_key = settings
+        .get("lmstudio.api_key")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
     let model = settings
         .get("lmstudio.embed_model")
         .and_then(|v| v.as_str())
@@ -877,7 +903,7 @@ async fn embed_pdf(pdf_id: i64, state: State<'_, AppState>) -> Result<EmbedResul
     let mut total = 0usize;
     for batch in chunks.chunks(batch_size) {
         let texts: Vec<&str> = batch.iter().map(|c| c.text.as_str()).collect();
-        let embeddings = lmstudio::embed(&base_url, &model, &texts)
+        let embeddings = lmstudio::embed(&base_url, &model, &texts, api_key.as_deref())
             .await
             .map_err(err)?;
         for (chunk, emb) in batch.iter().zip(embeddings.iter()) {
@@ -933,6 +959,10 @@ async fn ask_corpus(args: AskArgs, state: State<'_, AppState>) -> Result<AskResu
         .and_then(|v| v.as_str())
         .unwrap_or("http://127.0.0.1:1234/v1")
         .to_string();
+    let api_key = settings
+        .get("lmstudio.api_key")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
     let chat_model = settings
         .get("lmstudio.chat_model")
         .and_then(|v| v.as_str())
@@ -949,7 +979,7 @@ async fn ask_corpus(args: AskArgs, state: State<'_, AppState>) -> Result<AskResu
     let k = args.top_k.unwrap_or(6);
 
     // Embed the question
-    let q_embeddings = lmstudio::embed(&base_url, &embed_model, &[args.question.as_str()])
+    let q_embeddings = lmstudio::embed(&base_url, &embed_model, &[args.question.as_str()], api_key.as_deref())
         .await
         .map_err(err)?;
     let q_emb = q_embeddings
@@ -1008,6 +1038,7 @@ async fn ask_corpus(args: AskArgs, state: State<'_, AppState>) -> Result<AskResu
             lmstudio::ChatMessage { role: "user".into(), content: user },
         ],
         Some(0.2),
+        api_key.as_deref(),
     )
     .await
     .map_err(err)?;
@@ -1238,6 +1269,7 @@ pub fn run() {
             current_project,
             list_recent_projects,
             forget_recent_project,
+            clear_recent_projects,
             save_decision,
             get_settings,
             set_setting,

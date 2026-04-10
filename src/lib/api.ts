@@ -29,10 +29,20 @@ export interface ProjectRow {
   updated_at: string;
 }
 
+export interface RecentMeta {
+  domain?: string | null;
+  slr_type?: string | null;
+  framework?: string | null;
+  current_stage?: string | null;
+  article_count?: number | null;
+}
+
 export interface RecentProject {
   path: string;
   name: string;
   last_opened: string;
+  meta: RecentMeta;
+  available: boolean;
 }
 
 export interface DecisionInput {
@@ -272,6 +282,9 @@ export const api = {
   forgetRecentProject(path: string) {
     return invoke<void>("forget_recent_project", { path });
   },
+  clearRecentProjects() {
+    return invoke<void>("clear_recent_projects");
+  },
   saveDecision(decision: DecisionInput) {
     return invoke<number>("save_decision", { decision });
   },
@@ -281,12 +294,12 @@ export const api = {
   setSetting(key: string, value: unknown) {
     return invoke<void>("set_setting", { key, value });
   },
-  lmStudioTest(baseUrl: string) {
-    return invoke<LmStudioStatus>("lmstudio_test", { baseUrl });
+  lmStudioTest(baseUrl: string, apiKey?: string) {
+    return invoke<LmStudioStatus>("lmstudio_test", { baseUrl, apiKey: apiKey || null });
   },
-  lmStudioChat(baseUrl: string, model: string, messages: ChatMessage[], temperature?: number) {
+  lmStudioChat(baseUrl: string, model: string, messages: ChatMessage[], temperature?: number, apiKey?: string) {
     return invoke<ChatResult>("lmstudio_chat", {
-      args: { base_url: baseUrl, model, messages, temperature: temperature ?? null },
+      args: { base_url: baseUrl, model, messages, temperature: temperature ?? null, api_key: apiKey || null },
     });
   },
   parsePreview(path: string) {

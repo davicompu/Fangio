@@ -3,6 +3,7 @@ import { api, type LmModel, type ProjectRow } from "./api";
 
 export interface AppSettings {
   "lmstudio.base_url": string;
+  "lmstudio.api_key": string;
   "lmstudio.chat_model": string;
   "lmstudio.embed_model": string;
   "telemetry.enabled": boolean;
@@ -19,6 +20,7 @@ export interface AppSettings {
 
 const DEFAULTS: AppSettings = {
   "lmstudio.base_url": "http://127.0.0.1:1234/v1",
+  "lmstudio.api_key": "",
   "lmstudio.chat_model": "",
   "lmstudio.embed_model": "",
   "telemetry.enabled": true,
@@ -65,9 +67,10 @@ export function useAppState() {
   const checkLmStudio = useCallback(
     async (baseUrl?: string) => {
       const url = baseUrl || settings["lmstudio.base_url"];
+      const key = settings["lmstudio.api_key"] || undefined;
       const t0 = performance.now();
       try {
-        const status = await api.lmStudioTest(url);
+        const status = await api.lmStudioTest(url, key);
         const dt = Math.round(performance.now() - t0);
         setLm({
           reachable: status.reachable,

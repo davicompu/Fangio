@@ -493,6 +493,13 @@ impl ProjectDb {
         Ok(())
     }
 
+    pub async fn article_count(&self) -> Result<i64> {
+        let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM article")
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(n)
+    }
+
     pub async fn assembling_state(&self) -> Result<AssemblingState> {
         let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM article")
             .fetch_one(&self.pool)

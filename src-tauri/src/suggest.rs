@@ -47,6 +47,7 @@ pub async fn suggest_codes(
     title: &str,
     authors: Option<&str>,
     abstract_text: Option<&str>,
+    api_key: Option<&str>,
 ) -> Result<SuggestResult> {
     let codes_block = if existing_codes.is_empty() {
         "(no codes have been used in this dimension yet — propose new ones).".to_string()
@@ -100,7 +101,7 @@ Respond ONLY with a JSON array of objects, each with keys: code (string), ration
         ChatMessage { role: "user".into(), content: user },
     ];
 
-    let result = lmstudio::chat(base_url, model, &messages, Some(0.2)).await?;
+    let result = lmstudio::chat(base_url, model, &messages, Some(0.2), api_key).await?;
 
     let suggestions = parse_suggestions(&result.content)
         .ok_or_else(|| anyhow!("could not parse JSON suggestions from model output"))?;
@@ -124,6 +125,7 @@ pub async fn suggest_query(
     rq_where: Option<&str>,
     selected_databases: &[String],
     existing_query: Option<&str>,
+    api_key: Option<&str>,
 ) -> Result<SuggestQueryResult> {
     let db_list = if selected_databases.is_empty() {
         "(no databases selected yet)".to_string()
@@ -187,7 +189,7 @@ No prose outside the JSON object."
         ChatMessage { role: "user".into(), content: user },
     ];
 
-    let result = lmstudio::chat(base_url, model, &messages, Some(0.3)).await?;
+    let result = lmstudio::chat(base_url, model, &messages, Some(0.3), api_key).await?;
 
     let (query, rationale) = parse_query_result(&result.content)
         .ok_or_else(|| anyhow!("could not parse JSON query result from model output"))?;

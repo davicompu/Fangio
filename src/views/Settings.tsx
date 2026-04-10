@@ -33,13 +33,17 @@ interface SettingsProps {
 
 export function Settings({ open: openSetting, onClose, settings, onUpdate, lm, onTest }: SettingsProps) {
   const [localUrl, setLocalUrl] = useState(settings["lmstudio.base_url"]);
+  const [localApiKey, setLocalApiKey] = useState(settings["lmstudio.api_key"]);
   const [testing, setTesting] = useState(false);
   const [backups, setBackups] = useState<BackupInfo[]>([]);
   const [backupBusy, setBackupBusy] = useState(false);
   const [cloneBusy, setCloneBusy] = useState(false);
   const [projectMsg, setProjectMsg] = useState<string | null>(null);
 
-  useEffect(() => setLocalUrl(settings["lmstudio.base_url"]), [settings, openSetting]);
+  useEffect(() => {
+    setLocalUrl(settings["lmstudio.base_url"]);
+    setLocalApiKey(settings["lmstudio.api_key"]);
+  }, [settings, openSetting]);
 
   useEffect(() => {
     if (openSetting) {
@@ -80,6 +84,7 @@ export function Settings({ open: openSetting, onClose, settings, onUpdate, lm, o
     setTesting(true);
     try {
       await onUpdate("lmstudio.base_url", localUrl);
+      await onUpdate("lmstudio.api_key", localApiKey);
       await onTest(localUrl);
     } finally {
       setTesting(false);
@@ -139,6 +144,18 @@ export function Settings({ open: openSetting, onClose, settings, onUpdate, lm, o
                     onChange={(e) => setLocalUrl(e.target.value)}
                     placeholder="http://127.0.0.1:1234/v1"
                     hint="Loopback only — Fangio refuses any non-localhost host."
+                  />
+
+                  <TextField
+                    label="API key"
+                    value={localApiKey}
+                    mono
+                    type="password"
+                    autoComplete="off"
+                    onChange={(e) => setLocalApiKey(e.target.value)}
+                    onBlur={() => onUpdate("lmstudio.api_key", localApiKey)}
+                    placeholder="Optional — leave blank if your server doesn't require one"
+                    hint="Sent as a Bearer token. Most local servers (LM Studio, Ollama) don't need this."
                   />
 
                   <div className="flex items-center gap-3">

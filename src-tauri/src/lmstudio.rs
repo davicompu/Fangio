@@ -117,7 +117,17 @@ fn http_client() -> Result<Client> {
         .build()?)
 }
 
-pub async fn list_models(base_url: &str) -> Result<Vec<LmModel>> {
+fn apply_auth(
+    req: reqwest::RequestBuilder,
+    api_key: Option<&str>,
+) -> reqwest::RequestBuilder {
+    match api_key.filter(|k| !k.is_empty()) {
+        Some(key) => req.header("Authorization", format!("Bearer {key}")),
+        None => req,
+    }
+}
+
+pub async fn list_models(base_url: &str, api_key: Option<&str>) -> Result<Vec<LmModel>> {
     let mut url = ensure_loopback(base_url)?;
     // OpenAI-compat: /v1/models
     if !url.path().ends_with("/models") {
@@ -125,7 +135,7 @@ pub async fn list_models(base_url: &str) -> Result<Vec<LmModel>> {
         url.set_path(&path);
     }
     let client = http_client()?;
-    let resp = client.get(url).send().await?;
+    let resp = apply_auth(client.get(url), api_key).send().await?;
     if !resp.status().is_success() {
         return Err(anyhow!("models endpoint returned {}", resp.status()));
     }
@@ -157,6 +167,7 @@ pub async fn chat(
     model: &str,
     messages: &[ChatMessage],
     temperature: Option<f32>,
+    api_key: Option<&str>,
 ) -> Result<ChatResult> {
     let mut url = ensure_loopback(base_url)?;
     if !url.path().ends_with("/chat/completions") {
@@ -172,7 +183,7 @@ pub async fn chat(
         stream: false,
     };
     let started = Instant::now();
-    let resp = client.post(url).json(&body).send().await?;
+    let resp = apply_auth(client.post(url).json(&body), api_key).send().await?;
     if !resp.status().is_success() {
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
@@ -195,7 +206,7 @@ pub async fn chat(
     })
 }
 
-pub async fn embed(base_url: &str, model: &str, inputs: &[&str]) -> Result<Vec<Vec<f32>>> {
+pub async fn embed(base_url: &str, model: &str, inputs: &[&str], api_key: Option<&str>) -> Result<Vec<Vec<f32>>> {
     let mut url = ensure_loopback(base_url)?;
     if !url.path().ends_with("/embeddings") {
         let path = url.path().trim_end_matches('/').to_string() + "/embeddings";
@@ -206,7 +217,7 @@ pub async fn embed(base_url: &str, model: &str, inputs: &[&str]) -> Result<Vec<V
         model,
         input: inputs.to_vec(),
     };
-    let resp = client.post(url).json(&body).send().await?;
+    let resp = apply_auth(client.post(url).json(&body), api_key).send().await?;
     if !resp.status().is_success() {
         return Err(anyhow!("embeddings returned {}", resp.status()));
     }

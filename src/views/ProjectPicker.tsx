@@ -139,6 +139,16 @@ export function ProjectPicker({ onProjectOpened }: ProjectPickerProps) {
               <div className="flex items-center gap-3 mb-4">
                 <span className="eyebrow">Recent reviews</span>
                 <div className="flex-1 hairline" />
+                <button
+                  type="button"
+                  onClick={async () => {
+                    await api.clearRecentProjects();
+                    setRecents([]);
+                  }}
+                  className="text-[11px] text-[var(--color-paper-500)] hover:text-[var(--color-ink-700)] transition-paper"
+                >
+                  Clear all
+                </button>
               </div>
               <div className="space-y-1">
                 <AnimatePresence initial={false}>
@@ -268,6 +278,18 @@ function RecentRow({
   onForget: (e: React.MouseEvent) => void;
   disabled?: boolean;
 }) {
+  const { meta, available } = project;
+  const detail = [
+    meta.domain,
+    meta.framework,
+    meta.current_stage ? `Stage: ${meta.current_stage}` : null,
+    meta.article_count != null && meta.article_count > 0
+      ? `${meta.article_count} article${meta.article_count === 1 ? "" : "s"}`
+      : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
   return (
     <motion.div
       initial={{ opacity: 0, x: -8 }}
@@ -279,8 +301,13 @@ function RecentRow({
       <button
         type="button"
         onClick={onClick}
-        disabled={disabled}
-        className="w-full text-left flex items-center gap-4 px-4 py-3 rounded-[var(--radius-sm)] hover:bg-[var(--color-paper-100)] transition-paper disabled:opacity-50"
+        disabled={disabled || !available}
+        className={cn(
+          "w-full text-left flex items-center gap-4 px-4 py-3 rounded-[var(--radius-sm)] transition-paper disabled:opacity-50",
+          available
+            ? "hover:bg-[var(--color-paper-100)]"
+            : "opacity-50 cursor-not-allowed",
+        )}
       >
         <Sparkle size={16} strokeWidth={1.5} className="shrink-0 text-[var(--color-paper-500)]" />
         <div className="flex-1 min-w-0">
@@ -288,12 +315,25 @@ function RecentRow({
             <span className="font-medium text-[14px] text-[var(--color-ink-800)] truncate">
               {project.name}
             </span>
+            {meta.slr_type && (
+              <span className="text-[11px] text-[var(--color-paper-500)] shrink-0">
+                {meta.slr_type}
+              </span>
+            )}
             <span className="text-[11px] text-[var(--color-paper-500)] tabular-nums shrink-0">
               {formatRelative(project.last_opened)}
             </span>
           </div>
-          <div className="font-mono text-[11px] text-[var(--color-paper-500)] truncate">
+          {detail && (
+            <div className="text-[12px] text-[var(--color-paper-600)] truncate mt-0.5">
+              {detail}
+            </div>
+          )}
+          <div className="font-mono text-[11px] text-[var(--color-paper-500)] truncate mt-0.5">
             {project.path}
+            {!available && (
+              <span className="ml-2 text-[var(--color-accent-600)]">(not found on this machine)</span>
+            )}
           </div>
         </div>
         <button
