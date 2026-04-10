@@ -20,6 +20,7 @@ function App() {
     updateSetting,
     lm,
     checkLmStudio,
+    refreshProject,
     loading,
   } = useAppState();
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -69,6 +70,7 @@ function App() {
             <StageHub
               project={project}
               onOpenSettings={() => setSettingsOpen(true)}
+              onProjectChanged={refreshProject}
               onEnterStage={(s) => {
                 if (s === "assembling") setRoute("assembling");
                 if (s === "arranging") setRoute("arranging");

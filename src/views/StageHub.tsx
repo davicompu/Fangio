@@ -17,6 +17,7 @@ import { cn } from "../lib/utils";
 interface StageHubProps {
   project: ProjectRow;
   onOpenSettings: () => void;
+  onProjectChanged: () => void;
   onEnterStage: (stage: "assembling" | "arranging" | "assessing") => void;
 }
 
@@ -48,7 +49,7 @@ const stages = [
   },
 ];
 
-export function StageHub({ project, onOpenSettings, onEnterStage }: StageHubProps) {
+export function StageHub({ project, onOpenSettings, onProjectChanged, onEnterStage }: StageHubProps) {
   const currentStage = project.current_stage;
 
   return (
