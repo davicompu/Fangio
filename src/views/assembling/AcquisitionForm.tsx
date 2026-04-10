@@ -90,6 +90,10 @@ export function AcquisitionForm({ project, settings, onSaved, onOpenSettings }: 
     const init = () => {
       if (!panelRef.current) return;
       const rect = panelRef.current.getBoundingClientRect();
+      // Note: measured after one rAF; if called during a CSS/Framer transform the
+      // top value may be off by the animation's translateY. ResizeObserver corrects
+      // it on the next resize, but opening immediately after tab-enter animation may
+      // show a brief misalignment.
       api
         .openBrowserPanel(browserUrl, rect.left, rect.top, rect.width, rect.height, browserDb)
         .catch(() => {});
@@ -97,18 +101,20 @@ export function AcquisitionForm({ project, settings, onSaved, onOpenSettings }: 
       observer = new ResizeObserver(() => {
         if (!panelRef.current) return;
         const r = panelRef.current.getBoundingClientRect();
-        api.resizeBrowserPanel(r.left, r.top, r.width, r.height).catch(() => {});
+        api.resizeBrowserPanel(r.left, r.top, r.width, r.height).catch(console.error);
       });
       observer.observe(panelRef.current);
     };
 
-    requestAnimationFrame(init);
+    const rafId = requestAnimationFrame(init);
 
     return () => {
+      cancelAnimationFrame(rafId);
       observer?.disconnect();
       api.closeBrowserPanel().catch(() => {});
     };
-  }, [browserDb, browserUrl]); // eslint-disable-line react-hooks/exhaustive-deps
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [browserDb, browserUrl]);
 
   const save = async () => {
     setBusy(true);
@@ -403,7 +409,11 @@ export function AcquisitionForm({ project, settings, onSaved, onOpenSettings }: 
                 key={banner.id}
                 initial={{ opacity: 0, y: -6 }}
                 animate={{ opacity: 1, y: 0 }}
-                className="p-3 rounded-[var(--radius-sm)] border border-[var(--color-ok-300)] bg-[var(--color-ok-50)] flex items-center justify-between gap-3"
+                className={`p-3 rounded-[var(--radius-sm)] border flex items-center justify-between gap-3 ${
+                  banner.error
+                    ? "border-[var(--color-warn-300)] bg-[var(--color-warn-50)]"
+                    : "border-[var(--color-ok-300)] bg-[var(--color-ok-50)]"
+                }`}
               >
                 <div className="min-w-0">
                   <p className="text-[12px] font-medium text-[var(--color-ink-800)] truncate">
