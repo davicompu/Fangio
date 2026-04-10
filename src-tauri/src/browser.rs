@@ -1,7 +1,7 @@
 //! Child webview browser panel — opens an external URL inside the main window
 //! and intercepts reference file downloads (.ris, .bib, .txt, .csv).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tauri::{Emitter, Manager};
 
@@ -17,7 +17,7 @@ pub struct BrowserPanelData {
 }
 
 /// Delete all files inside the temp downloads directory (does not remove the dir itself).
-pub fn clean_temp_dir(temp_dir: &PathBuf) {
+pub fn clean_temp_dir(temp_dir: &Path) {
     if let Ok(entries) = std::fs::read_dir(temp_dir) {
         for entry in entries.flatten() {
             let _ = std::fs::remove_file(entry.path());
@@ -59,7 +59,11 @@ pub fn open_panel(
             .on_download(move |_webview, event| {
                 match event {
                     tauri::webview::DownloadEvent::Requested { url, destination } => {
-                        // Extract filename from URL path
+                        // NOTE: Filename is extracted from the URL path's last segment.
+                        // Downloads where the file type is determined by query parameters
+                        // (e.g. /export?format=ris) will not be intercepted. This is a
+                        // known limitation; most academic databases include the extension
+                        // in the path (e.g. /export/references.ris).
                         let filename = url
                             .path_segments()
                             .and_then(|mut s| s.next_back())
@@ -98,6 +102,7 @@ pub fn open_panel(
                         }
                         true
                     }
+                    // DownloadEvent is #[non_exhaustive]; default to allowing unknown variants
                     _ => true,
                 }
             }),

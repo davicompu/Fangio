@@ -113,7 +113,18 @@ fn check_project_lock(path: String) -> Option<lockfile::LockInfo> {
 }
 
 #[tauri::command]
-async fn close_project(state: State<'_, AppState>) -> Result<(), String> {
+async fn close_project(
+    state: State<'_, AppState>,
+    browser: State<'_, browser::BrowserState>,
+) -> Result<(), String> {
+    // Close any open browser panel so it doesn't outlive the project
+    {
+        let mut guard = browser.panel.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(panel) = guard.take() {
+            browser::clean_temp_dir(&panel.temp_dir);
+            let _ = panel.webview.close();
+        }
+    }
     if let Some(db) = state.current().await {
         lockfile::release(&db.workspace);
     }
@@ -1148,7 +1159,7 @@ async fn open_browser_panel(
 
     // Close any existing panel first
     {
-        let mut guard = browser.panel.lock().map_err(|e| e.to_string())?;
+        let mut guard = browser.panel.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(existing) = guard.take() {
             browser::clean_temp_dir(&existing.temp_dir);
             let _ = existing.webview.close();
@@ -1166,7 +1177,7 @@ async fn open_browser_panel(
         source_database,
     )?;
 
-    let mut guard = browser.panel.lock().map_err(|e| e.to_string())?;
+    let mut guard = browser.panel.lock().unwrap_or_else(|e| e.into_inner());
     *guard = Some(panel_data);
     Ok(())
 }
@@ -1179,7 +1190,7 @@ fn resize_browser_panel(
     height: f64,
     browser: State<'_, browser::BrowserState>,
 ) -> Result<(), String> {
-    let guard = browser.panel.lock().map_err(|e| e.to_string())?;
+    let guard = browser.panel.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(ref panel) = *guard {
         panel
             .webview
@@ -1197,7 +1208,7 @@ fn resize_browser_panel(
 fn close_browser_panel(
     browser: State<'_, browser::BrowserState>,
 ) -> Result<(), String> {
-    let mut guard = browser.panel.lock().map_err(|e| e.to_string())?;
+    let mut guard = browser.panel.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(panel) = guard.take() {
         browser::clean_temp_dir(&panel.temp_dir);
         let _ = panel.webview.close();
