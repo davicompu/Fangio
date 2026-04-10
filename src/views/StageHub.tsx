@@ -223,17 +223,19 @@ export function StageHub({ project, onOpenSettings, onProjectChanged, onEnterSta
                 <Button onClick={handleCancel} disabled={saving} variant="ghost" size="sm">
                   Cancel
                 </Button>
-                {savedAt && (
-                  <motion.span
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    className="text-[12px] text-[var(--color-ok-500)]"
-                  >
-                    Saved to decision log
-                  </motion.span>
-                )}
               </div>
             </div>
+          )}
+
+          {/* Save confirmation — shown in read-only mode after a successful save */}
+          {savedAt && !editing && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              className="mt-4 text-[12px] text-[var(--color-ok-500)]"
+            >
+              Saved to decision log
+            </motion.div>
           )}
         </Card>
       </div>
