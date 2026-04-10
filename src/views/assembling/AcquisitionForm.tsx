@@ -6,10 +6,13 @@ import { Card } from "../../components/ui/Card";
 import { TextField, TextArea } from "../../components/ui/TextField";
 import { Button } from "../../components/ui/Button";
 import { QuerySuggestionModal } from "../../components/QuerySuggestionModal";
+import type { AppSettings } from "../../lib/useAppState";
 
 interface Props {
   project: ProjectRow;
+  settings: AppSettings;
   onSaved: () => void;
+  onOpenSettings: () => void;
 }
 
 const DATABASES = [
@@ -23,7 +26,7 @@ const DATABASES = [
   { id: "sciencedirect", label: "ScienceDirect", note: "Elsevier journals" },
 ];
 
-export function AcquisitionForm({ project, onSaved }: Props) {
+export function AcquisitionForm({ project, settings: _settings, onSaved, onOpenSettings: _onOpenSettings }: Props) {
   const [databases, setDatabases] = useState<Set<string>>(
     () => new Set<string>(project.databases ? (JSON.parse(project.databases) as string[]) : []),
   );

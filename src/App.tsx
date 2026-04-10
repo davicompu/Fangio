@@ -87,7 +87,12 @@ function App() {
             exit={{ opacity: 0 }}
             transition={{ duration: 0.35 }}
           >
-            <AssemblingStage project={project} onLeaveStage={() => setRoute("hub")} />
+            <AssemblingStage
+              project={project}
+              settings={settings}
+              onLeaveStage={() => setRoute("hub")}
+              onOpenSettings={() => setSettingsOpen(true)}
+            />
           </motion.div>
         )}
         {project && project.onboarding_complete && route === "arranging" && (

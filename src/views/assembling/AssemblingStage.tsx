@@ -10,6 +10,7 @@ import {
   ShieldCheck,
 } from "lucide-react";
 import { api, type AssemblingState, type ProjectRow } from "../../lib/api";
+import type { AppSettings } from "../../lib/useAppState";
 import { cn } from "../../lib/utils";
 import { ImportPanel } from "./ImportPanel";
 import { ArticleLibrary } from "./ArticleLibrary";
@@ -19,7 +20,9 @@ import { CheckpointGate } from "./CheckpointGate";
 
 interface AssemblingStageProps {
   project: ProjectRow;
+  settings: AppSettings;
   onLeaveStage: () => void;
+  onOpenSettings: () => void;
 }
 
 type Tab = "acquisition" | "import" | "library" | "dedup" | "checkpoint";
@@ -62,7 +65,7 @@ const tabs: { id: Tab; label: string; eyebrow: string; icon: any; description: s
   },
 ];
 
-export function AssemblingStage({ project, onLeaveStage }: AssemblingStageProps) {
+export function AssemblingStage({ project, settings, onLeaveStage, onOpenSettings }: AssemblingStageProps) {
   const [tab, setTab] = useState<Tab>("acquisition");
   const [assembling, setAssembling] = useState<AssemblingState | null>(null);
   const [refreshTick, setRefreshTick] = useState(0);
@@ -144,7 +147,12 @@ export function AssemblingStage({ project, onLeaveStage }: AssemblingStageProps)
             transition={{ duration: 0.25, ease: [0.2, 0.7, 0.2, 1] }}
           >
             {tab === "acquisition" && (
-              <AcquisitionForm project={project} onSaved={onChanged} />
+              <AcquisitionForm
+                project={project}
+                settings={settings}
+                onSaved={onChanged}
+                onOpenSettings={onOpenSettings}
+              />
             )}
             {tab === "import" && <ImportPanel onCommitted={onChanged} />}
             {tab === "library" && (
