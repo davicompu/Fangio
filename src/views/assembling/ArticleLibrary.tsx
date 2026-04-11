@@ -9,7 +9,7 @@ import {
   type SortingState,
 } from "@tanstack/react-table";
 import { AnimatePresence, motion } from "framer-motion";
-import { ArrowUpDown, Check, ExternalLink, Library, Loader2, Search, Star, X } from "lucide-react";
+import { ArrowUpDown, Check, ExternalLink, Library, Loader2, Save, Search, Star, Tags, X } from "lucide-react";
 import { api, type ArticleRow, type JournalRow } from "../../lib/api";
 import { cn } from "../../lib/utils";
 
@@ -193,6 +193,283 @@ function QuickRateModal({
   );
 }
 
+// ── Bulk-rate modal ───────────────────────────────────────────────────────────
+
+type Draft = { abs_rating: string; abdc_rating: string; impact: string };
+
+function BulkRateModal({
+  journals: scopeJournals,
+  uniqueJournals,
+  onSaved,
+  onClose,
+}: {
+  journals: JournalRow[];
+  uniqueJournals: string[];       // distinct journal names from articles
+  onSaved: () => void;
+  onClose: () => void;
+}) {
+  const journalMap = useMemo(() => {
+    const m = new Map<string, JournalRow>();
+    for (const j of scopeJournals) m.set(normalizeJournal(j.name), j);
+    return m;
+  }, [scopeJournals]);
+
+  // Initialise drafts from scope list
+  const initial = useMemo<Record<string, Draft>>(() => {
+    const out: Record<string, Draft> = {};
+    for (const name of uniqueJournals) {
+      const existing = journalMap.get(normalizeJournal(name));
+      out[name] = {
+        abs_rating: existing?.abs_rating ?? "",
+        abdc_rating: existing?.abdc_rating ?? "",
+        impact: existing?.impact_factor?.toString() ?? "",
+      };
+    }
+    return out;
+  }, [uniqueJournals, journalMap]);
+
+  const [drafts, setDrafts] = useState<Record<string, Draft>>(initial);
+  const [filterText, setFilterText] = useState("");
+  const [showUnratedOnly, setShowUnratedOnly] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const overlayRef = useRef<HTMLDivElement>(null);
+
+  const setField = (name: string, field: keyof Draft, value: string) =>
+    setDrafts((prev) => ({ ...prev, [name]: { ...prev[name], [field]: value } }));
+
+  const visible = useMemo(() => {
+    return uniqueJournals.filter((name) => {
+      if (filterText && !name.toLowerCase().includes(filterText.toLowerCase())) return false;
+      if (showUnratedOnly) {
+        const d = drafts[name];
+        if (d.abs_rating || d.abdc_rating || d.impact) return false;
+      }
+      return true;
+    });
+  }, [uniqueJournals, filterText, showUnratedOnly, drafts]);
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      for (const name of uniqueJournals) {
+        const d = drafts[name];
+        const existing = journalMap.get(normalizeJournal(name));
+        const hasAny = d.abs_rating || d.abdc_rating || d.impact;
+        const changed =
+          d.abs_rating !== (existing?.abs_rating ?? "") ||
+          d.abdc_rating !== (existing?.abdc_rating ?? "") ||
+          d.impact !== (existing?.impact_factor?.toString() ?? "");
+        if (!hasAny && !existing) continue;   // nothing to save
+        if (!changed) continue;               // no change
+        await api.saveJournal({
+          id: existing?.id ?? null,
+          name,
+          issn: existing?.issn ?? null,
+          abs_rating: d.abs_rating || null,
+          abdc_rating: d.abdc_rating || null,
+          impact_factor: d.impact ? parseFloat(d.impact) : null,
+          field: existing?.field ?? null,
+        });
+      }
+      setSaved(true);
+      setTimeout(() => { onSaved(); onClose(); }, 800);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const unratedCount = uniqueJournals.filter((n) => {
+    const d = drafts[n];
+    return !d.abs_rating && !d.abdc_rating && !d.impact;
+  }).length;
+
+  return (
+    <div
+      ref={overlayRef}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/25"
+      onMouseDown={(e) => { if (e.target === overlayRef.current) onClose(); }}
+    >
+      <motion.div
+        initial={{ opacity: 0, scale: 0.97, y: 8 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.97, y: 8 }}
+        transition={{ duration: 0.18, ease: [0.2, 0.7, 0.2, 1] }}
+        className="bg-white border border-[var(--color-paper-300)] rounded-[var(--radius-md)] shadow-xl flex flex-col"
+        style={{ width: "min(860px, 95vw)", maxHeight: "85vh" }}
+      >
+        {/* Header */}
+        <div className="px-6 pt-5 pb-4 border-b border-[var(--color-paper-200)] shrink-0">
+          <div className="flex items-start justify-between mb-3">
+            <div>
+              <p className="eyebrow text-[var(--color-paper-500)] mb-1">Library</p>
+              <h2 className="font-serif text-[20px] tracking-tight text-[var(--color-ink-900)]">
+                Rate all journals
+              </h2>
+              <p className="text-[12px] text-[var(--color-paper-600)] mt-1">
+                {uniqueJournals.length} unique journal{uniqueJournals.length !== 1 ? "s" : ""} across your articles
+                {unratedCount > 0 && (
+                  <span className="ml-1 text-[var(--color-warn-600)]">· {unratedCount} unrated</span>
+                )}
+              </p>
+            </div>
+            <button
+              onClick={onClose}
+              className="p-1.5 rounded-[var(--radius-xs)] hover:bg-[var(--color-paper-200)] text-[var(--color-paper-500)] transition-paper"
+            >
+              <X size={14} strokeWidth={2} />
+            </button>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="relative flex-1 max-w-xs">
+              <Search size={12} strokeWidth={1.75} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--color-paper-400)] pointer-events-none" />
+              <input
+                value={filterText}
+                onChange={(e) => setFilterText(e.target.value)}
+                placeholder="Filter journals…"
+                className="w-full h-8 pl-8 pr-3 text-[12px] rounded-[var(--radius-xs)] border border-[var(--color-paper-300)] bg-[var(--color-paper-50)] text-[var(--color-ink-800)] placeholder:text-[var(--color-paper-400)] focus:outline-none focus:border-[var(--color-ink-500)] transition-paper"
+              />
+            </div>
+            <label className="inline-flex items-center gap-1.5 cursor-pointer text-[12px] text-[var(--color-paper-600)] select-none">
+              <input
+                type="checkbox"
+                checked={showUnratedOnly}
+                onChange={(e) => setShowUnratedOnly(e.target.checked)}
+                className="rounded"
+              />
+              Unrated only
+            </label>
+            <span className="text-[11px] text-[var(--color-paper-400)]">{visible.length} shown</span>
+          </div>
+        </div>
+
+        {/* Table */}
+        <div className="overflow-y-auto flex-1">
+          <table className="w-full text-[12px]">
+            <thead className="sticky top-0 bg-[var(--color-paper-50)] border-b border-[var(--color-paper-200)] z-10">
+              <tr>
+                <th className="text-left px-4 py-2.5 font-medium text-[var(--color-paper-500)] eyebrow">Journal</th>
+                <th className="text-left px-3 py-2.5 font-medium text-[var(--color-paper-500)] eyebrow w-44">ABS rating</th>
+                <th className="text-left px-3 py-2.5 font-medium text-[var(--color-paper-500)] eyebrow w-44">ABDC rating</th>
+                <th className="text-left px-3 py-2.5 font-medium text-[var(--color-paper-500)] eyebrow w-28">Impact factor</th>
+              </tr>
+            </thead>
+            <tbody>
+              {visible.length === 0 ? (
+                <tr>
+                  <td colSpan={4} className="px-4 py-10 text-center text-[12px] text-[var(--color-paper-400)]">
+                    No journals match your filter.
+                  </td>
+                </tr>
+              ) : visible.map((name, i) => {
+                const d = drafts[name];
+                const existing = journalMap.get(normalizeJournal(name));
+                const rated = d.abs_rating || d.abdc_rating || d.impact;
+                return (
+                  <tr
+                    key={name}
+                    className={cn(
+                      "border-b border-[var(--color-paper-100)] last:border-b-0",
+                      i % 2 === 0 ? "bg-white" : "bg-[var(--color-paper-50)]",
+                    )}
+                  >
+                    <td className="px-4 py-2.5">
+                      <div className="flex items-center gap-1.5">
+                        {existing && (
+                          <Star size={9} strokeWidth={2} className="text-[var(--color-accent-400)] shrink-0" fill="currentColor" />
+                        )}
+                        <span className={cn("leading-snug", rated ? "text-[var(--color-ink-800)]" : "text-[var(--color-paper-600)]")}>
+                          {name}
+                        </span>
+                      </div>
+                    </td>
+                    <td className="px-3 py-2">
+                      <div className="flex gap-1 flex-wrap">
+                        {["", ...ABS_RATINGS].map((r) => (
+                          <button
+                            key={r || "none"}
+                            type="button"
+                            onClick={() => setField(name, "abs_rating", r)}
+                            className={cn(
+                              "px-1.5 py-0.5 text-[10px] rounded-[3px] border transition-paper",
+                              d.abs_rating === r
+                                ? "bg-[var(--color-ink-700)] text-white border-[var(--color-ink-700)]"
+                                : "border-[var(--color-paper-300)] text-[var(--color-paper-600)] hover:border-[var(--color-paper-500)]"
+                            )}
+                          >
+                            {r || "—"}
+                          </button>
+                        ))}
+                      </div>
+                    </td>
+                    <td className="px-3 py-2">
+                      <div className="flex gap-1 flex-wrap">
+                        {["", ...ABDC_RATINGS].map((r) => (
+                          <button
+                            key={r || "none"}
+                            type="button"
+                            onClick={() => setField(name, "abdc_rating", r)}
+                            className={cn(
+                              "px-1.5 py-0.5 text-[10px] rounded-[3px] border transition-paper",
+                              d.abdc_rating === r
+                                ? "bg-[var(--color-ink-700)] text-white border-[var(--color-ink-700)]"
+                                : "border-[var(--color-paper-300)] text-[var(--color-paper-600)] hover:border-[var(--color-paper-500)]"
+                            )}
+                          >
+                            {r || "—"}
+                          </button>
+                        ))}
+                      </div>
+                    </td>
+                    <td className="px-3 py-2">
+                      <input
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        value={d.impact}
+                        onChange={(e) => setField(name, "impact", e.target.value)}
+                        placeholder="—"
+                        className="w-20 h-7 px-2 font-mono text-[11px] rounded-[var(--radius-xs)] border border-[var(--color-paper-300)] bg-white text-[var(--color-ink-800)] placeholder:text-[var(--color-paper-300)] focus:outline-none focus:border-[var(--color-ink-500)] transition-paper"
+                      />
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Footer */}
+        <div className="px-6 py-4 border-t border-[var(--color-paper-200)] flex items-center gap-3 shrink-0">
+          <button
+            onClick={handleSave}
+            disabled={saving || saved}
+            className="inline-flex items-center gap-1.5 px-4 py-2 text-[12px] font-medium rounded-[var(--radius-sm)] bg-[var(--color-ink-800)] text-white hover:bg-[var(--color-ink-700)] disabled:opacity-60 transition-paper"
+          >
+            {saving ? (
+              <Loader2 size={12} className="animate-spin" />
+            ) : saved ? (
+              <Check size={12} strokeWidth={2.5} />
+            ) : (
+              <Save size={12} strokeWidth={2} />
+            )}
+            {saving ? "Saving…" : saved ? "Saved!" : "Save all changes"}
+          </button>
+          <button
+            onClick={onClose}
+            className="px-4 py-2 text-[12px] text-[var(--color-paper-600)] hover:text-[var(--color-ink-800)] transition-paper"
+          >
+            Cancel
+          </button>
+          <span className="ml-auto text-[11px] text-[var(--color-paper-400)]">
+            Only journals with changed ratings are written to the scope list.
+          </span>
+        </div>
+      </motion.div>
+    </div>
+  );
+}
+
 export function ArticleLibrary({ refreshKey, onChanged }: Props) {
   const [data, setData] = useState<ArticleRow[]>([]);
   const [journals, setJournals] = useState<JournalRow[]>([]);
@@ -202,6 +479,19 @@ export function ArticleLibrary({ refreshKey, onChanged }: Props) {
   ]);
   const [loading, setLoading] = useState(true);
   const [ratingArticle, setRatingArticle] = useState<ArticleRow | null>(null);
+  const [bulkRating, setBulkRating] = useState(false);
+
+  const uniqueJournals = useMemo(() => {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const a of data) {
+      if (a.journal && !seen.has(a.journal)) {
+        seen.add(a.journal);
+        out.push(a.journal);
+      }
+    }
+    return out.sort((a, b) => a.localeCompare(b));
+  }, [data]);
 
   const journalMap = useMemo(() => {
     const m = new Map<string, JournalRow>();
@@ -428,6 +718,13 @@ export function ArticleLibrary({ refreshKey, onChanged }: Props) {
         <div className="text-[12px] text-[var(--color-paper-500)] tabular-nums">
           {table.getFilteredRowModel().rows.length} of {data.length}
         </div>
+        <button
+          onClick={() => setBulkRating(true)}
+          className="ml-auto inline-flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-medium rounded-[var(--radius-sm)] border border-[var(--color-paper-300)] text-[var(--color-paper-700)] hover:border-[var(--color-ink-400)] hover:text-[var(--color-ink-800)] bg-white transition-paper"
+        >
+          <Tags size={12} strokeWidth={1.75} />
+          Rate all journals
+        </button>
       </div>
 
       <div className="border border-[var(--color-paper-200)] rounded-[var(--radius-md)] overflow-hidden bg-[var(--color-paper-50)]">
@@ -473,6 +770,21 @@ export function ArticleLibrary({ refreshKey, onChanged }: Props) {
           </tbody>
         </table>
       </div>
+
+      {/* ── Bulk-rate modal ────────────────────────────────────────────── */}
+      <AnimatePresence>
+        {bulkRating && (
+          <BulkRateModal
+            journals={journals}
+            uniqueJournals={uniqueJournals}
+            onSaved={() => {
+              api.listJournals().then(setJournals);
+              onChanged();
+            }}
+            onClose={() => setBulkRating(false)}
+          />
+        )}
+      </AnimatePresence>
 
       {/* ── Quick-rate modal ───────────────────────────────────────────── */}
       <AnimatePresence>
