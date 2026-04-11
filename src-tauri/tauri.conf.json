@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Fangio",
+  "productName": "Carta",
   "version": "0.1.0",
-  "identifier": "dev.fangio.app",
+  "identifier": "dev.carta.app",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Fangio",
+        "title": "Carta",
         "width": 1440,
         "height": 900,
         "minWidth": 1080,
@@ -35,7 +35,7 @@
     "targets": "all",
     "category": "Productivity",
     "shortDescription": "Systematic literature reviews, conducted with rigor and on your own machine.",
-    "longDescription": "Fangio is a desktop application for conducting systematic literature reviews following the SPAR-4-SLR protocol and PRISMA 2020 guidelines. All inference runs on your local machine via LM Studio; nothing about your research leaves your laptop unless you explicitly enable an institutional database connector.",
+    "longDescription": "Carta is a desktop application for conducting systematic literature reviews following the SPAR-4-SLR protocol and PRISMA 2020 guidelines. All inference runs on your local machine via LM Studio; nothing about your research leaves your laptop unless you explicitly enable an institutional database connector.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

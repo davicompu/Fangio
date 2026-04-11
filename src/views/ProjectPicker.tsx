@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { api, type ProjectRow, type RecentProject } from "../lib/api";
 import { formatRelative, cn } from "../lib/utils";
+import cartaMark from "../assets/carta_mark.png";
 
 interface ProjectPickerProps {
   onProjectOpened: (p: ProjectRow) => void;
@@ -45,7 +46,7 @@ export function ProjectPicker({ onProjectOpened }: ProjectPickerProps) {
     const dir = await open({
       directory: true,
       multiple: false,
-      title: "Open an existing Fangio project",
+      title: "Open an existing Carta project",
     });
     if (!dir || Array.isArray(dir)) return;
     setBusy(true);
@@ -93,11 +94,20 @@ export function ProjectPicker({ onProjectOpened }: ProjectPickerProps) {
             transition={{ duration: 0.6, ease: [0.2, 0.7, 0.2, 1] }}
             className="mb-14"
           >
-            <div className="flex items-baseline gap-3 mb-3">
-              <h1 className="font-serif text-[44px] tracking-tight leading-none text-[var(--color-ink-900)]">
-                Fangio
-              </h1>
-              <span className="eyebrow">Research workshop · v0.1</span>
+            <div className="flex items-center gap-4 mb-3">
+              <img
+                src={cartaMark}
+                alt="Carta"
+                className="w-14 h-14 rounded-[var(--radius-md)] shadow-[var(--shadow-paper)]"
+              />
+              <div>
+                <div className="flex items-baseline gap-3">
+                  <h1 className="font-serif text-[44px] tracking-tight leading-none text-[var(--color-ink-900)]">
+                    Carta
+                  </h1>
+                  <span className="eyebrow">Research workshop · v0.1</span>
+                </div>
+              </div>
             </div>
             <p className="text-[15px] text-[var(--color-paper-600)] max-w-xl leading-relaxed">
               Systematic literature reviews following the SPAR-4-SLR protocol and PRISMA 2020,
@@ -182,7 +192,7 @@ export function ProjectPicker({ onProjectOpened }: ProjectPickerProps) {
                 No reviews yet.
               </p>
               <p className="text-[13px] text-[var(--color-paper-500)] max-w-sm mx-auto leading-relaxed">
-                A review is a folder. Start a new one above and Fangio will set up the
+                A review is a folder. Start a new one above and Carta will set up the
                 workspace, database, and PRISMA tracking inside it.
               </p>
             </motion.div>

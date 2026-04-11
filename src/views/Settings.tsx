@@ -133,7 +133,7 @@ export function Settings({ open: openSetting, onClose, settings, onUpdate, lm, o
                 <SectionHeader
                   icon={<Cpu size={14} strokeWidth={1.75} />}
                   title="Local inference"
-                  description="Fangio talks to a local OpenAI-compatible server (LM Studio, Ollama, llama.cpp). Nothing about your research leaves this machine."
+                  description="Carta talks to a local OpenAI-compatible server (LM Studio, Ollama, llama.cpp). Nothing about your research leaves this machine."
                 />
 
                 <div className="space-y-4 mt-5">
@@ -143,7 +143,7 @@ export function Settings({ open: openSetting, onClose, settings, onUpdate, lm, o
                     mono
                     onChange={(e) => setLocalUrl(e.target.value)}
                     placeholder="http://127.0.0.1:1234/v1"
-                    hint="Loopback only — Fangio refuses any non-localhost host."
+                    hint="Loopback only — Carta refuses any non-localhost host."
                   />
 
                   <TextField
@@ -285,7 +285,7 @@ export function Settings({ open: openSetting, onClose, settings, onUpdate, lm, o
                 <SectionHeader
                   icon={<Globe size={14} strokeWidth={1.75} />}
                   title="Database access"
-                  description="Paste the advanced-search URL for each database you have institutional access to. Fangio opens these in an in-app browser so you can run your boolean query without leaving the app. Leave empty if you don't have access."
+                  description="Paste the advanced-search URL for each database you have institutional access to. Carta opens these in an in-app browser so you can run your boolean query without leaving the app. Leave empty if you don't have access."
                 />
                 <div className="mt-5 space-y-3">
                   {([
@@ -316,7 +316,7 @@ export function Settings({ open: openSetting, onClose, settings, onUpdate, lm, o
                 <SectionHeader
                   icon={<ShieldCheck size={14} strokeWidth={1.75} />}
                   title="Network sovereignty"
-                  description="Fangio refuses to talk to anything except hosts in this allowlist."
+                  description="Carta refuses to talk to anything except hosts in this allowlist."
                 />
                 <div className="mt-4 rounded-[var(--radius-sm)] border border-[var(--color-paper-300)] bg-[var(--color-paper-100)] divide-y divide-[var(--color-paper-200)]">
                   <AllowedHost host="http://127.0.0.1:*" reason="LM Studio (default)" />

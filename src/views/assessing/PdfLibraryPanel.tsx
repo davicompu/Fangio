@@ -118,7 +118,7 @@ export function PdfLibraryPanel({ refreshKey, onChanged }: Props) {
             PDFs and the corpus index
           </h2>
           <p className="text-[13px] text-[var(--color-paper-600)] mt-1.5 max-w-xl leading-relaxed">
-            Drop in the full-text PDFs for your included articles. Fangio extracts the text
+            Drop in the full-text PDFs for your included articles. Carta extracts the text
             locally, chunks it, and embeds it via your local model so the Ask the corpus tool can
             cite real passages.
           </p>

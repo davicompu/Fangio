@@ -56,7 +56,7 @@ pub struct RecentStore {
 fn store_path() -> PathBuf {
     let base = dirs::config_dir()
         .unwrap_or_else(|| std::env::temp_dir())
-        .join("fangio");
+        .join("carta");
     std::fs::create_dir_all(&base).ok();
     base.join("recent.json")
 }
