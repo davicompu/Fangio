@@ -304,7 +304,7 @@ function BulkRateModal({
             <div>
               <p className="eyebrow text-[var(--color-paper-500)] mb-1">Library</p>
               <h2 className="font-serif text-[20px] tracking-tight text-[var(--color-ink-900)]">
-                Rate all journals
+                Rate all articles
               </h2>
               <p className="text-[12px] text-[var(--color-paper-600)] mt-1">
                 {uniqueJournals.length} unique journal{uniqueJournals.length !== 1 ? "s" : ""} across your articles
@@ -723,7 +723,7 @@ export function ArticleLibrary({ refreshKey, onChanged }: Props) {
           className="ml-auto inline-flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-medium rounded-[var(--radius-sm)] border border-[var(--color-paper-300)] text-[var(--color-paper-700)] hover:border-[var(--color-ink-400)] hover:text-[var(--color-ink-800)] bg-white transition-paper"
         >
           <Tags size={12} strokeWidth={1.75} />
-          Rate all journals
+          Rate all articles
         </button>
       </div>
 
