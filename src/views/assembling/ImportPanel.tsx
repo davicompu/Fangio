@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
+import { listen } from "@tauri-apps/api/event";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   AlertTriangle,
@@ -29,6 +30,51 @@ export function ImportPanel({ onCommitted }: Props) {
     inserted: number;
     skipped: number;
   } | null>(null);
+  const [isDragOver, setIsDragOver] = useState(false);
+
+  useEffect(() => {
+    const SUPPORTED = [".ris", ".bib", ".bibtex", ".txt", ".tsv", ".csv"];
+    let unlistenDrop: (() => void) | null = null;
+    let unlistenEnter: (() => void) | null = null;
+    let unlistenLeave: (() => void) | null = null;
+
+    listen<{ paths: string[] }>("tauri://drag-drop", async (event) => {
+      setIsDragOver(false);
+      const dropped = event.payload.paths.find((p) =>
+        SUPPORTED.some((ext) => p.toLowerCase().endsWith(ext))
+      );
+      if (!dropped) {
+        setError("Unsupported file type. Drop a .ris, .bib, .txt (WoS), or .csv (Scopus) file.");
+        return;
+      }
+      setError(null);
+      setCommitted(null);
+      setFilePath(dropped);
+      setBusy(true);
+      try {
+        const p = await api.parsePreview(dropped);
+        setPreview(p);
+        if (!database) {
+          if (p.format === "scopus-csv") setDatabase("Scopus");
+          else if (p.format === "wos-tab") setDatabase("Web of Science");
+          else setDatabase("");
+        }
+      } catch (e: any) {
+        setError(e?.message || String(e));
+      } finally {
+        setBusy(false);
+      }
+    }).then((fn) => { unlistenDrop = fn; });
+
+    listen("tauri://drag-enter", () => setIsDragOver(true)).then((fn) => { unlistenEnter = fn; });
+    listen("tauri://drag-leave", () => setIsDragOver(false)).then((fn) => { unlistenLeave = fn; });
+
+    return () => {
+      unlistenDrop?.();
+      unlistenEnter?.();
+      unlistenLeave?.();
+    };
+  }, []);
 
   const pickFile = async () => {
     setError(null);
@@ -93,7 +139,7 @@ export function ImportPanel({ onCommitted }: Props) {
     <div className="grid grid-cols-[1fr_320px] gap-10 max-w-6xl">
       <div>
         {!preview && (
-          <Dropzone onPick={pickFile} busy={busy} />
+          <Dropzone onPick={pickFile} busy={busy} isDragOver={isDragOver} />
         )}
 
         <AnimatePresence>
@@ -269,13 +315,18 @@ export function ImportPanel({ onCommitted }: Props) {
   );
 }
 
-function Dropzone({ onPick, busy }: { onPick: () => void; busy: boolean }) {
+function Dropzone({ onPick, busy, isDragOver }: { onPick: () => void; busy: boolean; isDragOver: boolean }) {
   return (
     <button
       type="button"
       onClick={onPick}
       disabled={busy}
-      className="w-full p-12 border-2 border-dashed border-[var(--color-paper-300)] rounded-[var(--radius-lg)] bg-[var(--color-paper-50)] hover:bg-white hover:border-[var(--color-paper-500)] transition-paper text-center group disabled:opacity-50"
+      className={
+        "w-full p-12 border-2 border-dashed rounded-[var(--radius-lg)] transition-paper text-center group disabled:opacity-50 " +
+        (isDragOver
+          ? "border-[var(--color-ink-700)] bg-[var(--color-paper-100)] ring-2 ring-[var(--color-ink-700)]/20"
+          : "border-[var(--color-paper-300)] bg-[var(--color-paper-50)] hover:bg-white hover:border-[var(--color-paper-500)]")
+      }
     >
       <div className="w-14 h-14 rounded-full bg-[var(--color-paper-200)] mx-auto mb-4 flex items-center justify-center group-hover:bg-[var(--color-paper-300)] transition-paper">
         {busy ? (
@@ -285,11 +336,11 @@ function Dropzone({ onPick, busy }: { onPick: () => void; busy: boolean }) {
         )}
       </div>
       <h3 className="font-serif text-[20px] tracking-tight text-[var(--color-ink-900)] mb-1">
-        {busy ? "Parsing…" : "Drop a bibliographic export"}
+        {busy ? "Parsing…" : isDragOver ? "Release to import" : "Drop a bibliographic export"}
       </h3>
       <p className="text-[13px] text-[var(--color-paper-600)] max-w-md mx-auto leading-relaxed">
-        Click to choose a file. Carta handles RIS, BibTeX, Web of Science tab-delimited, and
-        Scopus CSV.
+        Drag a file here or click to choose. Carta handles RIS, BibTeX, Web of Science
+        tab-delimited, and Scopus CSV.
       </p>
     </button>
   );

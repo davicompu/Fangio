@@ -416,17 +416,23 @@ async fn list_framework_dimensions(
     let project = db.get_project().await.map_err(err)?;
     let framework = project.framework.as_deref().unwrap_or("");
 
-    // For custom frameworks, derive dimensions from whatever the user has
-    // already coded rather than returning a hard-coded list.
+    // For custom frameworks, return the explicitly saved dimension list.
+    // Also include any dimensions that appear in code_defs but aren't in the
+    // saved list (e.g. imported from an older project).
     if framework == "Custom" {
+        let mut names: Vec<String> = project
+            .custom_dimensions
+            .as_deref()
+            .and_then(|s| serde_json::from_str::<Vec<String>>(s).ok())
+            .unwrap_or_default();
+        // Also pull any dims from code defs not already in the list
         let defs = db.list_framework_code_defs().await.map_err(err)?;
-        let mut seen: Vec<String> = Vec::new();
         for def in &defs {
-            if !seen.contains(&def.dimension) {
-                seen.push(def.dimension.clone());
+            if !names.contains(&def.dimension) {
+                names.push(def.dimension.clone());
             }
         }
-        return Ok(seen
+        return Ok(names
             .into_iter()
             .map(|d| DimensionInfo {
                 name: d,
@@ -435,12 +441,39 @@ async fn list_framework_dimensions(
             .collect());
     }
 
+    // Parse any user overrides (hidden / renamed dimensions)
+    let overrides: serde_json::Value = project
+        .dimension_overrides
+        .as_deref()
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or(serde_json::Value::Null);
+    let hidden: std::collections::HashSet<String> = overrides
+        .get("hidden")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_owned()))
+                .collect()
+        })
+        .unwrap_or_default();
+    let renamed: std::collections::HashMap<String, String> = overrides
+        .get("renamed")
+        .and_then(|v| v.as_object())
+        .map(|obj| {
+            obj.iter()
+                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_owned())))
+                .collect()
+        })
+        .unwrap_or_default();
+
     let dims = framework::dimensions_for(framework);
     Ok(dims
         .into_iter()
-        .map(|d| DimensionInfo {
-            name: d.to_string(),
-            description: framework::description_for(framework, d).to_string(),
+        .filter(|d| !hidden.contains(*d))
+        .map(|d| {
+            let name = renamed.get(d).cloned().unwrap_or_else(|| d.to_string());
+            let desc = framework::description_for(framework, d).to_string();
+            DimensionInfo { name, description: desc }
         })
         .collect())
 }

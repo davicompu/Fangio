@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
+  AlertTriangle,
   ArrowLeft,
   ArrowRight,
   Check,
@@ -14,39 +15,89 @@ import {
   api,
   type ArticleRow,
   type ExclusionCriterionRow,
+  type JournalRow,
+  type ProjectRow,
 } from "../../lib/api";
 import { Card } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
 import { cn } from "../../lib/utils";
 
 interface Props {
+  project: ProjectRow;
   refreshKey: number;
   onChanged: () => void;
 }
 
 const BATCH_SIZE = 20;
 
-export function ScreeningPanel({ refreshKey, onChanged }: Props) {
+// ABS: higher index = higher quality
+const ABS_ORDER = ["1", "2", "3", "4", "4*"];
+// ABDC: higher index = higher quality
+const ABDC_ORDER = ["C", "B", "A", "A*"];
+
+function parseJournalQuality(raw: string | null) {
+  try {
+    return raw ? (JSON.parse(raw) as { abs_min?: string; abdc_min?: string }) : {};
+  } catch {
+    return {};
+  }
+}
+
+function meetsAbsThreshold(rating: string | null | undefined, min: string): boolean {
+  if (!rating) return false;
+  return ABS_ORDER.indexOf(rating) >= ABS_ORDER.indexOf(min);
+}
+
+function meetsAbdcThreshold(rating: string | null | undefined, min: string): boolean {
+  if (!rating) return false;
+  return ABDC_ORDER.indexOf(rating) >= ABDC_ORDER.indexOf(min);
+}
+
+/** Case-insensitive journal name match, ignoring leading "The " */
+function normalizeJournal(name: string) {
+  return name.toLowerCase().replace(/^the\s+/, "").trim();
+}
+
+export function ScreeningPanel({ project, refreshKey, onChanged }: Props) {
   const [articles, setArticles] = useState<ArticleRow[]>([]);
   const [criteria, setCriteria] = useState<ExclusionCriterionRow[]>([]);
+  const [journals, setJournals] = useState<JournalRow[]>([]);
   const [offset, setOffset] = useState(0);
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const [loading, setLoading] = useState(true);
 
+  const jq = parseJournalQuality(project.journal_quality);
+
   const reload = async (off = offset) => {
     setLoading(true);
-    const [arts, crits] = await Promise.all([
+    const [arts, crits, jList] = await Promise.all([
       api.listScreeningBatch(off, BATCH_SIZE),
       api.listCriteria(),
+      api.listJournals(),
     ]);
     setArticles(arts);
-    setCriteria(crits.filter((c) => c.number > 1)); // exclude duplicate criterion (#1)
+    setCriteria(crits.filter((c) => c.number > 1));
+    setJournals(jList);
     setLoading(false);
   };
 
   useEffect(() => {
     reload();
   }, [refreshKey, offset]);
+
+  // Build a lookup map: normalised journal name → JournalRow
+  const journalMap = useMemo(() => {
+    const m = new Map<string, JournalRow>();
+    for (const j of journals) {
+      m.set(normalizeJournal(j.name), j);
+    }
+    return m;
+  }, [journals]);
+
+  const lookupJournal = (articleJournal: string | null | undefined): JournalRow | null => {
+    if (!articleJournal) return null;
+    return journalMap.get(normalizeJournal(articleJournal)) ?? null;
+  };
 
   const onDecision = async () => {
     onChanged();
@@ -63,7 +114,8 @@ export function ScreeningPanel({ refreshKey, onChanged }: Props) {
           </h2>
           <p className="text-[13px] text-[var(--color-paper-600)] mt-1.5 max-w-xl leading-relaxed">
             For each article: keep it (and it joins the included pool), or apply an exclusion
-            criterion. Already-decided articles show their decision; click <RotateCcw size={11} className="inline -mt-0.5" /> to revert.
+            criterion. Already-decided articles show their decision; click{" "}
+            <RotateCcw size={11} className="inline -mt-0.5" /> to revert.
           </p>
         </div>
         <div className="flex items-center gap-1">
@@ -115,6 +167,8 @@ export function ScreeningPanel({ refreshKey, onChanged }: Props) {
             key={a.id}
             article={a}
             criteria={criteria}
+            journalMatch={lookupJournal(a.journal)}
+            jq={jq}
             expanded={expanded.has(a.id)}
             onToggle={() => {
               setExpanded((s) => {
@@ -135,12 +189,16 @@ export function ScreeningPanel({ refreshKey, onChanged }: Props) {
 function ScreeningCard({
   article,
   criteria,
+  journalMatch,
+  jq,
   expanded,
   onToggle,
   onDecision,
 }: {
   article: ArticleRow;
   criteria: ExclusionCriterionRow[];
+  journalMatch: JournalRow | null;
+  jq: { abs_min?: string; abdc_min?: string };
   expanded: boolean;
   onToggle: () => void;
   onDecision: () => Promise<void>;
@@ -148,6 +206,11 @@ function ScreeningCard({
   const [busy, setBusy] = useState(false);
   const isIncluded = article.status === "included";
   const isDecided = isIncluded;
+
+  // Determine journal quality status
+  const absFails = jq.abs_min && !meetsAbsThreshold(journalMatch?.abs_rating, jq.abs_min);
+  const abdcFails = jq.abdc_min && !meetsAbdcThreshold(journalMatch?.abdc_rating, jq.abdc_min);
+  const qualityFlagged = absFails || abdcFails;
 
   const keep = async () => {
     setBusy(true);
@@ -184,6 +247,7 @@ function ScreeningCard({
       className={cn(
         "p-5",
         isDecided && "bg-[var(--color-ok-500)]/5 border-[var(--color-ok-500)]/30",
+        qualityFlagged && !isDecided && "border-[var(--color-warn-500)]/40",
       )}
     >
       <div className="flex items-start gap-4">
@@ -198,11 +262,56 @@ function ScreeningCard({
             {article.authors && <span className="line-clamp-1">{article.authors}</span>}
             {article.year && <span className="font-mono tabular-nums">{article.year}</span>}
           </div>
+
+          {/* Journal line with quality badges */}
           {article.journal && (
-            <div className="text-[11px] italic text-[var(--color-paper-500)] line-clamp-1 mt-0.5">
-              {article.journal}
+            <div className="mt-1 flex items-center gap-2 flex-wrap">
+              <span className="text-[11px] italic text-[var(--color-paper-500)]">
+                {article.journal}
+              </span>
+              {journalMatch ? (
+                <div className="flex items-center gap-1">
+                  {journalMatch.abs_rating && (
+                    <JournalBadge
+                      label="ABS"
+                      value={journalMatch.abs_rating}
+                      flagged={!!absFails}
+                    />
+                  )}
+                  {journalMatch.abdc_rating && (
+                    <JournalBadge
+                      label="ABDC"
+                      value={journalMatch.abdc_rating}
+                      flagged={!!abdcFails}
+                    />
+                  )}
+                </div>
+              ) : (
+                article.journal && (jq.abs_min || jq.abdc_min) && (
+                  <span className="text-[10px] text-[var(--color-paper-400)] italic">
+                    not in journal list
+                  </span>
+                )
+              )}
             </div>
           )}
+
+          {/* Quality warning */}
+          {qualityFlagged && !isDecided && (
+            <div className="mt-2 flex items-center gap-1.5 text-[11px] text-[var(--color-warn-600)]">
+              <AlertTriangle size={11} strokeWidth={1.75} />
+              <span>
+                Below quality threshold —{" "}
+                {[
+                  absFails && `ABS min ${jq.abs_min}`,
+                  abdcFails && `ABDC min ${jq.abdc_min}`,
+                ]
+                  .filter(Boolean)
+                  .join(", ")}
+              </span>
+            </div>
+          )}
+
           <button
             onClick={onToggle}
             className="mt-2 text-[11px] text-[var(--color-ink-600)] hover:text-[var(--color-ink-900)] font-medium inline-flex items-center gap-1"
@@ -261,5 +370,28 @@ function ScreeningCard({
         )}
       </div>
     </Card>
+  );
+}
+
+function JournalBadge({
+  label,
+  value,
+  flagged,
+}: {
+  label: string;
+  value: string;
+  flagged: boolean;
+}) {
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center gap-1 px-1.5 py-px rounded text-[10px] font-semibold font-mono",
+        flagged
+          ? "bg-[var(--color-warn-500)]/15 text-[var(--color-warn-600)] border border-[var(--color-warn-500)]/30"
+          : "bg-[var(--color-paper-100)] text-[var(--color-paper-600)] border border-[var(--color-paper-300)]",
+      )}
+    >
+      {label} {value}
+    </span>
   );
 }

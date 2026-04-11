@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
+  AlertTriangle,
   ArrowLeft,
   ArrowRight,
+  Ban,
   Check,
   ChevronDown,
   ChevronUp,
@@ -26,6 +28,7 @@ import {
   type ArticleRow,
   type CodingRow,
   type DimensionInfo,
+  type FrameworkCodeDefinition,
   type ProjectRow,
   type Suggestion,
 } from "../../lib/api";
@@ -39,7 +42,7 @@ interface Props {
   onChanged: () => void;
 }
 
-type Filter = "all" | "uncoded" | "coded" | "with-pdf" | "no-pdf";
+type Filter = "all" | "uncoded" | "coded" | "with-pdf" | "no-pdf" | "excluded";
 
 const LOAD_LIMIT = 9999;
 
@@ -47,7 +50,11 @@ export function CodingPanel({ project, refreshKey, onChanged }: Props) {
   const isCustom = project.framework === "Custom";
 
   const [dimensions, setDimensions] = useState<DimensionInfo[]>([]);
+  const [codeDefs, setCodeDefs] = useState<FrameworkCodeDefinition[]>([]);
   const [articles, setArticles] = useState<ArticleRow[]>([]);
+  const [excludedArticles, setExcludedArticles] = useState<ArticleRow[]>([]);
+  const [criteria, setCriteria] = useState<import("../../lib/api").ExclusionCriterionRow[]>([]);
+  const [unreviewedCount, setUnreviewedCount] = useState(0);
   const [codings, setCodings] = useState<CodingRow[]>([]);
   const [pdfMap, setPdfMap] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
@@ -55,10 +62,6 @@ export function CodingPanel({ project, refreshKey, onChanged }: Props) {
   const [scanMsg, setScanMsg] = useState<string | null>(null);
   const [showNamingHint, setShowNamingHint] = useState(false);
 
-  // Custom framework: draft dimensions the user has named but not yet coded
-  const [draftDims, setDraftDims] = useState<string[]>([]);
-  const [addingDim, setAddingDim] = useState(false);
-  const [newDimName, setNewDimName] = useState("");
 
   const [filter, setFilter] = useState<Filter>("all");
   const [cardIndex, setCardIndex] = useState(0);
@@ -71,14 +74,21 @@ export function CodingPanel({ project, refreshKey, onChanged }: Props) {
 
   const reload = useCallback(async () => {
     setLoading(true);
-    const [dims, batch] = await Promise.all([
+    const [dims, defs, batch, allArticles, crits] = await Promise.all([
       api.listFrameworkDimensions(),
+      api.listFrameworkCodeDefs(),
       api.listCodingBatch(0, LOAD_LIMIT),
+      api.listArticles(),
+      api.listCriteria(),
     ]);
     setDimensions(dims);
+    setCodeDefs(defs);
     setArticles(batch.articles);
     setCodings(batch.codings);
     setPdfMap(batch.pdf_map);
+    setExcludedArticles(allArticles.filter((a) => a.status === "excluded"));
+    setUnreviewedCount(allArticles.filter((a) => a.status === "retrieved").length);
+    setCriteria(crits);
     setLoading(false);
   }, []);
 
@@ -102,6 +112,7 @@ export function CodingPanel({ project, refreshKey, onChanged }: Props) {
   }, [codings]);
 
   const filtered = useMemo(() => {
+    if (filter === "excluded") return [];
     if (filter === "coded")    return articles.filter((a) => codedIds.has(a.id));
     if (filter === "uncoded")  return articles.filter((a) => !codedIds.has(a.id));
     if (filter === "with-pdf") return articles.filter((a) => !!pdfMap[String(a.id)]);
@@ -174,28 +185,7 @@ export function CodingPanel({ project, refreshKey, onChanged }: Props) {
 
   const onCodingChanged = async () => {
     onChanged();
-    const [dims] = await Promise.all([api.listFrameworkDimensions(), reload()]);
-    // Remove from draft list any dimension that now exists in the DB
-    if (isCustom) {
-      const persisted = new Set(dims.map((d) => d.name));
-      setDraftDims((prev) => prev.filter((d) => !persisted.has(d)));
-    }
-  };
-
-  const handleAddDimension = () => {
-    const name = newDimName.trim();
-    if (!name) return;
-    if (
-      dimensions.some((d) => d.name.toLowerCase() === name.toLowerCase()) ||
-      draftDims.some((d) => d.toLowerCase() === name.toLowerCase())
-    ) {
-      setNewDimName("");
-      setAddingDim(false);
-      return;
-    }
-    setDraftDims((prev) => [...prev, name]);
-    setNewDimName("");
-    setAddingDim(false);
+    await reload();
   };
 
   const handleScan = async () => {
@@ -299,50 +289,13 @@ export function CodingPanel({ project, refreshKey, onChanged }: Props) {
           <h2 className="font-serif text-[26px] tracking-tight text-[var(--color-ink-900)] mt-1">
             {project.framework}
             <span className="text-[var(--color-paper-400)] font-sans font-normal text-[18px] ml-2">
-              · {dimensions.length + draftDims.length} dimension{dimensions.length + draftDims.length !== 1 ? "s" : ""}
+              · {dimensions.length} dimension{dimensions.length !== 1 ? "s" : ""}
             </span>
           </h2>
           {isCustom && (
-            <div className="mt-3">
-              {addingDim ? (
-                <div className="flex items-center gap-2">
-                  <input
-                    autoFocus
-                    value={newDimName}
-                    onChange={(e) => setNewDimName(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") handleAddDimension();
-                      if (e.key === "Escape") { setAddingDim(false); setNewDimName(""); }
-                    }}
-                    placeholder="Dimension name, e.g. Theoretical lens"
-                    className="h-8 px-3 text-[12px] rounded-[var(--radius-xs)] border border-[var(--color-ink-400)] bg-white text-[var(--color-ink-800)] focus:outline-none w-64"
-                  />
-                  <button
-                    type="button"
-                    onClick={handleAddDimension}
-                    className="px-3 h-8 text-[12px] font-medium rounded-[var(--radius-xs)] bg-[var(--color-ink-700)] text-white hover:bg-[var(--color-ink-900)] transition-paper"
-                  >
-                    Add
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => { setAddingDim(false); setNewDimName(""); }}
-                    className="p-1.5 rounded-[var(--radius-xs)] hover:bg-[var(--color-paper-200)] transition-paper"
-                  >
-                    <X size={13} strokeWidth={2} className="text-[var(--color-paper-500)]" />
-                  </button>
-                </div>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => setAddingDim(true)}
-                  className="inline-flex items-center gap-1.5 text-[12px] font-medium text-[var(--color-ink-600)] hover:text-[var(--color-ink-900)] transition-paper"
-                >
-                  <Plus size={13} strokeWidth={2} />
-                  Add dimension
-                </button>
-              )}
-            </div>
+            <p className="text-[12px] text-[var(--color-accent-500)] mt-2">
+              Manage dimensions and starter codes in the <strong>Organisation</strong> tab.
+            </p>
           )}
         </div>
 
@@ -409,14 +362,24 @@ export function CodingPanel({ project, refreshKey, onChanged }: Props) {
         </div>
       </div>
 
+      {/* ── Unreviewed notice ──────────────────────────────────────────── */}
+      {!loading && unreviewedCount > 0 && (
+        <div className="mb-4 px-3.5 py-2.5 rounded-[var(--radius-sm)] bg-[var(--color-warn-500)]/10 border border-[var(--color-warn-500)]/30 text-[12px] text-[var(--color-warn-600)] flex items-center gap-2">
+          <AlertTriangle size={13} strokeWidth={1.75} className="shrink-0" />
+          <span>
+            <strong>{unreviewedCount}</strong> article{unreviewedCount !== 1 ? "s" : ""} haven't been screened yet — go to <strong>Screening</strong> to include or exclude them.
+          </span>
+        </div>
+      )}
+
       {/* ── Filter tabs ────────────────────────────────────────────────── */}
       <div className="flex items-center gap-1 flex-wrap mb-5">
         {([
-          { key: "all",      label: "All",      count: total },
-          { key: "uncoded",  label: "Uncoded",  count: total - codedCount },
-          { key: "coded",    label: "Coded",    count: codedCount },
-          { key: "with-pdf", label: "Has PDF",  count: withPdfCount },
-          { key: "no-pdf",   label: "No PDF",   count: total - withPdfCount },
+          { key: "all",      label: "Included",  count: total },
+          { key: "uncoded",  label: "Uncoded",   count: total - codedCount },
+          { key: "coded",    label: "Coded",     count: codedCount },
+          { key: "with-pdf", label: "Has PDF",   count: withPdfCount },
+          { key: "no-pdf",   label: "No PDF",    count: total - withPdfCount },
         ] as { key: Filter; label: string; count: number }[]).map(({ key, label, count }) => (
           <button
             key={key}
@@ -432,6 +395,24 @@ export function CodingPanel({ project, refreshKey, onChanged }: Props) {
             <span className="ml-1.5 tabular-nums text-[var(--color-paper-400)]">{count}</span>
           </button>
         ))}
+        {/* Excluded tab — separated visually */}
+        {excludedArticles.length > 0 && (
+          <>
+            <span className="mx-1 text-[var(--color-paper-300)]">|</span>
+            <button
+              onClick={() => { setFilter("excluded"); setCardIndex(0); }}
+              className={cn(
+                "px-3 py-1.5 rounded-full text-[12px] font-medium transition-paper",
+                filter === "excluded"
+                  ? "bg-[var(--color-error-500)] text-white"
+                  : "text-[var(--color-error-500)] hover:bg-[var(--color-error-500)]/10"
+              )}
+            >
+              Excluded
+              <span className="ml-1.5 tabular-nums opacity-75">{excludedArticles.length}</span>
+            </button>
+          </>
+        )}
       </div>
 
       {loading && (
@@ -441,27 +422,19 @@ export function CodingPanel({ project, refreshKey, onChanged }: Props) {
       )}
 
       {/* Custom framework: no dimensions defined yet */}
-      {!loading && isCustom && dimensions.length === 0 && draftDims.length === 0 && (
+      {!loading && isCustom && dimensions.length === 0 && (
         <div className="border border-dashed border-[var(--color-paper-300)] rounded-[var(--radius-md)] p-12 text-center mb-6">
           <Tag size={24} strokeWidth={1.5} className="text-[var(--color-paper-300)] mx-auto mb-3" />
           <p className="text-[14px] text-[var(--color-paper-700)] font-medium mb-1">
             No dimensions yet
           </p>
-          <p className="text-[13px] text-[var(--color-paper-500)] max-w-sm mx-auto leading-relaxed mb-4">
-            Click <strong>Add dimension</strong> above to define the first dimension of your custom framework — for example "Theoretical lens", "Industry", or "Methodology".
+          <p className="text-[13px] text-[var(--color-paper-500)] max-w-sm mx-auto leading-relaxed">
+            Go to the <strong>Organisation</strong> tab to define dimensions and starter codes for your custom framework.
           </p>
-          <button
-            type="button"
-            onClick={() => setAddingDim(true)}
-            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-[var(--radius-sm)] bg-[var(--color-ink-700)] text-white text-[12px] font-medium hover:bg-[var(--color-ink-900)] transition-paper"
-          >
-            <Plus size={13} strokeWidth={2} />
-            Add your first dimension
-          </button>
         </div>
       )}
 
-      {!loading && filtered.length === 0 && (
+      {!loading && filtered.length === 0 && filter !== "excluded" && (
         <div className="border border-dashed border-[var(--color-paper-300)] rounded-[var(--radius-md)] p-12 text-center">
           <p className="text-[14px] text-[var(--color-paper-700)] font-medium mb-1">
             {filter === "coded"    ? "No coded articles yet." :
@@ -475,6 +448,50 @@ export function CodingPanel({ project, refreshKey, onChanged }: Props) {
               ? "Import records in Stage 1 first, or check the Library tab."
               : `Switch to "All" to see every article.`}
           </p>
+        </div>
+      )}
+
+      {/* ── Excluded articles list ─────────────────────────────────────── */}
+      {!loading && filter === "excluded" && (
+        <div className="space-y-2">
+          {excludedArticles.length === 0 ? (
+            <div className="border border-dashed border-[var(--color-paper-300)] rounded-[var(--radius-md)] p-12 text-center">
+              <Ban size={24} strokeWidth={1.5} className="text-[var(--color-paper-300)] mx-auto mb-3" />
+              <p className="text-[14px] text-[var(--color-paper-700)] font-medium mb-1">No excluded articles</p>
+              <p className="text-[13px] text-[var(--color-paper-500)] max-w-md mx-auto leading-relaxed">
+                Articles you exclude during screening will appear here.
+              </p>
+            </div>
+          ) : (
+            excludedArticles.map((a) => {
+              const criterion = criteria.find((c) => c.number === a.exclusion_criterion);
+              return (
+                <Card key={a.id} className="p-4 border-[var(--color-error-500)]/20 bg-[var(--color-error-500)]/3">
+                  <div className="flex items-start gap-3">
+                    <div className="font-mono text-[10px] text-[var(--color-paper-400)] tabular-nums w-8 text-right shrink-0 mt-0.5">
+                      #{a.id}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <h3 className="font-serif text-[15px] leading-snug text-[var(--color-ink-800)]">
+                        {a.title}
+                      </h3>
+                      <div className="mt-1 flex items-baseline gap-3 text-[12px] text-[var(--color-paper-500)]">
+                        {a.authors && <span className="line-clamp-1">{a.authors}</span>}
+                        {a.year && <span className="font-mono tabular-nums">{a.year}</span>}
+                        {a.journal && <span className="italic">{a.journal}</span>}
+                      </div>
+                    </div>
+                    {criterion && (
+                      <div className="shrink-0 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium bg-[var(--color-error-500)]/10 text-[var(--color-error-500)] border border-[var(--color-error-500)]/20">
+                        <Ban size={10} strokeWidth={2} />
+                        #{criterion.number} {criterion.label}
+                      </div>
+                    )}
+                  </div>
+                </Card>
+              );
+            })
+          )}
         </div>
       )}
 
@@ -548,11 +565,8 @@ export function CodingPanel({ project, refreshKey, onChanged }: Props) {
                 index={cardIndex}
                 total={filtered.length}
                 article={currentArticle}
-                dimensions={[
-                  ...dimensions,
-                  ...draftDims.map((d) => ({ name: d, description: "" })),
-                ]}
-                draftDimNames={new Set(draftDims)}
+                dimensions={dimensions}
+                codeDefs={codeDefs}
                 codings={codingsByArticle.get(currentArticle.id) ?? []}
                 pdfPath={pdfMap[String(currentArticle.id)] ?? null}
                 isDragOver={cardDragOver}
@@ -565,9 +579,6 @@ export function CodingPanel({ project, refreshKey, onChanged }: Props) {
                 onBrowsePdf={() => handleBrowsePdf(currentArticle.id)}
                 onReplacePdf={() => handleReplacePdf(currentArticle.id)}
                 onChanged={onCodingChanged}
-                onRemoveDraftDim={(name) =>
-                  setDraftDims((prev) => prev.filter((d) => d !== name))
-                }
               />
             </motion.div>
           </AnimatePresence>
@@ -584,7 +595,7 @@ function ArticleCodingCard({
   total,
   article,
   dimensions,
-  draftDimNames,
+  codeDefs,
   codings,
   pdfPath,
   isDragOver,
@@ -597,13 +608,12 @@ function ArticleCodingCard({
   onBrowsePdf,
   onReplacePdf,
   onChanged,
-  onRemoveDraftDim,
 }: {
   index: number;
   total: number;
   article: ArticleRow;
   dimensions: DimensionInfo[];
-  draftDimNames: Set<string>;
+  codeDefs: FrameworkCodeDefinition[];
   codings: CodingRow[];
   pdfPath: string | null;
   isDragOver: boolean;
@@ -616,7 +626,6 @@ function ArticleCodingCard({
   onBrowsePdf: () => void;
   onReplacePdf: () => void;
   onChanged: () => Promise<void>;
-  onRemoveDraftDim: (name: string) => void;
 }) {
   const coded = codings.length > 0;
   // HTML5 drag events only used to prevent default browser drop behavior;
@@ -784,14 +793,9 @@ function ArticleCodingCard({
             key={dim.name}
             article={article}
             dimension={dim}
+            starterCodes={codeDefs.filter((d) => d.dimension === dim.name)}
             codings={codings.filter((c) => c.dimension === dim.name)}
-            isDraft={draftDimNames.has(dim.name)}
             onChanged={onChanged}
-            onRemoveDraft={
-              draftDimNames.has(dim.name)
-                ? () => onRemoveDraftDim(dim.name)
-                : undefined
-            }
           />
         ))}
       </div>
@@ -804,17 +808,15 @@ function ArticleCodingCard({
 function DimensionRow({
   article,
   dimension,
+  starterCodes,
   codings,
-  isDraft,
   onChanged,
-  onRemoveDraft,
 }: {
   article: ArticleRow;
   dimension: DimensionInfo;
+  starterCodes: FrameworkCodeDefinition[];
   codings: CodingRow[];
-  isDraft?: boolean;
   onChanged: () => Promise<void>;
-  onRemoveDraft?: () => void;
 }) {
   const [adding, setAdding] = useState(false);
   const [newCode, setNewCode] = useState("");
@@ -866,27 +868,10 @@ function DimensionRow({
   return (
     <div className="px-6 py-4 grid grid-cols-[180px_1fr_auto] gap-4 items-start">
       <div className="pt-0.5">
-        <div className="flex items-center gap-1.5">
-          <span className="text-[12px] font-semibold tracking-tight text-[var(--color-ink-800)]">
-            {dimension.name}
-          </span>
-          {isDraft && onRemoveDraft && (
-            <button
-              type="button"
-              onClick={onRemoveDraft}
-              title="Remove this dimension"
-              className="p-0.5 rounded hover:bg-[var(--color-paper-200)] transition-paper opacity-50 hover:opacity-100"
-            >
-              <X size={10} strokeWidth={2.5} className="text-[var(--color-paper-500)]" />
-            </button>
-          )}
-        </div>
-        {isDraft && (
-          <div className="text-[10px] italic text-[var(--color-accent-500)] mt-0.5">
-            Add a code to save this dimension
-          </div>
-        )}
-        {!isDraft && dimension.description && (
+        <span className="text-[12px] font-semibold tracking-tight text-[var(--color-ink-800)]">
+          {dimension.name}
+        </span>
+        {dimension.description && (
           <div className="text-[10px] text-[var(--color-paper-500)] mt-0.5 line-clamp-3 leading-relaxed">
             {dimension.description}
           </div>
@@ -902,17 +887,35 @@ function DimensionRow({
             <span className="text-[11px] italic text-[var(--color-paper-400)]">no codes yet</span>
           )}
           {adding && (
-            <input
-              autoFocus
-              value={newCode}
-              onChange={(e) => setNewCode(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") addCode(newCode, "researcher");
-                if (e.key === "Escape") { setAdding(false); setNewCode(""); }
-              }}
-              placeholder="Type a code and press Enter…"
-              className="px-2.5 py-0.5 text-[12px] rounded-full bg-white border border-[var(--color-ink-700)] focus:outline-none w-48"
-            />
+            <div className="flex flex-col gap-1.5 mt-1 w-full">
+              {starterCodes.length > 0 && (
+                <div className="flex flex-wrap gap-1">
+                  {starterCodes
+                    .filter((s) => !codings.some((c) => c.code === s.code))
+                    .map((s) => (
+                      <button
+                        key={s.id}
+                        type="button"
+                        onClick={() => addCode(s.code, "researcher")}
+                        className="px-2.5 py-0.5 text-[11px] rounded-full border border-dashed border-[var(--color-ink-400)] text-[var(--color-ink-600)] hover:bg-[var(--color-ink-100)] hover:border-[var(--color-ink-600)] transition-paper"
+                      >
+                        {s.code}
+                      </button>
+                    ))}
+                </div>
+              )}
+              <input
+                autoFocus
+                value={newCode}
+                onChange={(e) => setNewCode(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") addCode(newCode, "researcher");
+                  if (e.key === "Escape") { setAdding(false); setNewCode(""); }
+                }}
+                placeholder={starterCodes.length > 0 ? "Or type a custom code…" : "Type a code and press Enter…"}
+                className="px-2.5 py-0.5 text-[12px] rounded-full bg-white border border-[var(--color-ink-700)] focus:outline-none w-48"
+              />
+            </div>
           )}
         </div>
 
@@ -1019,3 +1022,4 @@ function AppliedCode({ coding, onRemove }: { coding: CodingRow; onRemove: () => 
     </motion.span>
   );
 }
+

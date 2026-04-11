@@ -63,7 +63,7 @@ export function DedupReview({ refreshKey, onChanged }: Props) {
 
   if (clusters.length === 0) {
     return (
-      <div className="border border-dashed border-[var(--color-paper-300)] rounded-[var(--radius-md)] p-12 text-center max-w-2xl">
+      <div className="border border-dashed border-[var(--color-paper-300)] rounded-[var(--radius-md)] p-12 text-center">
         <ShieldCheck
           size={28}
           strokeWidth={1.5}
@@ -81,7 +81,7 @@ export function DedupReview({ refreshKey, onChanged }: Props) {
   }
 
   return (
-    <div className="max-w-5xl space-y-5">
+    <div className="space-y-5">
       <div className="flex items-center gap-3">
         <Sparkles size={14} strokeWidth={1.75} className="text-[var(--color-accent-500)]" />
         <p className="text-[13px] text-[var(--color-paper-700)]">

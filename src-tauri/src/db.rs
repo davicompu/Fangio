@@ -36,6 +36,9 @@ pub struct ProjectRow {
     pub onboarding_complete: bool,
     pub current_stage: String,
     pub current_substage: Option<String>,
+    pub custom_dimensions: Option<String>,
+    pub dimension_overrides: Option<String>,
+    pub journal_quality: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -255,6 +258,9 @@ impl ProjectDb {
             onboarding_complete: row.get::<i64, _>("onboarding_complete") != 0,
             current_stage: row.get("current_stage"),
             current_substage: row.get("current_substage"),
+            custom_dimensions: row.get("custom_dimensions"),
+            dimension_overrides: row.get("dimension_overrides"),
+            journal_quality: row.get("journal_quality"),
             created_at: row.get("created_at"),
             updated_at: row.get("updated_at"),
         })
@@ -282,6 +288,9 @@ impl ProjectDb {
             "project.language_filter" => Some("language_filter"),
             "project.quality_list" => Some("quality_list"),
             "project.quality_threshold" => Some("quality_threshold"),
+            "project.dimension_overrides" => Some("dimension_overrides"),
+            "project.custom_dimensions" => Some("custom_dimensions"),
+            "project.journal_quality" => Some("journal_quality"),
             _ => None,
         };
 
@@ -685,7 +694,7 @@ impl ProjectDb {
             .collect())
     }
 
-    /// Articles that are still 'retrieved' (not yet excluded), paginated.
+    /// Articles that have been included after screening, paginated for coding.
     pub async fn list_articles_for_coding(
         &self,
         offset: i64,
@@ -693,7 +702,7 @@ impl ProjectDb {
     ) -> Result<Vec<ArticleRow>> {
         let rows = sqlx::query(
             "SELECT id, title, authors, year, journal, abstract, doi, url, source_databases, status, dedup_group_id, exclusion_criterion, created_at \
-             FROM article WHERE status = 'retrieved' ORDER BY id LIMIT ? OFFSET ?",
+             FROM article WHERE status = 'included' ORDER BY id LIMIT ? OFFSET ?",
         )
         .bind(limit)
         .bind(offset)

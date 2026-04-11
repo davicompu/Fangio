@@ -100,10 +100,10 @@ export function ArrangingStage({ project, onLeaveStage }: Props) {
             exit={{ opacity: 0, y: -8 }}
             transition={{ duration: 0.25, ease: [0.2, 0.7, 0.2, 1] }}
           >
-            {tab === "organization" && <OrganizationPanel refreshKey={refreshTick} onChanged={onChanged} />}
+            {tab === "organization" && <OrganizationPanel project={project} refreshKey={refreshTick} onChanged={onChanged} />}
             {tab === "coding" && <CodingPanel project={project} refreshKey={refreshTick} onChanged={onChanged} />}
-            {tab === "criteria" && <CriteriaPanel refreshKey={refreshTick} onChanged={onChanged} />}
-            {tab === "screening" && <ScreeningPanel refreshKey={refreshTick} onChanged={onChanged} />}
+            {tab === "criteria" && <CriteriaPanel project={project} refreshKey={refreshTick} onChanged={onChanged} />}
+            {tab === "screening" && <ScreeningPanel project={project} refreshKey={refreshTick} onChanged={onChanged} />}
             {tab === "prisma" && <PrismaPanel refreshKey={refreshTick} />}
           </motion.div>
         </AnimatePresence>

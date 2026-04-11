@@ -50,7 +50,7 @@ function App() {
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
-        <span className="eyebrow text-[var(--color-paper-500)]">Loading workshop…</span>
+        <span className="eyebrow text-[var(--color-paper-500)]">Loading…</span>
       </div>
     );
   }

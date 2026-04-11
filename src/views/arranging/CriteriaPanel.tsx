@@ -1,17 +1,32 @@
 import { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Plus, Save, Trash2, X } from "lucide-react";
-import { api, type ExclusionCriterionRow } from "../../lib/api";
+import { BookOpen, Plus, Save, Trash2, X } from "lucide-react";
+import { api, type ExclusionCriterionRow, type ProjectRow } from "../../lib/api";
 import { Card } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
 import { TextField, TextArea } from "../../components/ui/TextField";
+import { Select } from "../../components/ui/Select";
 
 interface Props {
+  project: ProjectRow;
   refreshKey: number;
   onChanged: () => void;
 }
 
-export function CriteriaPanel({ onChanged }: Props) {
+// ABS: 4* > 4 > 3 > 2 > 1  (higher index = higher quality)
+const ABS_LEVELS = ["1", "2", "3", "4", "4*"] as const;
+// ABDC: A* > A > B > C
+const ABDC_LEVELS = ["C", "B", "A", "A*"] as const;
+
+function parseJournalQuality(raw: string | null) {
+  try {
+    return raw ? (JSON.parse(raw) as { abs_min?: string; abdc_min?: string }) : {};
+  } catch {
+    return {};
+  }
+}
+
+export function CriteriaPanel({ project, onChanged }: Props) {
   const [criteria, setCriteria] = useState<ExclusionCriterionRow[]>([]);
   const [adding, setAdding] = useState<{ label: string; rationale: string } | null>(null);
   const [editing, setEditing] = useState<number | null>(null);
@@ -20,6 +35,13 @@ export function CriteriaPanel({ onChanged }: Props) {
     rationale: "",
   });
   const [loading, setLoading] = useState(true);
+
+  // Journal quality thresholds
+  const jq = parseJournalQuality(project.journal_quality);
+  const [absMin, setAbsMin] = useState<string>(jq.abs_min ?? "");
+  const [abdcMin, setAbdcMin] = useState<string>(jq.abdc_min ?? "");
+  const [jqSaving, setJqSaving] = useState(false);
+  const [jqSaved, setJqSaved] = useState(false);
 
   const reload = async () => {
     const c = await api.listCriteria();
@@ -67,6 +89,24 @@ export function CriteriaPanel({ onChanged }: Props) {
     onChanged();
   };
 
+  const saveJournalQuality = async () => {
+    setJqSaving(true);
+    const payload: Record<string, string> = {};
+    if (absMin) payload.abs_min = absMin;
+    if (abdcMin) payload.abdc_min = abdcMin;
+    await api.saveDecision({
+      stage: "arranging",
+      sub_stage: "criteria",
+      decision_key: "project.journal_quality",
+      value_json: JSON.stringify(JSON.stringify(payload)),
+      rationale: null,
+    });
+    setJqSaving(false);
+    setJqSaved(true);
+    setTimeout(() => setJqSaved(false), 2000);
+    onChanged();
+  };
+
   if (loading) {
     return <div className="text-[13px] text-[var(--color-paper-500)]">Loading criteria…</div>;
   }
@@ -94,6 +134,66 @@ export function CriteriaPanel({ onChanged }: Props) {
         </Button>
       </div>
 
+      {/* ── Journal quality threshold ── */}
+      <Card className="p-5 mb-6 border-[var(--color-paper-300)]">
+        <div className="flex items-start gap-3 mb-4">
+          <div className="w-8 h-8 rounded-[var(--radius-sm)] bg-[var(--color-ink-100)] flex items-center justify-center shrink-0">
+            <BookOpen size={14} strokeWidth={1.75} className="text-[var(--color-ink-700)]" />
+          </div>
+          <div>
+            <h3 className="font-medium text-[14px] text-[var(--color-ink-900)]">
+              Journal quality threshold
+            </h3>
+            <p className="text-[12px] text-[var(--color-paper-600)] mt-0.5 leading-relaxed max-w-xl">
+              Articles published in journals below the minimum rating will be flagged during
+              screening. Leave blank to apply no threshold for that scale.
+            </p>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-4 max-w-md">
+          <Select
+            label="Minimum ABS rating"
+            value={absMin}
+            onChange={(e) => setAbsMin(e.target.value)}
+            hint="ABS Academic Journal Guide"
+          >
+            <option value="">— no threshold —</option>
+            {[...ABS_LEVELS].reverse().map((r) => (
+              <option key={r} value={r}>{r} and above</option>
+            ))}
+          </Select>
+          <Select
+            label="Minimum ABDC rating"
+            value={abdcMin}
+            onChange={(e) => setAbdcMin(e.target.value)}
+            hint="Australian Business Deans Council"
+          >
+            <option value="">— no threshold —</option>
+            {[...ABDC_LEVELS].reverse().map((r) => (
+              <option key={r} value={r}>{r} and above</option>
+            ))}
+          </Select>
+        </div>
+
+        <div className="mt-4 flex items-center gap-3">
+          <Button onClick={saveJournalQuality} disabled={jqSaving} variant="primary" size="sm">
+            <Save size={12} strokeWidth={2} />
+            {jqSaving ? "Saving…" : "Save threshold"}
+          </Button>
+          {jqSaved && (
+            <motion.span
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              className="text-[12px] text-[var(--color-ok-500)]"
+            >
+              Saved
+            </motion.span>
+          )}
+        </div>
+      </Card>
+
+      {/* ── Exclusion criteria list ── */}
       <div className="space-y-2">
         {criteria.map((c) => (
           <motion.div key={c.id} layout>

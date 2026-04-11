@@ -105,7 +105,7 @@ export function ProjectPicker({ onProjectOpened }: ProjectPickerProps) {
                   <h1 className="font-serif text-[44px] tracking-tight leading-none text-[var(--color-ink-900)]">
                     Carta
                   </h1>
-                  <span className="eyebrow">Research workshop · v0.1</span>
+                  <span className="eyebrow">From search to synthesis · v0.1</span>
                 </div>
               </div>
             </div>

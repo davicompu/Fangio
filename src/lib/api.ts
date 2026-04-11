@@ -25,6 +25,9 @@ export interface ProjectRow {
   onboarding_complete: boolean;
   current_stage: string;
   current_substage: string | null;
+  custom_dimensions: string | null;
+  dimension_overrides: string | null;
+  journal_quality: string | null;
   created_at: string;
   updated_at: string;
 }
