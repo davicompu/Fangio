@@ -1344,6 +1344,7 @@ impl ProjectDb {
                 }
                 if !fails {
                     if let Some(min_if) = if_min {
+                        // NULL impact factor cannot satisfy the minimum — treat as failing
                         let article_if = j.impact_factor.unwrap_or(0.0);
                         if article_if < min_if { fails = true; }
                     }
@@ -1362,8 +1363,20 @@ impl ProjectDb {
                     .await?;
                     excluded_count += 1;
                 }
+            } else {
+                // Journal not in scope list — cannot verify it meets the threshold, so exclude
+                sqlx::query(
+                    "UPDATE article SET status = 'excluded', exclusion_criterion = 0, \
+                     exclusion_rationale = 'Journal not in scope list (cannot verify quality threshold)', \
+                     screened_at = ?, updated_at = ? WHERE id = ?",
+                )
+                .bind(&now)
+                .bind(&now)
+                .bind(article_id)
+                .execute(&self.pool)
+                .await?;
+                excluded_count += 1;
             }
-            // Articles with no journal match are NOT excluded — benefit of the doubt
         }
 
         Ok(excluded_count)
