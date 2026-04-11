@@ -39,8 +39,7 @@ export function ArrangingStage({ project, onLeaveStage }: Props) {
 
   return (
     <div className="min-h-screen flex flex-col">
-      <div className="drag-region h-10" />
-      <header className="px-12 pt-2 pb-6 flex items-start justify-between">
+      <header className="drag-region px-12 pt-10 pb-6 flex items-start justify-between">
         <div className="flex items-start gap-4">
           <button
             onClick={onLeaveStage}

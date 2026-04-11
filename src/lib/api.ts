@@ -460,7 +460,7 @@ export const api = {
     return invoke<string>("regenerate_draft");
   },
   openBrowserPanel(url: string, x: number, y: number, width: number, height: number, sourceDatabase: string) {
-    return invoke<void>("open_browser_panel", { url, x, y, width, height, source_database: sourceDatabase });
+    return invoke<void>("open_browser_panel", { url, x, y, width, height, sourceDatabase });
   },
   resizeBrowserPanel(x: number, y: number, width: number, height: number) {
     return invoke<void>("resize_browser_panel", { x, y, width, height });

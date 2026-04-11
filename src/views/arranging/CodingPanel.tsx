@@ -272,6 +272,10 @@ function DimensionRow({
     model?: string,
   ) => {
     if (!code.trim()) return;
+    // Close suggestions immediately so a second click can't fire the same save
+    setSuggestions(null);
+    setNewCode("");
+    setAdding(false);
     await api.saveCoding({
       article_id: article.id,
       dimension: dimension.name,
@@ -280,8 +284,6 @@ function DimensionRow({
       source,
       model_name: model ?? null,
     });
-    setNewCode("");
-    setAdding(false);
     await onChanged();
   };
 

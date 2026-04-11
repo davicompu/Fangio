@@ -235,13 +235,6 @@ export function ImportPanel({ onCommitted }: Props) {
               />
               <span className="text-[13px] text-[var(--color-ink-800)]">
                 Added <strong>{committed.inserted}</strong> records to the library
-                {committed.skipped > 0 && (
-                  <>
-                    {" "}
-                    · skipped <strong>{committed.skipped}</strong> already-known DOI
-                    {committed.skipped === 1 ? "" : "s"}
-                  </>
-                )}
               </span>
             </motion.div>
           )}
@@ -266,8 +259,8 @@ export function ImportPanel({ onCommitted }: Props) {
             </ul>
             <div className="hairline my-4" />
             <p className="text-[12px] text-[var(--color-paper-600)] leading-relaxed">
-              Fangio auto-detects the format from extension and content. DOI duplicates are
-              skipped on import; title-fuzzy duplicates surface in the next tab for your review.
+              Carta auto-detects the format from extension and content. All records are imported
+              — cross-database duplicates surface in the Deduplication tab for your review.
             </p>
           </Card>
         </div>
@@ -295,7 +288,7 @@ function Dropzone({ onPick, busy }: { onPick: () => void; busy: boolean }) {
         {busy ? "Parsing…" : "Drop a bibliographic export"}
       </h3>
       <p className="text-[13px] text-[var(--color-paper-600)] max-w-md mx-auto leading-relaxed">
-        Click to choose a file. Fangio handles RIS, BibTeX, Web of Science tab-delimited, and
+        Click to choose a file. Carta handles RIS, BibTeX, Web of Science tab-delimited, and
         Scopus CSV.
       </p>
     </button>

@@ -40,7 +40,7 @@ const tabs: { id: Tab; label: string; eyebrow: string; icon: any; description: s
     label: "Importing",
     eyebrow: "Bring records in",
     icon: Inbox,
-    description: "Drop RIS, BibTeX, WoS or Scopus exports — Fangio parses and stores them.",
+    description: "Drop RIS, BibTeX, WoS or Scopus exports — Carta parses and stores them.",
   },
   {
     id: "library",
@@ -78,10 +78,8 @@ export function AssemblingStage({ project, settings, onLeaveStage, onOpenSetting
 
   return (
     <div className="min-h-screen flex flex-col">
-      <div className="drag-region h-10" />
-
-      {/* Header */}
-      <header className="px-12 pt-2 pb-6 flex items-start justify-between">
+      {/* Header doubles as drag region so the entire top bar is draggable */}
+      <header className="drag-region px-12 pt-10 pb-6 flex items-start justify-between">
         <div className="flex items-start gap-4">
           <button
             onClick={onLeaveStage}

@@ -1,4 +1,4 @@
-//! Fangio Tauri backend.
+//! Carta Tauri backend.
 
 mod backup;
 mod browser;
@@ -28,7 +28,7 @@ use recent::{RecentMeta, RecentProject, RecentStore};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
-use tauri::State;
+use tauri::{Manager, State};
 use tokio::sync::RwLock;
 
 /// App-wide state. The currently-open project (if any) lives behind an RwLock
@@ -89,7 +89,7 @@ async fn open_project(
     let sqlite = path.join(db::DB_FILENAME);
     if !sqlite.exists() {
         return Err(format!(
-            "No Fangio project found at {} (missing project.sqlite)",
+            "No Carta project found at {} (missing project.sqlite)",
             path.display()
         ));
     }
@@ -124,7 +124,7 @@ async fn close_project(
         let mut guard = browser.panel.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(panel) = guard.take() {
             browser::clean_temp_dir(&panel.temp_dir);
-            let _ = panel.webview.close();
+            let _ = panel.window.close();
         }
     }
     if let Some(db) = state.current().await {
@@ -324,23 +324,11 @@ async fn commit_import(
         .await
         .map_err(err)?;
 
-    // Pre-load existing DOIs for fast dedup-on-import
-    let existing = db.list_articles_for_dedup().await.map_err(err)?;
-    let existing_dois: std::collections::HashSet<String> = existing
-        .iter()
-        .filter_map(|c| c.doi.as_ref().and_then(|d| parsers::normalize_doi(d)))
-        .collect();
-
+    // Import every record — duplicates across databases are intentional so that
+    // the deduplication tab and PRISMA counts reflect all retrieved records.
     let mut inserted = 0usize;
-    let mut skipped_doi = 0usize;
     for rec in &parsed.records {
         let normalized_doi = rec.doi.as_ref().and_then(|d| parsers::normalize_doi(d));
-        if let Some(ref nd) = normalized_doi {
-            if existing_dois.contains(nd) {
-                skipped_doi += 1;
-                continue;
-            }
-        }
         let new = NewArticle {
             title: rec.title.clone(),
             authors: rec.authors.clone(),
@@ -364,7 +352,6 @@ async fn commit_import(
             "format": format_str,
             "raw": parsed.records.len(),
             "inserted": inserted,
-            "skipped_doi": skipped_doi,
         }),
     )
     .await
@@ -372,7 +359,7 @@ async fn commit_import(
     Ok(CommitImportResult {
         batch_id,
         inserted,
-        skipped_doi_dupes: skipped_doi,
+        skipped_doi_dupes: 0,
         warnings: parsed.warnings,
     })
 }
@@ -1193,7 +1180,7 @@ async fn open_browser_panel(
         let mut guard = browser.panel.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(existing) = guard.take() {
             browser::clean_temp_dir(&existing.temp_dir);
-            let _ = existing.webview.close();
+            let _ = existing.window.close();
         }
     }
 
@@ -1219,16 +1206,21 @@ fn resize_browser_panel(
     y: f64,
     width: f64,
     height: f64,
+    app: tauri::AppHandle<tauri::Wry>,
     browser: State<'_, browser::BrowserState>,
 ) -> Result<(), String> {
     let guard = browser.panel.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(ref panel) = *guard {
+        let main = app
+            .get_webview_window("main")
+            .ok_or_else(|| "main window not found".to_string())?;
+        let (sx, sy) = browser::viewport_to_screen(&main, x, y)?;
         panel
-            .webview
-            .set_position(tauri::LogicalPosition::new(x, y))
+            .window
+            .set_position(tauri::LogicalPosition::new(sx, sy))
             .map_err(|e| e.to_string())?;
         panel
-            .webview
+            .window
             .set_size(tauri::LogicalSize::new(width, height))
             .map_err(|e| e.to_string())?;
     }
@@ -1242,7 +1234,7 @@ fn close_browser_panel(
     let mut guard = browser.panel.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(panel) = guard.take() {
         browser::clean_temp_dir(&panel.temp_dir);
-        let _ = panel.webview.close();
+        let _ = panel.window.close();
     }
     Ok(())
 }

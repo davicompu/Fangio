@@ -119,10 +119,8 @@ export function StageHub({ project, onOpenSettings, onProjectChanged, onEnterSta
 
   return (
     <div className="min-h-screen flex flex-col">
-      <div className="drag-region h-10" />
-
-      {/* Top bar — light, editorial */}
-      <div className="px-12 pt-2 pb-8 flex items-start justify-between">
+      {/* Top bar doubles as drag region */}
+      <div className="drag-region px-12 pt-10 pb-8 flex items-start justify-between">
         <div>
           <span className="eyebrow">In progress</span>
           <h1 className="font-serif text-[32px] tracking-tight text-[var(--color-ink-900)] mt-1">

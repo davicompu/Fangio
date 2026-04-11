@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { useAppState } from "./lib/useAppState";
 import { ProjectPicker } from "./views/ProjectPicker";
@@ -26,6 +26,26 @@ function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [route, setRoute] = useState<Route>("hub");
 
+  // Belt-and-suspenders JS drag — handles cases where CSS -webkit-app-region
+  // is stripped by the CSS processor or not honoured by WKWebView.
+  useEffect(() => {
+    let handler: ((e: MouseEvent) => void) | null = null;
+    import("@tauri-apps/api/window").then(({ getCurrentWindow }) => {
+      const win = getCurrentWindow();
+      handler = (e: MouseEvent) => {
+        const el = e.target as Element;
+        if (el.closest(".drag-region") && !el.closest(".no-drag")) {
+          e.preventDefault(); // prevent text selection from racing the drag
+          win.startDragging().catch(() => {});
+        }
+      };
+      document.addEventListener("mousedown", handler);
+    });
+    return () => {
+      if (handler) document.removeEventListener("mousedown", handler);
+    };
+  }, []);
+
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -45,7 +65,7 @@ function App() {
             exit={{ opacity: 0 }}
             transition={{ duration: 0.4 }}
           >
-            <ProjectPicker onProjectOpened={setProject} />
+            <ProjectPicker onProjectOpened={() => refreshProject()} />
           </motion.div>
         )}
         {project && !project.onboarding_complete && (

@@ -5,7 +5,7 @@
 @import "@fontsource-variable/jetbrains-mono";
 
 /* ──────────────────────────────────────────────────────────────────────────
-   Fangio design tokens
+   Carta design tokens
 
    Philosophy: this is a tool researchers use for many hours per day on dense
    textual content. It should feel like a well-bound notebook, not a SaaS
@@ -190,9 +190,21 @@ textarea {
 /* Window dragging on macOS overlay title bar */
 .drag-region {
   -webkit-app-region: drag;
+  cursor: default !important;
+  user-select: none;
+}
+.drag-region * {
+  cursor: default !important;
+  user-select: none;
 }
 .no-drag {
   -webkit-app-region: no-drag;
+  cursor: auto;
+  user-select: auto;
+}
+.no-drag * {
+  cursor: auto;
+  user-select: auto;
 }
 
 /* Smooth motion defaults */

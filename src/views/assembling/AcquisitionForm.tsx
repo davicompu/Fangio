@@ -47,6 +47,7 @@ export function AcquisitionForm({ project, settings, onSaved, onOpenSettings }: 
   const [saveError, setSaveError] = useState<string | null>(null);
   const [browserDb, setBrowserDb] = useState<string | null>(null);
   const [browserUrl, setBrowserUrl] = useState("");
+  const [browserError, setBrowserError] = useState<string | null>(null);
   const [downloadBanners, setDownloadBanners] = useState<DownloadBanner[]>([]);
   const panelRef = useRef<HTMLDivElement>(null);
   const bannerIdRef = useRef(0);
@@ -86,22 +87,35 @@ export function AcquisitionForm({ project, settings, onSaved, onOpenSettings }: 
   useEffect(() => {
     if (!browserDb || !browserUrl || !panelRef.current) return;
     let observer: ResizeObserver | null = null;
+    setBrowserError(null);
+
+    const STATUS_BAR = 36;
 
     const init = () => {
       if (!panelRef.current) return;
       const rect = panelRef.current.getBoundingClientRect();
-      // Note: measured after one rAF; if called during a CSS/Framer transform the
-      // top value may be off by the animation's translateY. ResizeObserver corrects
-      // it on the next resize, but opening immediately after tab-enter animation may
-      // show a brief misalignment.
+      if (rect.width === 0) {
+        // Layout not settled yet — retry on next frame
+        requestAnimationFrame(init);
+        return;
+      }
+      const height = window.innerHeight - rect.top - STATUS_BAR;
+      // Pass viewport-relative coords; Rust converts to screen coords via inner_position()
       api
-        .openBrowserPanel(browserUrl, rect.left, rect.top, rect.width, rect.height, browserDb)
-        .catch(() => {});
+        .openBrowserPanel(browserUrl, rect.left, rect.top, rect.width, height, browserDb)
+        .then(() => {
+          setBrowserError(null);
+        })
+        .catch((e: unknown) => {
+          const msg = e instanceof Error ? e.message : String(e);
+          setBrowserError(msg || "Failed to open browser panel");
+        });
 
       observer = new ResizeObserver(() => {
         if (!panelRef.current) return;
         const r = panelRef.current.getBoundingClientRect();
-        api.resizeBrowserPanel(r.left, r.top, r.width, r.height).catch(console.error);
+        const h = window.innerHeight - r.top - STATUS_BAR;
+        api.resizeBrowserPanel(r.left, r.top, r.width, h).catch(console.error);
       });
       observer.observe(panelRef.current);
     };
@@ -338,10 +352,11 @@ export function AcquisitionForm({ project, settings, onSaved, onOpenSettings }: 
                     key={d.id}
                     type="button"
                     onClick={() => {
+                      let url = settings[`database.${d.id}.url` as keyof typeof settings] as string;
+                      if (url && !/^https?:\/\//i.test(url)) url = "https://" + url;
+                      setBrowserError(null);
                       setBrowserDb(d.id);
-                      setBrowserUrl(
-                        settings[`database.${d.id}.url` as keyof typeof settings] as string,
-                      );
+                      setBrowserUrl(url);
                     }}
                     className={
                       "px-3 py-1.5 rounded-[var(--radius-sm)] text-[12px] font-medium transition-paper " +
@@ -473,6 +488,7 @@ export function AcquisitionForm({ project, settings, onSaved, onOpenSettings }: 
                 onClick={() => {
                   setBrowserDb(null);
                   setBrowserUrl("");
+                  setBrowserError(null);
                 }}
                 className="no-drag p-1 rounded-[var(--radius-xs)] hover:bg-[var(--color-paper-200)] transition-paper"
                 aria-label="Close browser"
@@ -484,9 +500,23 @@ export function AcquisitionForm({ project, settings, onSaved, onOpenSettings }: 
             {/* Native webview placeholder — sized to fill the column */}
             <div
               ref={panelRef}
-              className="rounded-[var(--radius-sm)] border border-[var(--color-paper-300)] bg-[var(--color-paper-100)]"
-              style={{ height: "calc(100vh - 260px)", minHeight: 400 }}
-            />
+              className="relative rounded-[var(--radius-sm)] border border-[var(--color-paper-300)] bg-[var(--color-paper-100)]"
+              style={{ height: "calc(100vh - 200px)", minHeight: 400 }}
+            >
+              {browserError && (
+                <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 p-6 text-center">
+                  <p className="text-[13px] font-medium text-[var(--color-warn-700)]">
+                    Could not open browser
+                  </p>
+                  <p className="text-[12px] text-[var(--color-paper-500)] max-w-xs leading-relaxed">
+                    {browserError}
+                  </p>
+                  <p className="text-[11px] text-[var(--color-paper-400)]">
+                    Check the URL in Settings — it must start with https://
+                  </p>
+                </div>
+              )}
+            </div>
           </div>
         ) : (
           <div className="sticky top-12">
@@ -499,7 +529,7 @@ export function AcquisitionForm({ project, settings, onSaved, onOpenSettings }: 
                 Run the search yourself
               </h3>
               <p className="prose-editorial text-[13px] leading-[1.65] text-[var(--color-paper-700)] mb-4">
-                Fangio doesn't browse library databases for you. You stay in control of your
+                Carta doesn't browse library databases for you. You stay in control of your
                 institutional session. When you're ready, open each selected database in your normal
                 browser, paste the query into Advanced Search, set the date range, and export the
                 results as RIS, BibTeX, WoS tab-delimited, or Scopus CSV.
@@ -517,7 +547,7 @@ export function AcquisitionForm({ project, settings, onSaved, onOpenSettings }: 
                 </div>
                 <p className="text-[12px] text-[var(--color-paper-600)] leading-relaxed">
                   Your university policy prohibits automated retrieval from licensed databases.
-                  Fangio respects that — it processes only files you've already exported yourself.
+                  Carta respects that — it processes only files you've already exported yourself.
                 </p>
               </div>
             </Card>
