@@ -9,7 +9,7 @@ import {
   type SortingState,
 } from "@tanstack/react-table";
 import { AnimatePresence, motion } from "framer-motion";
-import { ArrowUpDown, Check, ExternalLink, Library, Loader2, Save, Search, Star, Tags, X } from "lucide-react";
+import { ArrowUpDown, Check, ExternalLink, Library, Loader2, Search, Star, Tags, X } from "lucide-react";
 import { api, type ArticleRow, type JournalRow } from "../../lib/api";
 import { cn } from "../../lib/utils";
 
@@ -195,16 +195,15 @@ function QuickRateModal({
 
 // ── Bulk-rate modal ───────────────────────────────────────────────────────────
 
-type Draft = { abs_rating: string; abdc_rating: string; impact: string };
+type ViewFilter = "all" | "matched" | "unmatched";
 
 function BulkRateModal({
   journals: scopeJournals,
   uniqueJournals,
-  onSaved,
   onClose,
 }: {
   journals: JournalRow[];
-  uniqueJournals: string[];       // distinct journal names from articles
+  uniqueJournals: string[];
   onSaved: () => void;
   onClose: () => void;
 }) {
@@ -214,75 +213,29 @@ function BulkRateModal({
     return m;
   }, [scopeJournals]);
 
-  // Initialise drafts from scope list
-  const initial = useMemo<Record<string, Draft>>(() => {
-    const out: Record<string, Draft> = {};
-    for (const name of uniqueJournals) {
-      const existing = journalMap.get(normalizeJournal(name));
-      out[name] = {
-        abs_rating: existing?.abs_rating ?? "",
-        abdc_rating: existing?.abdc_rating ?? "",
-        impact: existing?.impact_factor?.toString() ?? "",
-      };
-    }
-    return out;
-  }, [uniqueJournals, journalMap]);
-
-  const [drafts, setDrafts] = useState<Record<string, Draft>>(initial);
   const [filterText, setFilterText] = useState("");
-  const [showUnratedOnly, setShowUnratedOnly] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
+  const [viewFilter, setViewFilter] = useState<ViewFilter>("all");
   const overlayRef = useRef<HTMLDivElement>(null);
 
-  const setField = (name: string, field: keyof Draft, value: string) =>
-    setDrafts((prev) => ({ ...prev, [name]: { ...prev[name], [field]: value } }));
+  const matched = uniqueJournals.filter((n) => journalMap.has(normalizeJournal(n)));
+  const unmatched = uniqueJournals.filter((n) => !journalMap.has(normalizeJournal(n)));
 
   const visible = useMemo(() => {
-    return uniqueJournals.filter((name) => {
-      if (filterText && !name.toLowerCase().includes(filterText.toLowerCase())) return false;
-      if (showUnratedOnly) {
-        const d = drafts[name];
-        if (d.abs_rating || d.abdc_rating || d.impact) return false;
-      }
-      return true;
-    });
-  }, [uniqueJournals, filterText, showUnratedOnly, drafts]);
+    const base = viewFilter === "matched" ? matched
+               : viewFilter === "unmatched" ? unmatched
+               : uniqueJournals;
+    if (!filterText) return base;
+    const q = filterText.toLowerCase();
+    return base.filter((n) => n.toLowerCase().includes(q));
+  }, [uniqueJournals, matched, unmatched, viewFilter, filterText]);
 
-  const handleSave = async () => {
-    setSaving(true);
-    try {
-      for (const name of uniqueJournals) {
-        const d = drafts[name];
-        const existing = journalMap.get(normalizeJournal(name));
-        const hasAny = d.abs_rating || d.abdc_rating || d.impact;
-        const changed =
-          d.abs_rating !== (existing?.abs_rating ?? "") ||
-          d.abdc_rating !== (existing?.abdc_rating ?? "") ||
-          d.impact !== (existing?.impact_factor?.toString() ?? "");
-        if (!hasAny && !existing) continue;   // nothing to save
-        if (!changed) continue;               // no change
-        await api.saveJournal({
-          id: existing?.id ?? null,
-          name,
-          issn: existing?.issn ?? null,
-          abs_rating: d.abs_rating || null,
-          abdc_rating: d.abdc_rating || null,
-          impact_factor: d.impact ? parseFloat(d.impact) : null,
-          field: existing?.field ?? null,
-        });
-      }
-      setSaved(true);
-      setTimeout(() => { onSaved(); onClose(); }, 800);
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const unratedCount = uniqueJournals.filter((n) => {
-    const d = drafts[n];
-    return !d.abs_rating && !d.abdc_rating && !d.impact;
-  }).length;
+  function RatingBadge({ label, value }: { label: string; value: string }) {
+    return (
+      <span className="inline-flex items-center gap-0.5 px-1.5 py-px rounded text-[10px] font-mono font-semibold bg-[var(--color-paper-100)] text-[var(--color-paper-600)] border border-[var(--color-paper-300)]">
+        {label} {value}
+      </span>
+    );
+  }
 
   return (
     <div
@@ -296,20 +249,22 @@ function BulkRateModal({
         exit={{ opacity: 0, scale: 0.97, y: 8 }}
         transition={{ duration: 0.18, ease: [0.2, 0.7, 0.2, 1] }}
         className="bg-white border border-[var(--color-paper-300)] rounded-[var(--radius-md)] shadow-xl flex flex-col"
-        style={{ width: "min(860px, 95vw)", maxHeight: "85vh" }}
+        style={{ width: "min(780px, 95vw)", maxHeight: "85vh" }}
       >
         {/* Header */}
         <div className="px-6 pt-5 pb-4 border-b border-[var(--color-paper-200)] shrink-0">
-          <div className="flex items-start justify-between mb-3">
+          <div className="flex items-start justify-between mb-4">
             <div>
-              <p className="eyebrow text-[var(--color-paper-500)] mb-1">Library</p>
+              <p className="eyebrow text-[var(--color-paper-500)] mb-1">Library · Journal scope</p>
               <h2 className="font-serif text-[20px] tracking-tight text-[var(--color-ink-900)]">
-                Rate all articles
+                Article ratings
               </h2>
-              <p className="text-[12px] text-[var(--color-paper-600)] mt-1">
-                {uniqueJournals.length} unique journal{uniqueJournals.length !== 1 ? "s" : ""} across your articles
-                {unratedCount > 0 && (
-                  <span className="ml-1 text-[var(--color-warn-600)]">· {unratedCount} unrated</span>
+              <p className="text-[12px] text-[var(--color-paper-600)] mt-1 leading-relaxed">
+                Ratings are sourced automatically from the journal scope list.
+                {unmatched.length > 0 && (
+                  <span className="ml-1 text-[var(--color-warn-600)]">
+                    {unmatched.length} journal{unmatched.length !== 1 ? "s" : ""} not found in scope — use the Journals tab to add them.
+                  </span>
                 )}
               </p>
             </div>
@@ -320,26 +275,38 @@ function BulkRateModal({
               <X size={14} strokeWidth={2} />
             </button>
           </div>
-          <div className="flex items-center gap-2">
-            <div className="relative flex-1 max-w-xs">
+
+          {/* Stats pills */}
+          <div className="flex items-center gap-2 mb-3">
+            {(["all", "matched", "unmatched"] as ViewFilter[]).map((f) => {
+              const count = f === "all" ? uniqueJournals.length : f === "matched" ? matched.length : unmatched.length;
+              return (
+                <button
+                  key={f}
+                  onClick={() => setViewFilter(f)}
+                  className={cn(
+                    "px-3 py-1 text-[11px] font-medium rounded-full border transition-paper",
+                    viewFilter === f
+                      ? f === "unmatched" && unmatched.length > 0
+                        ? "bg-[var(--color-warn-500)] border-[var(--color-warn-500)] text-white"
+                        : "bg-[var(--color-ink-800)] border-[var(--color-ink-800)] text-white"
+                      : "border-[var(--color-paper-300)] text-[var(--color-paper-600)] hover:border-[var(--color-paper-400)]"
+                  )}
+                >
+                  {f === "all" ? "All" : f === "matched" ? "Matched" : "Unmatched"}
+                  <span className="ml-1.5 tabular-nums opacity-75">{count}</span>
+                </button>
+              );
+            })}
+            <div className="relative ml-auto">
               <Search size={12} strokeWidth={1.75} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--color-paper-400)] pointer-events-none" />
               <input
                 value={filterText}
                 onChange={(e) => setFilterText(e.target.value)}
-                placeholder="Filter journals…"
-                className="w-full h-8 pl-8 pr-3 text-[12px] rounded-[var(--radius-xs)] border border-[var(--color-paper-300)] bg-[var(--color-paper-50)] text-[var(--color-ink-800)] placeholder:text-[var(--color-paper-400)] focus:outline-none focus:border-[var(--color-ink-500)] transition-paper"
+                placeholder="Filter…"
+                className="h-7 pl-8 pr-3 w-48 text-[11px] rounded-[var(--radius-xs)] border border-[var(--color-paper-300)] bg-[var(--color-paper-50)] text-[var(--color-ink-800)] placeholder:text-[var(--color-paper-400)] focus:outline-none focus:border-[var(--color-ink-500)] transition-paper"
               />
             </div>
-            <label className="inline-flex items-center gap-1.5 cursor-pointer text-[12px] text-[var(--color-paper-600)] select-none">
-              <input
-                type="checkbox"
-                checked={showUnratedOnly}
-                onChange={(e) => setShowUnratedOnly(e.target.checked)}
-                className="rounded"
-              />
-              Unrated only
-            </label>
-            <span className="text-[11px] text-[var(--color-paper-400)]">{visible.length} shown</span>
           </div>
         </div>
 
@@ -348,23 +315,23 @@ function BulkRateModal({
           <table className="w-full text-[12px]">
             <thead className="sticky top-0 bg-[var(--color-paper-50)] border-b border-[var(--color-paper-200)] z-10">
               <tr>
-                <th className="text-left px-4 py-2.5 font-medium text-[var(--color-paper-500)] eyebrow">Journal</th>
-                <th className="text-left px-3 py-2.5 font-medium text-[var(--color-paper-500)] eyebrow w-44">ABS rating</th>
-                <th className="text-left px-3 py-2.5 font-medium text-[var(--color-paper-500)] eyebrow w-44">ABDC rating</th>
-                <th className="text-left px-3 py-2.5 font-medium text-[var(--color-paper-500)] eyebrow w-28">Impact factor</th>
+                <th className="text-left px-4 py-2.5 eyebrow text-[var(--color-paper-500)]">Journal</th>
+                <th className="text-left px-3 py-2.5 eyebrow text-[var(--color-paper-500)] w-28">ABS</th>
+                <th className="text-left px-3 py-2.5 eyebrow text-[var(--color-paper-500)] w-28">ABDC</th>
+                <th className="text-left px-3 py-2.5 eyebrow text-[var(--color-paper-500)] w-24">IF</th>
+                <th className="text-left px-3 py-2.5 eyebrow text-[var(--color-paper-500)] w-20">Status</th>
               </tr>
             </thead>
             <tbody>
               {visible.length === 0 ? (
                 <tr>
-                  <td colSpan={4} className="px-4 py-10 text-center text-[12px] text-[var(--color-paper-400)]">
+                  <td colSpan={5} className="px-4 py-10 text-center text-[12px] text-[var(--color-paper-400)]">
                     No journals match your filter.
                   </td>
                 </tr>
               ) : visible.map((name, i) => {
-                const d = drafts[name];
-                const existing = journalMap.get(normalizeJournal(name));
-                const rated = d.abs_rating || d.abdc_rating || d.impact;
+                const j = journalMap.get(normalizeJournal(name));
+                const hasAny = j && (j.abs_rating || j.abdc_rating || j.impact_factor != null);
                 return (
                   <tr
                     key={name}
@@ -375,62 +342,42 @@ function BulkRateModal({
                   >
                     <td className="px-4 py-2.5">
                       <div className="flex items-center gap-1.5">
-                        {existing && (
+                        {j && (
                           <Star size={9} strokeWidth={2} className="text-[var(--color-accent-400)] shrink-0" fill="currentColor" />
                         )}
-                        <span className={cn("leading-snug", rated ? "text-[var(--color-ink-800)]" : "text-[var(--color-paper-600)]")}>
+                        <span className={cn("leading-snug", j ? "text-[var(--color-ink-800)]" : "text-[var(--color-paper-500)] italic")}>
                           {name}
                         </span>
                       </div>
                     </td>
-                    <td className="px-3 py-2">
-                      <div className="flex gap-1 flex-wrap">
-                        {["", ...ABS_RATINGS].map((r) => (
-                          <button
-                            key={r || "none"}
-                            type="button"
-                            onClick={() => setField(name, "abs_rating", r)}
-                            className={cn(
-                              "px-1.5 py-0.5 text-[10px] rounded-[3px] border transition-paper",
-                              d.abs_rating === r
-                                ? "bg-[var(--color-ink-700)] text-white border-[var(--color-ink-700)]"
-                                : "border-[var(--color-paper-300)] text-[var(--color-paper-600)] hover:border-[var(--color-paper-500)]"
-                            )}
-                          >
-                            {r || "—"}
-                          </button>
-                        ))}
-                      </div>
+                    <td className="px-3 py-2.5">
+                      {j?.abs_rating
+                        ? <RatingBadge label="ABS" value={j.abs_rating} />
+                        : <span className="text-[var(--color-paper-300)]">—</span>}
                     </td>
-                    <td className="px-3 py-2">
-                      <div className="flex gap-1 flex-wrap">
-                        {["", ...ABDC_RATINGS].map((r) => (
-                          <button
-                            key={r || "none"}
-                            type="button"
-                            onClick={() => setField(name, "abdc_rating", r)}
-                            className={cn(
-                              "px-1.5 py-0.5 text-[10px] rounded-[3px] border transition-paper",
-                              d.abdc_rating === r
-                                ? "bg-[var(--color-ink-700)] text-white border-[var(--color-ink-700)]"
-                                : "border-[var(--color-paper-300)] text-[var(--color-paper-600)] hover:border-[var(--color-paper-500)]"
-                            )}
-                          >
-                            {r || "—"}
-                          </button>
-                        ))}
-                      </div>
+                    <td className="px-3 py-2.5">
+                      {j?.abdc_rating
+                        ? <RatingBadge label="ABDC" value={j.abdc_rating} />
+                        : <span className="text-[var(--color-paper-300)]">—</span>}
                     </td>
-                    <td className="px-3 py-2">
-                      <input
-                        type="number"
-                        step="0.01"
-                        min="0"
-                        value={d.impact}
-                        onChange={(e) => setField(name, "impact", e.target.value)}
-                        placeholder="—"
-                        className="w-20 h-7 px-2 font-mono text-[11px] rounded-[var(--radius-xs)] border border-[var(--color-paper-300)] bg-white text-[var(--color-ink-800)] placeholder:text-[var(--color-paper-300)] focus:outline-none focus:border-[var(--color-ink-500)] transition-paper"
-                      />
+                    <td className="px-3 py-2.5 font-mono tabular-nums text-[var(--color-paper-600)]">
+                      {j?.impact_factor != null ? j.impact_factor.toFixed(2) : <span className="text-[var(--color-paper-300)]">—</span>}
+                    </td>
+                    <td className="px-3 py-2.5">
+                      {j ? (
+                        <span className={cn(
+                          "text-[10px] font-medium px-1.5 py-0.5 rounded-sm",
+                          hasAny
+                            ? "bg-[var(--color-ok-500)]/10 text-[var(--color-ok-600)]"
+                            : "bg-[var(--color-paper-100)] text-[var(--color-paper-500)]"
+                        )}>
+                          {hasAny ? "Rated" : "In scope"}
+                        </span>
+                      ) : (
+                        <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-sm bg-[var(--color-warn-500)]/10 text-[var(--color-warn-600)]">
+                          Not found
+                        </span>
+                      )}
                     </td>
                   </tr>
                 );
@@ -440,30 +387,16 @@ function BulkRateModal({
         </div>
 
         {/* Footer */}
-        <div className="px-6 py-4 border-t border-[var(--color-paper-200)] flex items-center gap-3 shrink-0">
-          <button
-            onClick={handleSave}
-            disabled={saving || saved}
-            className="inline-flex items-center gap-1.5 px-4 py-2 text-[12px] font-medium rounded-[var(--radius-sm)] bg-[var(--color-ink-800)] text-white hover:bg-[var(--color-ink-700)] disabled:opacity-60 transition-paper"
-          >
-            {saving ? (
-              <Loader2 size={12} className="animate-spin" />
-            ) : saved ? (
-              <Check size={12} strokeWidth={2.5} />
-            ) : (
-              <Save size={12} strokeWidth={2} />
-            )}
-            {saving ? "Saving…" : saved ? "Saved!" : "Save all changes"}
-          </button>
+        <div className="px-6 py-3.5 border-t border-[var(--color-paper-200)] flex items-center gap-3 shrink-0">
+          <span className="text-[11px] text-[var(--color-paper-400)] leading-relaxed">
+            {matched.length} of {uniqueJournals.length} journals matched · ratings sourced from journal scope list · use <strong className="text-[var(--color-paper-500)]">Journals</strong> tab to add or edit
+          </span>
           <button
             onClick={onClose}
-            className="px-4 py-2 text-[12px] text-[var(--color-paper-600)] hover:text-[var(--color-ink-800)] transition-paper"
+            className="ml-auto px-4 py-1.5 text-[12px] font-medium text-[var(--color-paper-700)] border border-[var(--color-paper-300)] rounded-[var(--radius-sm)] hover:border-[var(--color-ink-400)] hover:text-[var(--color-ink-800)] transition-paper"
           >
-            Cancel
+            Close
           </button>
-          <span className="ml-auto text-[11px] text-[var(--color-paper-400)]">
-            Only journals with changed ratings are written to the scope list.
-          </span>
         </div>
       </motion.div>
     </div>
