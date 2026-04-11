@@ -1288,7 +1288,20 @@ impl ProjectDb {
         }
         fn normalize(name: &str) -> String {
             let lower = name.to_lowercase();
-            lower.trim_start_matches("the ").trim().to_string()
+            let s = lower.trim_start_matches("the ").trim();
+            // & → "and", non-alphanumeric → space, collapse spaces
+            let mut out = String::with_capacity(s.len());
+            let mut prev_space = false;
+            for ch in s.replace('&', "and").chars() {
+                if ch.is_ascii_alphanumeric() {
+                    out.push(ch);
+                    prev_space = false;
+                } else if !prev_space {
+                    out.push(' ');
+                    prev_space = true;
+                }
+            }
+            out.trim().to_string()
         }
 
         // 1. Reset previously auto-excluded articles so re-saves are idempotent

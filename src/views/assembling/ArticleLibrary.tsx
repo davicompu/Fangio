@@ -22,7 +22,13 @@ const ABS_RATINGS = ["4*", "4", "3", "2", "1"] as const;
 const ABDC_RATINGS = ["A*", "A", "B", "C"] as const;
 
 function normalizeJournal(name: string) {
-  return name.toLowerCase().replace(/^the\s+/, "").trim();
+  return name
+    .toLowerCase()
+    .replace(/^the\s+/, "")          // strip leading "the "
+    .replace(/&/g, "and")            // & → and
+    .replace(/[^a-z0-9\s]/g, " ")   // punctuation → space
+    .replace(/\s+/g, " ")            // collapse whitespace
+    .trim();
 }
 
 // ── Quick-rate modal ──────────────────────────────────────────────────────────

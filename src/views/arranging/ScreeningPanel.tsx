@@ -60,7 +60,13 @@ function meetsIfThreshold(impactFactor: number | null | undefined, min: number):
 
 /** Case-insensitive journal name match, ignoring leading "The " */
 function normalizeJournal(name: string) {
-  return name.toLowerCase().replace(/^the\s+/, "").trim();
+  return name
+    .toLowerCase()
+    .replace(/^the\s+/, "")
+    .replace(/&/g, "and")
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 export function ScreeningPanel({ project, refreshKey, onChanged }: Props) {
