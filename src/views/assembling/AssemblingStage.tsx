@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   ArrowLeft,
+  BookOpen,
   Compass,
   GitMerge,
   Inbox,
@@ -17,6 +18,7 @@ import { ArticleLibrary } from "./ArticleLibrary";
 import { DedupReview } from "./DedupReview";
 import { AcquisitionForm } from "./AcquisitionForm";
 import { CheckpointGate } from "./CheckpointGate";
+import { JournalScopePanel } from "./JournalScopePanel";
 
 interface AssemblingStageProps {
   project: ProjectRow;
@@ -25,7 +27,7 @@ interface AssemblingStageProps {
   onOpenSettings: () => void;
 }
 
-type Tab = "acquisition" | "import" | "library" | "dedup" | "checkpoint";
+type Tab = "acquisition" | "journals" | "import" | "library" | "dedup" | "checkpoint";
 
 const tabs: { id: Tab; label: string; eyebrow: string; icon: any; description: string }[] = [
   {
@@ -41,6 +43,13 @@ const tabs: { id: Tab; label: string; eyebrow: string; icon: any; description: s
     eyebrow: "Bring records in",
     icon: Inbox,
     description: "Drop RIS, BibTeX, WoS or Scopus exports — Carta parses and stores them.",
+  },
+  {
+    id: "journals",
+    label: "Journals",
+    eyebrow: "Scope & quality",
+    icon: BookOpen,
+    description: "Curated journal list with ABS and ABDC ratings to scope your search.",
   },
   {
     id: "library",
@@ -152,6 +161,7 @@ export function AssemblingStage({ project, settings, onLeaveStage, onOpenSetting
                 onOpenSettings={onOpenSettings}
               />
             )}
+            {tab === "journals" && <JournalScopePanel />}
             {tab === "import" && <ImportPanel onCommitted={onChanged} />}
             {tab === "library" && (
               <ArticleLibrary refreshKey={refreshTick} onChanged={onChanged} />

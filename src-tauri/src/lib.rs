@@ -19,7 +19,8 @@ mod vector;
 
 use db::{
     ArticleRow, AssemblingState, CodingRow, DecisionInput, ExclusionCriterionRow,
-    FrameworkCodeDefinition, NewArticle, PdfRow, PrismaState, ProjectDb, ProjectRow,
+    FrameworkCodeDefinition, JournalInput, JournalRow, NewArticle, PdfRow, PrismaState, ProjectDb,
+    ProjectRow,
 };
 use dedup::DedupCluster;
 use lmstudio::{ChatMessage, ChatResult, LmModel};
@@ -413,13 +414,33 @@ async fn list_framework_dimensions(
 ) -> Result<Vec<DimensionInfo>, String> {
     let db = state.current().await.ok_or("no project open")?;
     let project = db.get_project().await.map_err(err)?;
-    let framework = project.framework.unwrap_or_default();
-    let dims = framework::dimensions_for(&framework);
+    let framework = project.framework.as_deref().unwrap_or("");
+
+    // For custom frameworks, derive dimensions from whatever the user has
+    // already coded rather than returning a hard-coded list.
+    if framework == "Custom" {
+        let defs = db.list_framework_code_defs().await.map_err(err)?;
+        let mut seen: Vec<String> = Vec::new();
+        for def in &defs {
+            if !seen.contains(&def.dimension) {
+                seen.push(def.dimension.clone());
+            }
+        }
+        return Ok(seen
+            .into_iter()
+            .map(|d| DimensionInfo {
+                name: d,
+                description: String::new(),
+            })
+            .collect());
+    }
+
+    let dims = framework::dimensions_for(framework);
     Ok(dims
         .into_iter()
         .map(|d| DimensionInfo {
             name: d.to_string(),
-            description: framework::description_for(&framework, d).to_string(),
+            description: framework::description_for(framework, d).to_string(),
         })
         .collect())
 }
@@ -466,6 +487,8 @@ struct CodingBatchArgs {
 struct CodingBatchResult {
     articles: Vec<ArticleRow>,
     codings: Vec<CodingRow>,
+    /// article_id → absolute PDF path for articles with a matched PDF
+    pdf_map: std::collections::HashMap<i64, String>,
 }
 
 #[tauri::command]
@@ -480,7 +503,192 @@ async fn list_coding_batch(
         .map_err(err)?;
     let ids: Vec<i64> = articles.iter().map(|a| a.id).collect();
     let codings = db.list_codings_for_articles(&ids).await.map_err(err)?;
-    Ok(CodingBatchResult { articles, codings })
+    let pdf_map = db.get_pdf_paths_for_articles(&ids).await.map_err(err)?;
+    Ok(CodingBatchResult { articles, codings, pdf_map })
+}
+
+/// Open a file with the system default application (macOS `open` command).
+#[tauri::command]
+async fn open_pdf_path(path: String) -> Result<(), String> {
+    std::process::Command::new("open")
+        .arg(&path)
+        .spawn()
+        .map_err(|e| format!("Failed to open file: {e}"))?;
+    Ok(())
+}
+
+/// Replace the PDF linked to an article: remove old entry, copy new file, re-link.
+#[tauri::command]
+async fn replace_article_pdf(
+    source_path: String,
+    article_id: i64,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let db = state.current().await.ok_or("no project open")?;
+    // Remove old link (keep the file on disk — user may have it open)
+    db.unlink_pdfs_for_article(article_id).await.map_err(err)?;
+    // Copy and link the new file
+    let src = std::path::Path::new(&source_path);
+    if !src.exists() {
+        return Err(format!("File not found: {source_path}"));
+    }
+    let original_stem = src.file_stem().and_then(|s| s.to_str()).unwrap_or("document");
+    let dest_name = format!("id{}_{}.pdf", article_id, original_stem);
+    let pdfs_dir = db.workspace.join("pdfs");
+    std::fs::create_dir_all(&pdfs_dir).map_err(err)?;
+    let dest_path = pdfs_dir.join(&dest_name);
+    std::fs::copy(src, &dest_path).map_err(err)?;
+    let stored = dest_path.to_string_lossy().to_string();
+    db.insert_pdf_linked(&dest_name, &stored, article_id).await.map_err(err)?;
+    Ok(stored)
+}
+
+/// Copy a PDF from any path into {workspace}/pdfs/ with a guaranteed name of
+/// `id{article_id}_{original_stem}.pdf`, then link it to the article in the DB.
+#[tauri::command]
+async fn drop_pdf_for_article(
+    source_path: String,
+    article_id: i64,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let db = state.current().await.ok_or("no project open")?;
+    let src = std::path::Path::new(&source_path);
+    if !src.exists() {
+        return Err(format!("File not found: {source_path}"));
+    }
+
+    let original_stem = src
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("document");
+    let dest_name = format!("id{}_{}.pdf", article_id, original_stem);
+
+    let pdfs_dir = db.workspace.join("pdfs");
+    std::fs::create_dir_all(&pdfs_dir).map_err(err)?;
+    let dest_path = pdfs_dir.join(&dest_name);
+
+    std::fs::copy(src, &dest_path).map_err(err)?;
+
+    let stored = dest_path.to_string_lossy().to_string();
+    db.insert_pdf_linked(&dest_name, &stored, article_id)
+        .await
+        .map_err(err)?;
+
+    Ok(stored)
+}
+
+#[derive(Debug, Serialize)]
+struct ScanPdfsResult {
+    scanned: usize,
+    matched: usize,
+    already_known: usize,
+}
+
+fn normalize_for_match(s: &str) -> String {
+    s.chars()
+        .filter(|c| c.is_alphanumeric())
+        .map(|c| c.to_ascii_lowercase())
+        .collect()
+}
+
+fn match_pdf_filename(filename: &str, article_id: i64, doi: Option<&str>, title: &str) -> bool {
+    let fname_lower = filename.to_ascii_lowercase();
+
+    // ── 1. Explicit ID tag — user puts "id42" anywhere in the stem ──────────
+    // Supports: id42_, id42-, id42., [id42], (id42), id_42, etc.
+    let id_str = article_id.to_string();
+    // Look for "id" immediately followed by the numeric id (no other digits adjacent)
+    if let Some(pos) = fname_lower.find(&format!("id{}", id_str)) {
+        let after = pos + 2 + id_str.len();
+        let ok_after = fname_lower
+            .chars()
+            .nth(after)
+            .map(|c| !c.is_ascii_digit())
+            .unwrap_or(true);
+        if ok_after {
+            return true;
+        }
+    }
+
+    let fname_norm = normalize_for_match(filename);
+
+    // ── 2. DOI match ─────────────────────────────────────────────────────────
+    if let Some(doi) = doi {
+        if !doi.is_empty() {
+            let norm_doi = normalize_for_match(doi);
+            // Use the first 20 chars of the normalised DOI as the fingerprint
+            let prefix = &norm_doi[..norm_doi.len().min(20)];
+            if !prefix.is_empty() && fname_norm.contains(prefix) {
+                return true;
+            }
+        }
+    }
+
+    // ── 3. Title word match — ≥3 significant words (>3 chars) present ───────
+    let significant: Vec<String> = title
+        .split_whitespace()
+        .filter(|w| w.len() > 3)
+        .map(|w| normalize_for_match(w))
+        .collect();
+    if significant.len() >= 3 {
+        let hits = significant
+            .iter()
+            .filter(|w| fname_norm.contains(w.as_str()))
+            .count();
+        if hits >= 3 {
+            return true;
+        }
+    }
+
+    false
+}
+
+#[tauri::command]
+async fn scan_workspace_pdfs(state: State<'_, AppState>) -> Result<ScanPdfsResult, String> {
+    let db = state.current().await.ok_or("no project open")?;
+    let pdfs_dir = db.workspace.join("pdfs");
+    if !pdfs_dir.exists() {
+        return Ok(ScanPdfsResult { scanned: 0, matched: 0, already_known: 0 });
+    }
+
+    // Collect PDF files in the folder
+    let entries: Vec<std::path::PathBuf> = std::fs::read_dir(&pdfs_dir)
+        .map_err(err)?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().map(|x| x.eq_ignore_ascii_case("pdf")).unwrap_or(false))
+        .collect();
+
+    let scanned = entries.len();
+    if scanned == 0 {
+        return Ok(ScanPdfsResult { scanned: 0, matched: 0, already_known: 0 });
+    }
+
+    let existing = db.get_existing_pdf_filenames().await.map_err(err)?;
+    let articles = db.get_all_articles_brief().await.map_err(err)?;
+
+    let mut matched = 0usize;
+    let mut already_known = 0usize;
+
+    for path in &entries {
+        let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+        if existing.contains(&filename) {
+            already_known += 1;
+            continue;
+        }
+        let stored_path = path.to_string_lossy().to_string();
+        let found = articles.iter().find(|(id, title, doi)| {
+            match_pdf_filename(&filename, *id, doi.as_deref(), title)
+        });
+        if let Some((article_id, _, _)) = found {
+            db.insert_pdf_linked(&filename, &stored_path, *article_id)
+                .await
+                .map_err(err)?;
+            matched += 1;
+        }
+    }
+
+    Ok(ScanPdfsResult { scanned, matched, already_known })
 }
 
 #[derive(Debug, Deserialize)]
@@ -758,6 +966,29 @@ async fn suggest_boolean_query(
     .await
     .ok();
     Ok(result)
+}
+
+// ── Journal scope commands ────────────────────────────────────────────────
+
+#[tauri::command]
+async fn list_journals(state: State<'_, AppState>) -> Result<Vec<JournalRow>, String> {
+    let db = state.current().await.ok_or("no project open")?;
+    db.list_journals().await.map_err(err)
+}
+
+#[tauri::command]
+async fn save_journal(
+    args: JournalInput,
+    state: State<'_, AppState>,
+) -> Result<i64, String> {
+    let db = state.current().await.ok_or("no project open")?;
+    db.save_journal(args).await.map_err(err)
+}
+
+#[tauri::command]
+async fn delete_journal(id: i64, state: State<'_, AppState>) -> Result<(), String> {
+    let db = state.current().await.ok_or("no project open")?;
+    db.delete_journal(id).await.map_err(err)
 }
 
 // ── Assessing stage commands ──────────────────────────────────────────────
@@ -1311,6 +1542,13 @@ pub fn run() {
             open_browser_panel,
             resize_browser_panel,
             close_browser_panel,
+            scan_workspace_pdfs,
+            drop_pdf_for_article,
+            open_pdf_path,
+            replace_article_pdf,
+            list_journals,
+            save_journal,
+            delete_journal,
         ])
         .setup(|_app| Ok(()))
         .run(tauri::generate_context!())

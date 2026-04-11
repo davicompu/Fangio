@@ -1,6 +1,24 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, type LmModel, type ProjectRow } from "./api";
 
+export interface DatabaseEntry {
+  id: string;
+  label: string;
+  note: string;
+  url: string;
+}
+
+export const DEFAULT_DATABASES: DatabaseEntry[] = [
+  { id: "scopus",       label: "Scopus",                        note: "Multidisciplinary, strong in business / management", url: "" },
+  { id: "wos",          label: "Web of Science",                note: "Citation-rich, SCI / SSCI / AHCI indices",           url: "" },
+  { id: "ebsco-bsc",    label: "EBSCO Business Source Complete",note: "Best for business research",                         url: "" },
+  { id: "pubmed",       label: "PubMed",                        note: "Biomedical & life sciences (free)",                  url: "" },
+  { id: "ieee",         label: "IEEE Xplore",                   note: "Engineering & computing",                            url: "" },
+  { id: "acm",          label: "ACM Digital Library",           note: "Computer science & HCI",                             url: "" },
+  { id: "scholar",      label: "Google Scholar",                note: "Broad coverage, weak filters",                       url: "https://scholar.google.com" },
+  { id: "sciencedirect",label: "ScienceDirect",                 note: "Elsevier journals",                                  url: "" },
+];
+
 export interface AppSettings {
   "lmstudio.base_url": string;
   "lmstudio.api_key": string;
@@ -8,14 +26,8 @@ export interface AppSettings {
   "lmstudio.embed_model": string;
   "telemetry.enabled": boolean;
   "telemetry.log_reasoning": boolean;
-  "database.scopus.url": string;
-  "database.wos.url": string;
-  "database.ebsco-bsc.url": string;
-  "database.pubmed.url": string;
-  "database.ieee.url": string;
-  "database.acm.url": string;
-  "database.scholar.url": string;
-  "database.sciencedirect.url": string;
+  /** Full database configuration — replaces the old per-database.*.url keys */
+  "databases.config": DatabaseEntry[];
 }
 
 const DEFAULTS: AppSettings = {
@@ -25,14 +37,7 @@ const DEFAULTS: AppSettings = {
   "lmstudio.embed_model": "",
   "telemetry.enabled": true,
   "telemetry.log_reasoning": false,
-  "database.scopus.url": "",
-  "database.wos.url": "",
-  "database.ebsco-bsc.url": "",
-  "database.pubmed.url": "",
-  "database.ieee.url": "",
-  "database.acm.url": "",
-  "database.scholar.url": "https://scholar.google.com",
-  "database.sciencedirect.url": "",
+  "databases.config": DEFAULT_DATABASES,
 };
 
 export interface LmState {

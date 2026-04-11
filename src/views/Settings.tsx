@@ -6,10 +6,13 @@ import {
   CircleAlert,
   Copy,
   Cpu,
-  Globe,
+  Database,
+  GripVertical,
   HardDrive,
   Loader2,
   Lock,
+  Pencil,
+  Plus,
   Radio,
   ShieldCheck,
   X,
@@ -19,7 +22,7 @@ import { api, type BackupInfo } from "../lib/api";
 import { Button } from "../components/ui/Button";
 import { TextField } from "../components/ui/TextField";
 import { Select } from "../components/ui/Select";
-import type { AppSettings, LmState } from "../lib/useAppState";
+import type { AppSettings, DatabaseEntry, LmState } from "../lib/useAppState";
 import { cn, formatRelative } from "../lib/utils";
 
 interface SettingsProps {
@@ -280,35 +283,17 @@ export function Settings({ open: openSetting, onClose, settings, onUpdate, lm, o
                 )}
               </section>
 
-              {/* Database access */}
+              {/* Search databases */}
               <section>
                 <SectionHeader
-                  icon={<Globe size={14} strokeWidth={1.75} />}
-                  title="Database access"
-                  description="Paste the advanced-search URL for each database you have institutional access to. Carta opens these in an in-app browser so you can run your boolean query without leaving the app. Leave empty if you don't have access."
+                  icon={<Database size={14} strokeWidth={1.75} />}
+                  title="Search databases"
+                  description="Add, remove, or configure any bibliographic database. Paste the URL for each one you have institutional access to — Carta opens them in your default browser when you run searches."
                 />
-                <div className="mt-5 space-y-3">
-                  {([
-                    { key: "database.scopus.url" as const, label: "Scopus" },
-                    { key: "database.wos.url" as const, label: "Web of Science" },
-                    { key: "database.ebsco-bsc.url" as const, label: "EBSCO Business Source Complete" },
-                    { key: "database.pubmed.url" as const, label: "PubMed" },
-                    { key: "database.ieee.url" as const, label: "IEEE Xplore" },
-                    { key: "database.acm.url" as const, label: "ACM Digital Library" },
-                    { key: "database.scholar.url" as const, label: "Google Scholar" },
-                    { key: "database.sciencedirect.url" as const, label: "ScienceDirect" },
-                  ] as { key: keyof AppSettings; label: string }[]).map(({ key, label }) => (
-                    <TextField
-                      key={key}
-                      label={label}
-                      value={settings[key] as string}
-                      onChange={(e) => onUpdate(key, e.target.value)}
-                      onBlur={(e) => onUpdate(key, e.target.value)}
-                      placeholder="https://..."
-                      mono
-                    />
-                  ))}
-                </div>
+                <DatabaseManager
+                  databases={settings["databases.config"]}
+                  onChange={(dbs) => onUpdate("databases.config", dbs)}
+                />
               </section>
 
               {/* Network sovereignty */}
@@ -431,6 +416,206 @@ function AllowedHost({ host, reason }: { host: string; reason: string }) {
       <Lock size={12} strokeWidth={1.75} className="text-[var(--color-ok-500)]" />
       <code className="font-mono text-[12px] text-[var(--color-ink-800)] flex-1">{host}</code>
       <span className="text-[11px] text-[var(--color-paper-500)]">{reason}</span>
+    </div>
+  );
+}
+
+// ── Database manager ────────────────────────────────────────────────────────
+
+function DatabaseManager({
+  databases,
+  onChange,
+}: {
+  databases: DatabaseEntry[];
+  onChange: (dbs: DatabaseEntry[]) => void;
+}) {
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [addingNew, setAddingNew] = useState(false);
+
+  const update = (id: string, patch: Partial<DatabaseEntry>) => {
+    onChange(databases.map((d) => (d.id === id ? { ...d, ...patch } : d)));
+  };
+
+  const remove = (id: string) => {
+    onChange(databases.filter((d) => d.id !== id));
+    if (editingId === id) setEditingId(null);
+  };
+
+  const addDatabase = (entry: Omit<DatabaseEntry, "id">) => {
+    const id = entry.label.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") + "-" + Date.now();
+    onChange([...databases, { id, ...entry }]);
+    setAddingNew(false);
+  };
+
+  return (
+    <div className="mt-5 space-y-2">
+      {databases.map((db) => (
+        <div
+          key={db.id}
+          className="rounded-[var(--radius-sm)] border border-[var(--color-paper-200)] bg-white overflow-hidden"
+        >
+          {/* Collapsed row */}
+          <div className="flex items-center gap-3 px-3.5 py-2.5">
+            <GripVertical size={12} strokeWidth={1.75} className="text-[var(--color-paper-300)] shrink-0" />
+            <div className="flex-1 min-w-0">
+              <div className="text-[13px] font-medium text-[var(--color-ink-800)] truncate">{db.label}</div>
+              {db.url ? (
+                <div className="text-[11px] font-mono text-[var(--color-ok-600)] truncate">{db.url}</div>
+              ) : (
+                <div className="text-[11px] text-[var(--color-paper-400)] italic">No URL — click edit to add</div>
+              )}
+            </div>
+            <button
+              type="button"
+              onClick={() => setEditingId(editingId === db.id ? null : db.id)}
+              className="p-1.5 rounded-[var(--radius-xs)] hover:bg-[var(--color-paper-100)] transition-paper shrink-0"
+              aria-label="Edit"
+            >
+              <Pencil size={12} strokeWidth={1.75} className="text-[var(--color-paper-500)]" />
+            </button>
+            <button
+              type="button"
+              onClick={() => remove(db.id)}
+              className="p-1.5 rounded-[var(--radius-xs)] hover:bg-[var(--color-warn-50)] transition-paper shrink-0"
+              aria-label="Remove"
+            >
+              <X size={12} strokeWidth={2} className="text-[var(--color-paper-400)] hover:text-[var(--color-warn-500)]" />
+            </button>
+          </div>
+
+          {/* Expanded edit form */}
+          <AnimatePresence initial={false}>
+            {editingId === db.id && (
+              <motion.div
+                initial={{ height: 0, opacity: 0 }}
+                animate={{ height: "auto", opacity: 1 }}
+                exit={{ height: 0, opacity: 0 }}
+                transition={{ duration: 0.2, ease: [0.2, 0.7, 0.2, 1] }}
+                style={{ overflow: "hidden" }}
+              >
+                <div className="border-t border-[var(--color-paper-200)] px-3.5 py-3 space-y-3 bg-[var(--color-paper-50)]">
+                  <div className="grid grid-cols-2 gap-3">
+                    <TextField
+                      label="Name"
+                      value={db.label}
+                      onChange={(e) => update(db.id, { label: e.target.value })}
+                      onBlur={(e) => update(db.id, { label: e.target.value })}
+                    />
+                    <TextField
+                      label="Short note"
+                      value={db.note}
+                      onChange={(e) => update(db.id, { note: e.target.value })}
+                      onBlur={(e) => update(db.id, { note: e.target.value })}
+                      placeholder="e.g., Business research"
+                    />
+                  </div>
+                  <TextField
+                    label="URL"
+                    value={db.url}
+                    onChange={(e) => update(db.id, { url: e.target.value })}
+                    onBlur={(e) => update(db.id, { url: e.target.value })}
+                    placeholder="https://..."
+                    mono
+                    hint="Paste the advanced-search page URL. Carta opens it in your default browser."
+                  />
+                  <div className="flex justify-end pt-1">
+                    <button
+                      type="button"
+                      onClick={() => setEditingId(null)}
+                      className="text-[12px] font-medium text-[var(--color-ink-700)] hover:text-[var(--color-ink-900)] transition-paper"
+                    >
+                      Done
+                    </button>
+                  </div>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+      ))}
+
+      {/* Add new database form */}
+      <AnimatePresence initial={false}>
+        {addingNew && (
+          <motion.div
+            initial={{ opacity: 0, y: -4 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -4 }}
+            className="rounded-[var(--radius-sm)] border border-[var(--color-ink-300)] bg-[var(--color-paper-50)] p-3.5 space-y-3"
+          >
+            <p className="text-[12px] font-medium text-[var(--color-ink-800)]">New database</p>
+            <NewDatabaseForm
+              onAdd={addDatabase}
+              onCancel={() => setAddingNew(false)}
+            />
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <button
+        type="button"
+        onClick={() => { setAddingNew(true); setEditingId(null); }}
+        disabled={addingNew}
+        className="w-full flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-[var(--radius-sm)] border border-dashed border-[var(--color-paper-300)] text-[12px] font-medium text-[var(--color-paper-500)] hover:border-[var(--color-paper-500)] hover:text-[var(--color-ink-700)] hover:bg-[var(--color-paper-50)] transition-paper disabled:opacity-40 disabled:cursor-not-allowed"
+      >
+        <Plus size={13} strokeWidth={2} />
+        Add database
+      </button>
+    </div>
+  );
+}
+
+function NewDatabaseForm({
+  onAdd,
+  onCancel,
+}: {
+  onAdd: (entry: Omit<DatabaseEntry, "id">) => void;
+  onCancel: () => void;
+}) {
+  const [label, setLabel] = useState("");
+  const [note, setNote] = useState("");
+  const [url, setUrl] = useState("");
+
+  const handleAdd = () => {
+    if (!label.trim()) return;
+    onAdd({ label: label.trim(), note: note.trim(), url: url.trim() });
+  };
+
+  return (
+    <div className="space-y-3">
+      <div className="grid grid-cols-2 gap-3">
+        <TextField
+          label="Name"
+          value={label}
+          onChange={(e) => setLabel(e.target.value)}
+          placeholder="e.g., JSTOR"
+          autoFocus
+        />
+        <TextField
+          label="Short note"
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          placeholder="e.g., Humanities & social sciences"
+        />
+      </div>
+      <TextField
+        label="URL"
+        value={url}
+        onChange={(e) => setUrl(e.target.value)}
+        placeholder="https://..."
+        mono
+        hint="The advanced-search page URL. You can add it later too."
+        onKeyDown={(e) => { if (e.key === "Enter") handleAdd(); if (e.key === "Escape") onCancel(); }}
+      />
+      <div className="flex items-center gap-2 pt-1">
+        <Button variant="primary" size="sm" onClick={handleAdd} disabled={!label.trim()}>
+          <Plus size={12} strokeWidth={2.5} />
+          Add
+        </Button>
+        <Button variant="ghost" size="sm" onClick={onCancel}>
+          Cancel
+        </Button>
+      </div>
     </div>
   );
 }

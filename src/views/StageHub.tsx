@@ -5,6 +5,7 @@ import {
   Boxes,
   CheckCircle2,
   Compass,
+  FolderOpen,
   Lock,
   PenLine,
   Pencil,
@@ -25,6 +26,7 @@ interface StageHubProps {
   onOpenSettings: () => void;
   onProjectChanged: () => Promise<void>;
   onEnterStage: (stage: "assembling" | "arranging" | "assessing") => void;
+  onCloseProject: () => Promise<void>;
 }
 
 const stages = [
@@ -55,7 +57,7 @@ const stages = [
   },
 ];
 
-export function StageHub({ project, onOpenSettings, onProjectChanged, onEnterStage }: StageHubProps) {
+export function StageHub({ project, onOpenSettings, onProjectChanged, onEnterStage, onCloseProject }: StageHubProps) {
   const currentStage = project.current_stage;
 
   const [editing, setEditing] = useState(false);
@@ -131,6 +133,13 @@ export function StageHub({ project, onOpenSettings, onProjectChanged, onEnterSta
           </p>
         </div>
         <div className="no-drag flex items-center gap-2">
+          <button
+            onClick={onCloseProject}
+            className="inline-flex items-center gap-1.5 px-3 h-8 rounded-[var(--radius-sm)] text-[12px] text-[var(--color-paper-600)] hover:bg-[var(--color-paper-100)] hover:text-[var(--color-ink-800)] transition-paper"
+          >
+            <FolderOpen size={13} strokeWidth={1.75} />
+            Projects
+          </button>
           <button
             onClick={onOpenSettings}
             className="inline-flex items-center gap-1.5 px-3 h-8 rounded-[var(--radius-sm)] text-[12px] text-[var(--color-paper-600)] hover:bg-[var(--color-paper-100)] hover:text-[var(--color-ink-800)] transition-paper"

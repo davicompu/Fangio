@@ -1,7 +1,7 @@
-import { useState, useRef, useEffect } from "react";
-import { listen } from "@tauri-apps/api/event";
+import { useState, useRef } from "react";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { motion } from "framer-motion";
-import { Calendar, Database, Globe, Lightbulb, Save, Search, Sparkles, X } from "lucide-react";
+import { Calendar, Database, ExternalLink, Globe, Lightbulb, Save, Search, Settings as SettingsIcon, Sparkles } from "lucide-react";
 import { api, type ProjectRow, type SuggestQueryResult } from "../../lib/api";
 import { Card } from "../../components/ui/Card";
 import { TextField, TextArea } from "../../components/ui/TextField";
@@ -16,26 +16,9 @@ interface Props {
   onOpenSettings: () => void;
 }
 
-interface DownloadBanner {
-  id: number;
-  path: string;
-  filename: string;
-  source_database: string;
-  error?: string;
-}
-
-const DATABASES = [
-  { id: "scopus", label: "Scopus", note: "Multidisciplinary, strong in business / management" },
-  { id: "wos", label: "Web of Science", note: "Citation-rich, SCI / SSCI / AHCI indices" },
-  { id: "ebsco-bsc", label: "EBSCO Business Source Complete", note: "Best for business research" },
-  { id: "pubmed", label: "PubMed", note: "Biomedical & life sciences (free)" },
-  { id: "ieee", label: "IEEE Xplore", note: "Engineering & computing" },
-  { id: "acm", label: "ACM Digital Library", note: "Computer science & HCI" },
-  { id: "scholar", label: "Google Scholar", note: "Broad coverage, weak filters" },
-  { id: "sciencedirect", label: "ScienceDirect", note: "Elsevier journals" },
-];
-
 export function AcquisitionForm({ project, settings, onSaved, onOpenSettings }: Props) {
+  const DATABASES = settings["databases.config"] ?? [];
+
   const [databases, setDatabases] = useState<Set<string>>(
     () => new Set<string>(project.databases ? (JSON.parse(project.databases) as string[]) : []),
   );
@@ -45,12 +28,6 @@ export function AcquisitionForm({ project, settings, onSaved, onOpenSettings }: 
   const [busy, setBusy] = useState(false);
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
-  const [browserDb, setBrowserDb] = useState<string | null>(null);
-  const [browserUrl, setBrowserUrl] = useState("");
-  const [browserError, setBrowserError] = useState<string | null>(null);
-  const [downloadBanners, setDownloadBanners] = useState<DownloadBanner[]>([]);
-  const panelRef = useRef<HTMLDivElement>(null);
-  const bannerIdRef = useRef(0);
   const [modalOpen, setModalOpen] = useState(false);
   const [suggestResult, setSuggestResult] = useState<SuggestQueryResult | null>(null);
   const [suggestError, setSuggestError] = useState<string | null>(null);
@@ -65,70 +42,6 @@ export function AcquisitionForm({ project, settings, onSaved, onOpenSettings }: 
       return next;
     });
   };
-
-  // Listen for reference files downloaded inside the browser panel
-  useEffect(() => {
-    const unlisten = listen<{ path: string; filename: string; source_database: string }>(
-      "browser:download-ready",
-      (event) => {
-        bannerIdRef.current += 1;
-        setDownloadBanners((prev) => [
-          ...prev,
-          { ...event.payload, id: bannerIdRef.current },
-        ]);
-      },
-    );
-    return () => {
-      unlisten.then((f) => f());
-    };
-  }, []);
-
-  // Sync the native webview with the placeholder div position
-  useEffect(() => {
-    if (!browserDb || !browserUrl || !panelRef.current) return;
-    let observer: ResizeObserver | null = null;
-    setBrowserError(null);
-
-    const STATUS_BAR = 36;
-
-    const init = () => {
-      if (!panelRef.current) return;
-      const rect = panelRef.current.getBoundingClientRect();
-      if (rect.width === 0) {
-        // Layout not settled yet — retry on next frame
-        requestAnimationFrame(init);
-        return;
-      }
-      const height = window.innerHeight - rect.top - STATUS_BAR;
-      // Pass viewport-relative coords; Rust converts to screen coords via inner_position()
-      api
-        .openBrowserPanel(browserUrl, rect.left, rect.top, rect.width, height, browserDb)
-        .then(() => {
-          setBrowserError(null);
-        })
-        .catch((e: unknown) => {
-          const msg = e instanceof Error ? e.message : String(e);
-          setBrowserError(msg || "Failed to open browser panel");
-        });
-
-      observer = new ResizeObserver(() => {
-        if (!panelRef.current) return;
-        const r = panelRef.current.getBoundingClientRect();
-        const h = window.innerHeight - r.top - STATUS_BAR;
-        api.resizeBrowserPanel(r.left, r.top, r.width, h).catch(console.error);
-      });
-      observer.observe(panelRef.current);
-    };
-
-    const rafId = requestAnimationFrame(init);
-
-    return () => {
-      cancelAnimationFrame(rafId);
-      observer?.disconnect();
-      api.closeBrowserPanel().catch(() => {});
-    };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [browserDb, browserUrl]);
 
   const save = async () => {
     setBusy(true);
@@ -215,345 +128,217 @@ export function AcquisitionForm({ project, settings, onSaved, onOpenSettings }: 
     }
   };
 
+  const handleOpenDatabase = async (dbId: string) => {
+    const entry = DATABASES.find((d) => d.id === dbId);
+    if (!entry?.url) return;
+    let url = entry.url;
+    if (!/^https?:\/\//i.test(url)) url = "https://" + url;
+    try {
+      await openUrl(url);
+    } catch (e) {
+      console.error("Failed to open URL:", e);
+    }
+  };
+
   return (
-    <div className={`grid gap-10 ${browserDb ? "grid-cols-[1fr_minmax(0,55%)]" : "grid-cols-[1fr_320px] max-w-6xl"}`}>
-      <div className="space-y-8">
-        {/* Databases */}
-        <section>
-          <SectionHeader
-            icon={<Database size={14} strokeWidth={1.75} />}
-            title="Search mechanisms"
-            description="Which databases will you query? Pick the engines you actually have institutional access to."
+    <div className="space-y-8 max-w-3xl">
+      {/* Databases */}
+      <section>
+        <SectionHeader
+          icon={<Database size={14} strokeWidth={1.75} />}
+          title="Search mechanisms"
+          description="Which databases will you query? Pick the engines you actually have institutional access to."
+        />
+        <div className="mt-4 grid grid-cols-2 gap-2.5">
+          {DATABASES.map((d) => {
+            const selected = databases.has(d.id);
+            return (
+              <button
+                key={d.id}
+                type="button"
+                onClick={() => toggleDb(d.id)}
+                className={
+                  "text-left p-3.5 rounded-[var(--radius-sm)] border transition-paper " +
+                  (selected
+                    ? "bg-white border-[var(--color-ink-700)] shadow-[var(--shadow-paper)]"
+                    : "bg-[var(--color-paper-50)] border-[var(--color-paper-300)] hover:border-[var(--color-paper-500)]")
+                }
+              >
+                <div className="flex items-center gap-2">
+                  <div
+                    className={
+                      "w-4 h-4 rounded-[3px] border-2 flex items-center justify-center transition-paper " +
+                      (selected
+                        ? "bg-[var(--color-ink-700)] border-[var(--color-ink-700)]"
+                        : "border-[var(--color-paper-400)]")
+                    }
+                  >
+                    {selected && (
+                      <svg width="9" height="9" viewBox="0 0 9 9">
+                        <path
+                          d="M1 4.5L3.5 7L8 1.5"
+                          stroke="white"
+                          strokeWidth="2"
+                          fill="none"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                      </svg>
+                    )}
+                  </div>
+                  <span className="font-medium text-[13px] text-[var(--color-ink-800)]">
+                    {d.label}
+                  </span>
+                </div>
+                <p className="mt-1.5 ml-6 text-[12px] text-[var(--color-paper-600)] leading-relaxed">
+                  {d.note}
+                </p>
+              </button>
+            );
+          })}
+        </div>
+      </section>
+
+      {/* Period */}
+      <section>
+        <SectionHeader
+          icon={<Calendar size={14} strokeWidth={1.75} />}
+          title="Search period"
+          description="The publication date range your search will cover. Open the start year for emerging fields."
+        />
+        <div className="mt-4 grid grid-cols-2 gap-4 max-w-md">
+          <TextField
+            label="From (year)"
+            value={start}
+            onChange={(e) => setStart(e.target.value)}
+            placeholder="e.g., 2014"
+            mono
           />
-          <div className="mt-4 grid grid-cols-2 gap-2.5">
-            {DATABASES.map((d) => {
-              const selected = databases.has(d.id);
-              return (
+          <TextField
+            label="To (year)"
+            value={end}
+            onChange={(e) => setEnd(e.target.value)}
+            placeholder="e.g., 2025"
+            mono
+          />
+        </div>
+      </section>
+
+      {/* Query */}
+      <section>
+        <div className="flex items-center justify-between mb-1.5">
+          <SectionHeader
+            icon={<Search size={14} strokeWidth={1.75} />}
+            title="Boolean query"
+            description="The actual string you'll paste into each database's advanced search."
+          />
+          <button
+            type="button"
+            onClick={handleSuggest}
+            disabled={modalOpen}
+            className="no-drag flex items-center gap-1.5 px-3 py-1.5 rounded-[var(--radius-sm)] text-[12px] font-medium text-[var(--color-accent-600)] border border-[var(--color-accent-300)] bg-[var(--color-accent-50)] hover:bg-[var(--color-accent-100)] transition-paper disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <Sparkles size={12} strokeWidth={2} />
+            {query.trim() ? "Advise" : "Suggest"}
+          </button>
+        </div>
+        <div className="mt-4">
+          <TextArea
+            label="Query"
+            value={query}
+            onChange={(e) => { setQuery(e.target.value); previousQuery.current = null; }}
+            onKeyDown={handleQueryKeyDown}
+            rows={6}
+            placeholder={`("social commerce" OR "s-commerce" OR "social shopping")\nAND ("consumer behavi*" OR "buyer behavi*")\nAND ("engagement" OR "purchase" OR "intention")`}
+            hint='Use OR between synonyms, AND between concepts. Wildcards (*) where supported. Press Ctrl+Z after accepting a suggestion to undo.'
+          />
+        </div>
+      </section>
+
+      {/* Run searches — only shown when databases are selected */}
+      {databases.size > 0 && (() => {
+        const searchable = DATABASES.filter((d) => databases.has(d.id) && d.url);
+        const selectedNoUrl = DATABASES.filter((d) => databases.has(d.id) && !d.url);
+        return (
+          <section>
+            <SectionHeader
+              icon={<Globe size={14} strokeWidth={1.75} />}
+              title="Run searches"
+              description="Open a database in your default browser, paste the query into Advanced Search, then export results as RIS, BibTeX, WoS tab-delimited, or Scopus CSV."
+            />
+            <div className="mt-4 flex flex-wrap items-center gap-2">
+              {searchable.map((d) => (
                 <button
                   key={d.id}
                   type="button"
-                  onClick={() => toggleDb(d.id)}
-                  className={
-                    "text-left p-3.5 rounded-[var(--radius-sm)] border transition-paper " +
-                    (selected
-                      ? "bg-white border-[var(--color-ink-700)] shadow-[var(--shadow-paper)]"
-                      : "bg-[var(--color-paper-50)] border-[var(--color-paper-300)] hover:border-[var(--color-paper-500)]")
-                  }
+                  onClick={() => handleOpenDatabase(d.id)}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-[var(--radius-sm)] text-[12px] font-medium bg-[var(--color-paper-100)] border border-[var(--color-paper-300)] text-[var(--color-ink-800)] hover:border-[var(--color-paper-500)] transition-paper"
                 >
-                  <div className="flex items-center gap-2">
-                    <div
-                      className={
-                        "w-4 h-4 rounded-[3px] border-2 flex items-center justify-center transition-paper " +
-                        (selected
-                          ? "bg-[var(--color-ink-700)] border-[var(--color-ink-700)]"
-                          : "border-[var(--color-paper-400)]")
-                      }
-                    >
-                      {selected && (
-                        <svg width="9" height="9" viewBox="0 0 9 9">
-                          <path
-                            d="M1 4.5L3.5 7L8 1.5"
-                            stroke="white"
-                            strokeWidth="2"
-                            fill="none"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                          />
-                        </svg>
-                      )}
-                    </div>
-                    <span className="font-medium text-[13px] text-[var(--color-ink-800)]">
-                      {d.label}
-                    </span>
-                  </div>
-                  <p className="mt-1.5 ml-6 text-[12px] text-[var(--color-paper-600)] leading-relaxed">
-                    {d.note}
-                  </p>
+                  {d.label}
+                  <ExternalLink size={11} strokeWidth={1.75} className="text-[var(--color-paper-400)]" />
                 </button>
-              );
-            })}
-          </div>
-        </section>
-
-        {/* Period */}
-        <section>
-          <SectionHeader
-            icon={<Calendar size={14} strokeWidth={1.75} />}
-            title="Search period"
-            description="The publication date range your search will cover. Open the start year for emerging fields."
-          />
-          <div className="mt-4 grid grid-cols-2 gap-4 max-w-md">
-            <TextField
-              label="From (year)"
-              value={start}
-              onChange={(e) => setStart(e.target.value)}
-              placeholder="e.g., 2014"
-              mono
-            />
-            <TextField
-              label="To (year)"
-              value={end}
-              onChange={(e) => setEnd(e.target.value)}
-              placeholder="e.g., 2025"
-              mono
-            />
-          </div>
-        </section>
-
-        {/* Query */}
-        <section>
-          <div className="flex items-center justify-between mb-1.5">
-            <SectionHeader
-              icon={<Search size={14} strokeWidth={1.75} />}
-              title="Boolean query"
-              description="The actual string you'll paste into each database's advanced search. You'll run the search yourself in your normal browser."
-            />
-            <button
-              type="button"
-              onClick={handleSuggest}
-              disabled={modalOpen}
-              className="no-drag flex items-center gap-1.5 px-3 py-1.5 rounded-[var(--radius-sm)] text-[12px] font-medium text-[var(--color-accent-600)] border border-[var(--color-accent-300)] bg-[var(--color-accent-50)] hover:bg-[var(--color-accent-100)] transition-paper disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              <Sparkles size={12} strokeWidth={2} />
-              {query.trim() ? "Advise" : "Suggest"}
-            </button>
-          </div>
-          <div className="mt-4">
-            <TextArea
-              label="Query"
-              value={query}
-              onChange={(e) => { setQuery(e.target.value); previousQuery.current = null; }}
-              onKeyDown={handleQueryKeyDown}
-              rows={6}
-              placeholder={`("social commerce" OR "s-commerce" OR "social shopping")\nAND ("consumer behavi*" OR "buyer behavi*")\nAND ("engagement" OR "purchase" OR "intention")`}
-              hint='Use OR between synonyms, AND between concepts. Wildcards (*) where supported. Press Ctrl+Z after accepting a suggestion to undo.'
-            />
-          </div>
-        </section>
-
-        {/* Run searches — only shown when databases are selected */}
-        {databases.size > 0 && (() => {
-          const searchable = DATABASES.filter(
-            (d) => databases.has(d.id) && settings[`database.${d.id}.url` as keyof typeof settings],
-          );
-          const selectedNoUrl = DATABASES.filter(
-            (d) => databases.has(d.id) && !settings[`database.${d.id}.url` as keyof typeof settings],
-          );
-          return (
-            <section>
-              <SectionHeader
-                icon={<Globe size={14} strokeWidth={1.75} />}
-                title="Run searches"
-                description="Open a database in-app to run your query and import results directly."
-              />
-              <div className="mt-4 flex flex-wrap items-center gap-2">
-                {searchable.map((d) => (
-                  <button
-                    key={d.id}
-                    type="button"
-                    onClick={() => {
-                      let url = settings[`database.${d.id}.url` as keyof typeof settings] as string;
-                      if (url && !/^https?:\/\//i.test(url)) url = "https://" + url;
-                      setBrowserError(null);
-                      setBrowserDb(d.id);
-                      setBrowserUrl(url);
-                    }}
-                    className={
-                      "px-3 py-1.5 rounded-[var(--radius-sm)] text-[12px] font-medium transition-paper " +
-                      (browserDb === d.id
-                        ? "bg-[var(--color-ink-700)] text-white"
-                        : "bg-[var(--color-paper-100)] border border-[var(--color-paper-300)] text-[var(--color-ink-800)] hover:border-[var(--color-paper-500)]")
-                    }
-                  >
-                    {d.label}
-                  </button>
-                ))}
-                {searchable.length === 0 && (
-                  <button
-                    type="button"
-                    onClick={onOpenSettings}
-                    className="text-[12px] text-[var(--color-accent-600)] hover:underline"
-                  >
-                    No databases configured — add URLs in Settings to search here
-                  </button>
-                )}
-              </div>
-              {selectedNoUrl.length > 0 && searchable.length > 0 && (
-                <p className="mt-2 text-[11px] text-[var(--color-paper-500)]">
-                  {selectedNoUrl.map((d) => d.label).join(", ")} —{" "}
-                  <button
-                    type="button"
-                    onClick={onOpenSettings}
-                    className="underline hover:text-[var(--color-ink-700)]"
-                  >
-                    Add URL in Settings
-                  </button>
-                </p>
+              ))}
+              {searchable.length === 0 && (
+                <button
+                  type="button"
+                  onClick={onOpenSettings}
+                  className="inline-flex items-center gap-1.5 text-[12px] text-[var(--color-accent-600)] hover:underline"
+                >
+                  <SettingsIcon size={12} strokeWidth={1.75} />
+                  No URLs configured — add them in Settings
+                </button>
               )}
-            </section>
-          );
-        })()}
+            </div>
+            {selectedNoUrl.length > 0 && searchable.length > 0 && (
+              <p className="mt-2 text-[11px] text-[var(--color-paper-500)]">
+                {selectedNoUrl.map((d) => d.label).join(", ")} —{" "}
+                <button
+                  type="button"
+                  onClick={onOpenSettings}
+                  className="underline hover:text-[var(--color-ink-700)]"
+                >
+                  add URL in Settings
+                </button>
+              </p>
+            )}
+          </section>
+        );
+      })()}
 
-        <div className="flex items-center gap-3 pt-2">
-          <Button onClick={save} disabled={busy} variant="primary">
-            <Save size={14} strokeWidth={2} />
-            {busy ? "Saving…" : "Save acquisition decisions"}
-          </Button>
-          {savedAt && (
-            <motion.span
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              className="text-[12px] text-[var(--color-ok-500)]"
-            >
-              Saved to decision log
-            </motion.span>
-          )}
-          {saveError && (
-            <span className="text-[12px] text-[var(--color-warn-600)]">{saveError}</span>
-          )}
+      {/* Workflow note */}
+      <Card className="p-5 bg-[var(--color-paper-50)]">
+        <div className="flex items-start gap-3">
+          <Lightbulb size={14} strokeWidth={1.75} className="text-[var(--color-accent-500)] shrink-0 mt-0.5" />
+          <div>
+            <p className="text-[13px] font-medium text-[var(--color-ink-800)] mb-1">Import after each search</p>
+            <p className="prose-editorial text-[13px] leading-[1.65] text-[var(--color-paper-600)]">
+              After running each search, export the results and bring them into the{" "}
+              <strong>Importing</strong> tab. Deduplication runs automatically on DOIs; you'll
+              review fuzzy title clusters yourself.
+            </p>
+          </div>
         </div>
+      </Card>
+
+      <div className="flex items-center gap-3 pt-2">
+        <Button onClick={save} disabled={busy} variant="primary">
+          <Save size={14} strokeWidth={2} />
+          {busy ? "Saving…" : "Save acquisition decisions"}
+        </Button>
+        {savedAt && (
+          <motion.span
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            className="text-[12px] text-[var(--color-ok-500)]"
+          >
+            Saved to decision log
+          </motion.span>
+        )}
+        {saveError && (
+          <span className="text-[12px] text-[var(--color-warn-600)]">{saveError}</span>
+        )}
       </div>
 
-      {/* Right column: browser panel OR advisor card */}
-      <aside>
-        {/* Import banners — always visible so pending imports survive panel close */}
-        {downloadBanners.length > 0 && (
-          <div className="mb-3 flex flex-col gap-2">
-            {downloadBanners.map((banner) => (
-              <motion.div
-                key={banner.id}
-                initial={{ opacity: 0, y: -6 }}
-                animate={{ opacity: 1, y: 0 }}
-                className={`p-3 rounded-[var(--radius-sm)] border flex items-center justify-between gap-3 ${
-                  banner.error
-                    ? "border-[var(--color-warn-300)] bg-[var(--color-warn-50)]"
-                    : "border-[var(--color-ok-300)] bg-[var(--color-ok-50)]"
-                }`}
-              >
-                <div className="min-w-0">
-                  <p className="text-[12px] font-medium text-[var(--color-ink-800)] truncate">
-                    {banner.filename}
-                  </p>
-                  {banner.error ? (
-                    <p className="text-[11px] text-[var(--color-warn-600)] mt-0.5">{banner.error}</p>
-                  ) : (
-                    <p className="text-[11px] text-[var(--color-paper-500)] mt-0.5">
-                      Downloaded from {banner.source_database}
-                    </p>
-                  )}
-                </div>
-                <div className="flex items-center gap-2 shrink-0">
-                  <Button
-                    variant="primary"
-                    size="sm"
-                    onClick={async () => {
-                      try {
-                        await api.commitImport(banner.path, banner.source_database);
-                        setDownloadBanners((prev) => prev.filter((b) => b.id !== banner.id));
-                        onSaved();
-                      } catch (e: unknown) {
-                        const msg = e instanceof Error ? e.message : String(e);
-                        setDownloadBanners((prev) =>
-                          prev.map((b) => (b.id === banner.id ? { ...b, error: msg } : b)),
-                        );
-                      }
-                    }}
-                  >
-                    Import
-                  </Button>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setDownloadBanners((prev) => prev.filter((b) => b.id !== banner.id))
-                    }
-                    className="p-1 rounded hover:bg-[var(--color-ok-100)] transition-paper"
-                    aria-label="Dismiss"
-                  >
-                    <X size={12} strokeWidth={2} className="text-[var(--color-paper-500)]" />
-                  </button>
-                </div>
-              </motion.div>
-            ))}
-          </div>
-        )}
-        {browserDb ? (
-          <div className="sticky top-12 flex flex-col gap-3">
-            {/* Browser panel header with close button */}
-            <div className="flex items-center justify-between px-1">
-              <span className="text-[11px] text-[var(--color-paper-500)] font-medium">
-                {DATABASES.find((d) => d.id === browserDb)?.label ?? browserDb}
-              </span>
-              <button
-                type="button"
-                onClick={() => {
-                  setBrowserDb(null);
-                  setBrowserUrl("");
-                  setBrowserError(null);
-                }}
-                className="no-drag p-1 rounded-[var(--radius-xs)] hover:bg-[var(--color-paper-200)] transition-paper"
-                aria-label="Close browser"
-              >
-                <X size={14} strokeWidth={1.75} />
-              </button>
-            </div>
-
-            {/* Native webview placeholder — sized to fill the column */}
-            <div
-              ref={panelRef}
-              className="relative rounded-[var(--radius-sm)] border border-[var(--color-paper-300)] bg-[var(--color-paper-100)]"
-              style={{ height: "calc(100vh - 200px)", minHeight: 400 }}
-            >
-              {browserError && (
-                <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 p-6 text-center">
-                  <p className="text-[13px] font-medium text-[var(--color-warn-700)]">
-                    Could not open browser
-                  </p>
-                  <p className="text-[12px] text-[var(--color-paper-500)] max-w-xs leading-relaxed">
-                    {browserError}
-                  </p>
-                  <p className="text-[11px] text-[var(--color-paper-400)]">
-                    Check the URL in Settings — it must start with https://
-                  </p>
-                </div>
-              )}
-            </div>
-          </div>
-        ) : (
-          <div className="sticky top-12">
-            <Card className="p-5">
-              <div className="flex items-center gap-2 mb-3">
-                <Lightbulb size={14} strokeWidth={1.75} className="text-[var(--color-accent-500)]" />
-                <span className="eyebrow">Advisor</span>
-              </div>
-              <h3 className="font-semibold text-[15px] text-[var(--color-ink-900)] mb-2 tracking-tight">
-                Run the search yourself
-              </h3>
-              <p className="prose-editorial text-[13px] leading-[1.65] text-[var(--color-paper-700)] mb-4">
-                Carta doesn't browse library databases for you. You stay in control of your
-                institutional session. When you're ready, open each selected database in your normal
-                browser, paste the query into Advanced Search, set the date range, and export the
-                results as RIS, BibTeX, WoS tab-delimited, or Scopus CSV.
-              </p>
-              <div className="hairline my-4" />
-              <p className="prose-editorial text-[13px] leading-[1.65] text-[var(--color-paper-700)]">
-                Then come to the <strong>Importing</strong> tab and drop the export files in. The
-                dedup step will happen automatically on DOIs and you'll review the trickier
-                title-fuzzy clusters yourself.
-              </p>
-              <div className="mt-5 px-3 py-2.5 rounded-[var(--radius-sm)] bg-[var(--color-paper-100)] border border-[var(--color-paper-200)]">
-                <div className="flex items-center gap-1.5 text-[var(--color-paper-500)] mb-1">
-                  <Globe size={11} strokeWidth={1.75} />
-                  <span className="eyebrow">Why no automation</span>
-                </div>
-                <p className="text-[12px] text-[var(--color-paper-600)] leading-relaxed">
-                  Your university policy prohibits automated retrieval from licensed databases.
-                  Carta respects that — it processes only files you've already exported yourself.
-                </p>
-              </div>
-            </Card>
-          </div>
-        )}
-      </aside>
       <QuerySuggestionModal
         open={modalOpen}
         mode={suggestMode}

@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { useAppState } from "./lib/useAppState";
+import { api } from "./lib/api";
 import { ProjectPicker } from "./views/ProjectPicker";
 import { OnboardingWizard } from "./views/onboarding/OnboardingWizard";
 import { StageHub } from "./views/StageHub";
@@ -95,6 +96,10 @@ function App() {
                 if (s === "assembling") setRoute("assembling");
                 if (s === "arranging") setRoute("arranging");
                 if (s === "assessing") setRoute("assessing");
+              }}
+              onCloseProject={async () => {
+                await api.closeProject();
+                setProject(null);
               }}
             />
           </motion.div>

@@ -149,6 +149,30 @@ pub struct DecisionInput {
     pub rationale: Option<String>,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct JournalRow {
+    pub id: i64,
+    pub name: String,
+    pub issn: Option<String>,
+    pub abs_rating: Option<String>,
+    pub abdc_rating: Option<String>,
+    pub impact_factor: Option<f64>,
+    pub field: Option<String>,
+    pub is_custom: bool,
+    pub created_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct JournalInput {
+    pub id: Option<i64>,
+    pub name: String,
+    pub issn: Option<String>,
+    pub abs_rating: Option<String>,
+    pub abdc_rating: Option<String>,
+    pub impact_factor: Option<f64>,
+    pub field: Option<String>,
+}
+
 impl ProjectDb {
     /// Create or open a project workspace folder, ensuring the standard
     /// subdirectory layout and the SQLite database exist.
@@ -877,6 +901,90 @@ impl ProjectDb {
         Ok(())
     }
 
+    /// Returns article_id → stored_path for all articles that have a linked PDF.
+    pub async fn get_pdf_paths_for_articles(
+        &self,
+        article_ids: &[i64],
+    ) -> Result<std::collections::HashMap<i64, String>> {
+        if article_ids.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+        // Build "?,?,?" placeholders
+        let placeholders = article_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!(
+            "SELECT article_id, stored_path FROM pdf \
+             WHERE article_id IS NOT NULL AND article_id IN ({}) \
+             ORDER BY created_at DESC",
+            placeholders
+        );
+        let mut q = sqlx::query(&sql);
+        for id in article_ids {
+            q = q.bind(id);
+        }
+        let rows = q.fetch_all(&self.pool).await?;
+        // Keep only first match per article (ORDER BY created_at DESC means newest first)
+        let mut map = std::collections::HashMap::new();
+        for r in rows {
+            let aid: i64 = r.get("article_id");
+            let path: String = r.get("stored_path");
+            map.entry(aid).or_insert(path);
+        }
+        Ok(map)
+    }
+
+    /// Returns (id, title, doi) for every article — used for PDF filename matching.
+    pub async fn get_all_articles_brief(&self) -> Result<Vec<(i64, String, Option<String>)>> {
+        let rows = sqlx::query("SELECT id, title, doi FROM article ORDER BY id")
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| (r.get("id"), r.get("title"), r.get("doi")))
+            .collect())
+    }
+
+    /// Returns the set of filenames already present in the pdf table.
+    pub async fn get_existing_pdf_filenames(
+        &self,
+    ) -> Result<std::collections::HashSet<String>> {
+        let rows = sqlx::query("SELECT filename FROM pdf")
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows.into_iter().map(|r| r.get("filename")).collect())
+    }
+
+    /// Remove all PDF rows linked to an article (used before replacing with a new file).
+    pub async fn unlink_pdfs_for_article(&self, article_id: i64) -> Result<()> {
+        sqlx::query("DELETE FROM pdf WHERE article_id = ?")
+            .bind(article_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Insert a PDF row that was auto-matched from the workspace pdfs/ folder.
+    pub async fn insert_pdf_linked(
+        &self,
+        filename: &str,
+        stored_path: &str,
+        article_id: i64,
+    ) -> Result<()> {
+        let now = chrono::Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT OR IGNORE INTO pdf \
+             (filename, stored_path, source_path, article_id, created_at) \
+             VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(filename)
+        .bind(stored_path)
+        .bind(stored_path)
+        .bind(article_id)
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     pub async fn list_pdfs(&self) -> Result<Vec<PdfRow>> {
         let rows = sqlx::query(
             "SELECT id, filename, stored_path, source_path, page_count, text_length, article_id, indexed_at, embedded_at, created_at \
@@ -1148,6 +1256,72 @@ impl ProjectDb {
         .bind(now)
         .execute(&self.pool)
         .await?;
+        Ok(())
+    }
+
+    // ── Journal scope ─────────────────────────────────────────────────────
+
+    pub async fn list_journals(&self) -> Result<Vec<JournalRow>> {
+        let rows = sqlx::query(
+            "SELECT id, name, issn, abs_rating, abdc_rating, impact_factor, field, is_custom, created_at
+             FROM journal_scope ORDER BY field, name",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .iter()
+            .map(|r| JournalRow {
+                id: r.get("id"),
+                name: r.get("name"),
+                issn: r.get("issn"),
+                abs_rating: r.get("abs_rating"),
+                abdc_rating: r.get("abdc_rating"),
+                impact_factor: r.get("impact_factor"),
+                field: r.get("field"),
+                is_custom: r.get::<i64, _>("is_custom") != 0,
+                created_at: r.get("created_at"),
+            })
+            .collect())
+    }
+
+    pub async fn save_journal(&self, input: JournalInput) -> Result<i64> {
+        if let Some(id) = input.id {
+            sqlx::query(
+                "UPDATE journal_scope SET name=?, issn=?, abs_rating=?, abdc_rating=?,
+                 impact_factor=?, field=?, is_custom=1 WHERE id=?",
+            )
+            .bind(&input.name)
+            .bind(&input.issn)
+            .bind(&input.abs_rating)
+            .bind(&input.abdc_rating)
+            .bind(input.impact_factor)
+            .bind(&input.field)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+            Ok(id)
+        } else {
+            let result = sqlx::query(
+                "INSERT INTO journal_scope (name, issn, abs_rating, abdc_rating, impact_factor, field, is_custom)
+                 VALUES (?, ?, ?, ?, ?, ?, 1)",
+            )
+            .bind(&input.name)
+            .bind(&input.issn)
+            .bind(&input.abs_rating)
+            .bind(&input.abdc_rating)
+            .bind(input.impact_factor)
+            .bind(&input.field)
+            .execute(&self.pool)
+            .await?;
+            Ok(result.last_insert_rowid())
+        }
+    }
+
+    pub async fn delete_journal(&self, id: i64) -> Result<()> {
+        sqlx::query("DELETE FROM journal_scope WHERE id=?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 }

@@ -169,6 +169,14 @@ export interface CodingRow {
 export interface CodingBatchResult {
   articles: ArticleRow[];
   codings: CodingRow[];
+  /** article_id (as string key) → absolute PDF path */
+  pdf_map: Record<string, string>;
+}
+
+export interface ScanPdfsResult {
+  scanned: number;
+  matched: number;
+  already_known: number;
 }
 
 export interface ExclusionCriterionRow {
@@ -263,6 +271,28 @@ export interface LockInfo {
   opened_at: string;
 }
 
+export interface JournalRow {
+  id: number;
+  name: string;
+  issn: string | null;
+  abs_rating: string | null;
+  abdc_rating: string | null;
+  impact_factor: number | null;
+  field: string | null;
+  is_custom: boolean;
+  created_at: string;
+}
+
+export interface JournalInput {
+  id?: number | null;
+  name: string;
+  issn?: string | null;
+  abs_rating?: string | null;
+  abdc_rating?: string | null;
+  impact_factor?: number | null;
+  field?: string | null;
+}
+
 export const api = {
   createProject(path: string, name?: string) {
     return invoke<ProjectRow>("create_project", { args: { path, name } });
@@ -339,6 +369,18 @@ export const api = {
   },
   listCodingBatch(offset: number, limit: number) {
     return invoke<CodingBatchResult>("list_coding_batch", { args: { offset, limit } });
+  },
+  scanWorkspacePdfs() {
+    return invoke<ScanPdfsResult>("scan_workspace_pdfs");
+  },
+  dropPdfForArticle(sourcePath: string, articleId: number) {
+    return invoke<string>("drop_pdf_for_article", { sourcePath, articleId });
+  },
+  replaceArticlePdf(sourcePath: string, articleId: number) {
+    return invoke<string>("replace_article_pdf", { sourcePath, articleId });
+  },
+  openPdfPath(path: string) {
+    return invoke<void>("open_pdf_path", { path });
   },
   saveCoding(args: {
     article_id: number;
@@ -458,6 +500,15 @@ export const api = {
   },
   regenerateDraft() {
     return invoke<string>("regenerate_draft");
+  },
+  listJournals() {
+    return invoke<JournalRow[]>("list_journals");
+  },
+  saveJournal(args: JournalInput) {
+    return invoke<number>("save_journal", { args });
+  },
+  deleteJournal(id: number) {
+    return invoke<void>("delete_journal", { id });
   },
   openBrowserPanel(url: string, x: number, y: number, width: number, height: number, sourceDatabase: string) {
     return invoke<void>("open_browser_panel", { url, x, y, width, height, sourceDatabase });

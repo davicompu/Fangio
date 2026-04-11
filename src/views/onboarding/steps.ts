@@ -107,6 +107,13 @@ export const FRAMEWORK_OPTIONS: ChoiceOption[] = [
       "The most comprehensive option — combines ADO with TCM. Best for mature, theory-rich domains where you have time to code thoroughly.",
     badge: "Comprehensive",
   },
+  {
+    value: "Custom",
+    label: "Custom — define your own dimensions",
+    description:
+      "You name the dimensions yourself in Stage 2. Choose this when your domain, journal, or thesis calls for a framework not listed above.",
+    badge: "Flexible",
+  },
 ];
 
 export const QUALITY_LIST_OPTIONS: ChoiceOption[] = [
@@ -183,7 +190,7 @@ export const STEPS: OnboardingStep[] = [
     why: {
       headline: "How to choose",
       body:
-        "ADO is the safest default for behavioural research — it forces you to identify what causes a behaviour, what the behaviour is, and what consequences follow.\n\nTCM is best when you suspect there's a theoretical or methodological gap to surface. TCCM extends TCM with construct-level coding for mature fields. 5W1H is the broadest, best for exploratory reviews. ADO-TCM is the gold standard but takes the most coding effort.",
+        "ADO is the safest default for behavioural research — it forces you to identify what causes a behaviour, what the behaviour is, and what consequences follow.\n\nTCM is best when you suspect there's a theoretical or methodological gap to surface. TCCM extends TCM with construct-level coding for mature fields. 5W1H is the broadest, best for exploratory reviews. ADO-TCM is the gold standard but takes the most coding effort.\n\nChoose Custom if your domain, supervisor, or journal calls for a framework not listed above — you'll name and describe your own dimensions in Stage 2.",
       citation: "Paul & Rosado-Serrano (2019); Paul & Benito (2018).",
     },
   },
