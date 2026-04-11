@@ -128,7 +128,7 @@ function App() {
             exit={{ opacity: 0 }}
             transition={{ duration: 0.35 }}
           >
-            <ArrangingStage project={project} onLeaveStage={() => setRoute("hub")} />
+            <ArrangingStage project={project} onLeaveStage={() => setRoute("hub")} onProjectChanged={refreshProject} />
           </motion.div>
         )}
         {project && project.onboarding_complete && route === "assessing" && (

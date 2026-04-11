@@ -395,24 +395,20 @@ export function CodingPanel({ project, refreshKey, onChanged }: Props) {
             <span className="ml-1.5 tabular-nums text-[var(--color-paper-400)]">{count}</span>
           </button>
         ))}
-        {/* Excluded tab — separated visually */}
-        {excludedArticles.length > 0 && (
-          <>
-            <span className="mx-1 text-[var(--color-paper-300)]">|</span>
-            <button
-              onClick={() => { setFilter("excluded"); setCardIndex(0); }}
-              className={cn(
-                "px-3 py-1.5 rounded-full text-[12px] font-medium transition-paper",
-                filter === "excluded"
-                  ? "bg-[var(--color-error-500)] text-white"
-                  : "text-[var(--color-error-500)] hover:bg-[var(--color-error-500)]/10"
-              )}
-            >
-              Excluded
-              <span className="ml-1.5 tabular-nums opacity-75">{excludedArticles.length}</span>
-            </button>
-          </>
-        )}
+        {/* Excluded tab — always visible, separated visually */}
+        <span className="mx-1 text-[var(--color-paper-300)]">|</span>
+        <button
+          onClick={() => { setFilter("excluded"); setCardIndex(0); }}
+          className={cn(
+            "px-3 py-1.5 rounded-full text-[12px] font-medium transition-paper",
+            filter === "excluded"
+              ? "bg-[var(--color-error-500)] text-white"
+              : "text-[var(--color-error-500)] hover:bg-[var(--color-error-500)]/10"
+          )}
+        >
+          Excluded
+          <span className="ml-1.5 tabular-nums opacity-75">{excludedArticles.length}</span>
+        </button>
       </div>
 
       {loading && (
@@ -464,7 +460,10 @@ export function CodingPanel({ project, refreshKey, onChanged }: Props) {
             </div>
           ) : (
             excludedArticles.map((a) => {
-              const criterion = criteria.find((c) => c.number === a.exclusion_criterion);
+              const isQualityExclusion = a.exclusion_criterion === 0;
+              const criterion = isQualityExclusion
+                ? null
+                : criteria.find((c) => c.number === a.exclusion_criterion);
               return (
                 <Card key={a.id} className="p-4 border-[var(--color-error-500)]/20 bg-[var(--color-error-500)]/3">
                   <div className="flex items-start gap-3">
@@ -481,12 +480,17 @@ export function CodingPanel({ project, refreshKey, onChanged }: Props) {
                         {a.journal && <span className="italic">{a.journal}</span>}
                       </div>
                     </div>
-                    {criterion && (
+                    {isQualityExclusion ? (
+                      <div className="shrink-0 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium bg-[var(--color-warn-500)]/10 text-[var(--color-warn-600)] border border-[var(--color-warn-500)]/20">
+                        <Ban size={10} strokeWidth={2} />
+                        Journal quality
+                      </div>
+                    ) : criterion ? (
                       <div className="shrink-0 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium bg-[var(--color-error-500)]/10 text-[var(--color-error-500)] border border-[var(--color-error-500)]/20">
                         <Ban size={10} strokeWidth={2} />
                         #{criterion.number} {criterion.label}
                       </div>
-                    )}
+                    ) : null}
                   </div>
                 </Card>
               );

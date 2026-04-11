@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { BookOpen, Plus, Save, Trash2, X } from "lucide-react";
+import { BookOpen, Loader2, Plus, RefreshCw, Save, Trash2, X } from "lucide-react";
 import { api, type ExclusionCriterionRow, type ProjectRow } from "../../lib/api";
 import { Card } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
@@ -20,7 +20,7 @@ const ABDC_LEVELS = ["C", "B", "A", "A*"] as const;
 
 function parseJournalQuality(raw: string | null) {
   try {
-    return raw ? (JSON.parse(raw) as { abs_min?: string; abdc_min?: string }) : {};
+    return raw ? (JSON.parse(raw) as { abs_min?: string; abdc_min?: string; if_min?: number }) : {};
   } catch {
     return {};
   }
@@ -40,8 +40,11 @@ export function CriteriaPanel({ project, onChanged }: Props) {
   const jq = parseJournalQuality(project.journal_quality);
   const [absMin, setAbsMin] = useState<string>(jq.abs_min ?? "");
   const [abdcMin, setAbdcMin] = useState<string>(jq.abdc_min ?? "");
+  const [ifMin, setIfMin] = useState<string>(jq.if_min != null ? String(jq.if_min) : "");
   const [jqSaving, setJqSaving] = useState(false);
   const [jqSaved, setJqSaved] = useState(false);
+  const [jqExcluded, setJqExcluded] = useState<number | null>(null);
+  const [reApplying, setReApplying] = useState(false);
 
   const reload = async () => {
     const c = await api.listCriteria();
@@ -91,9 +94,13 @@ export function CriteriaPanel({ project, onChanged }: Props) {
 
   const saveJournalQuality = async () => {
     setJqSaving(true);
-    const payload: Record<string, string> = {};
+    setJqExcluded(null);
+    const payload: { abs_min?: string; abdc_min?: string; if_min?: number } = {};
     if (absMin) payload.abs_min = absMin;
     if (abdcMin) payload.abdc_min = abdcMin;
+    const ifParsed = parseFloat(ifMin);
+    if (ifMin && !isNaN(ifParsed)) payload.if_min = ifParsed;
+
     await api.saveDecision({
       stage: "arranging",
       sub_stage: "criteria",
@@ -101,9 +108,39 @@ export function CriteriaPanel({ project, onChanged }: Props) {
       value_json: JSON.stringify(JSON.stringify(payload)),
       rationale: null,
     });
+
+    // Auto-exclude articles below the threshold
+    const count = await api.applyQualityExclusions({
+      abs_min: payload.abs_min,
+      abdc_min: payload.abdc_min,
+      if_min: payload.if_min,
+    });
+
     setJqSaving(false);
     setJqSaved(true);
-    setTimeout(() => setJqSaved(false), 2000);
+    setJqExcluded(count);
+    setTimeout(() => { setJqSaved(false); setJqExcluded(null); }, 4000);
+    onChanged();
+  };
+
+  const reApplyThresholds = async () => {
+    setReApplying(true);
+    setJqExcluded(null);
+    const payload: { abs_min?: string; abdc_min?: string; if_min?: number } = {};
+    if (absMin) payload.abs_min = absMin;
+    if (abdcMin) payload.abdc_min = abdcMin;
+    const ifParsed = parseFloat(ifMin);
+    if (ifMin && !isNaN(ifParsed)) payload.if_min = ifParsed;
+
+    const count = await api.applyQualityExclusions({
+      abs_min: payload.abs_min,
+      abdc_min: payload.abdc_min,
+      if_min: payload.if_min,
+    });
+
+    setReApplying(false);
+    setJqExcluded(count);
+    setTimeout(() => setJqExcluded(null), 4000);
     onChanged();
   };
 
@@ -145,13 +182,13 @@ export function CriteriaPanel({ project, onChanged }: Props) {
               Journal quality threshold
             </h3>
             <p className="text-[12px] text-[var(--color-paper-600)] mt-0.5 leading-relaxed max-w-xl">
-              Articles published in journals below the minimum rating will be flagged during
-              screening. Leave blank to apply no threshold for that scale.
+              Articles in journals that don't meet the minimum rating will be automatically excluded.
+              Leave a field blank to skip that threshold.
             </p>
           </div>
         </div>
 
-        <div className="grid grid-cols-2 gap-4 max-w-md">
+        <div className="grid grid-cols-3 gap-4 max-w-2xl">
           <Select
             label="Minimum ABS rating"
             value={absMin}
@@ -174,20 +211,44 @@ export function CriteriaPanel({ project, onChanged }: Props) {
               <option key={r} value={r}>{r} and above</option>
             ))}
           </Select>
+          <TextField
+            label="Minimum impact factor"
+            value={ifMin}
+            onChange={(e) => setIfMin(e.target.value)}
+            placeholder="e.g. 2.5"
+            hint="Leave blank for no IF threshold"
+          />
         </div>
 
-        <div className="mt-4 flex items-center gap-3">
-          <Button onClick={saveJournalQuality} disabled={jqSaving} variant="primary" size="sm">
+        <div className="mt-4 flex items-center gap-3 flex-wrap">
+          <Button onClick={saveJournalQuality} disabled={jqSaving || reApplying} variant="primary" size="sm">
             <Save size={12} strokeWidth={2} />
-            {jqSaving ? "Saving…" : "Save threshold"}
+            {jqSaving ? "Applying…" : "Save & apply"}
           </Button>
-          {jqSaved && (
+          <Button onClick={reApplyThresholds} disabled={jqSaving || reApplying} variant="secondary" size="sm">
+            {reApplying
+              ? <Loader2 size={12} className="animate-spin" />
+              : <RefreshCw size={12} strokeWidth={2} />
+            }
+            Re-apply to articles
+          </Button>
+          {(jqSaved || jqExcluded !== null) && (
             <motion.span
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               className="text-[12px] text-[var(--color-ok-500)]"
             >
-              Saved
+              {jqSaved && "Saved"}
+              {jqExcluded !== null && jqExcluded > 0 && (
+                <span className={jqSaved ? "ml-1 text-[var(--color-paper-500)]" : "text-[var(--color-paper-600)]"}>
+                  {jqSaved ? "· " : ""}{jqExcluded} article{jqExcluded !== 1 ? "s" : ""} auto-excluded
+                </span>
+              )}
+              {jqExcluded === 0 && (
+                <span className={jqSaved ? "ml-1 text-[var(--color-paper-500)]" : "text-[var(--color-paper-600)]"}>
+                  {jqSaved ? "· " : ""}no new exclusions
+                </span>
+              )}
             </motion.span>
           )}
         </div>

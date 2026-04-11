@@ -513,6 +513,9 @@ export const api = {
   deleteJournal(id: number) {
     return invoke<void>("delete_journal", { id });
   },
+  applyQualityExclusions(args: { abs_min?: string; abdc_min?: string; if_min?: number }) {
+    return invoke<number>("apply_quality_exclusions", { args });
+  },
   openBrowserPanel(url: string, x: number, y: number, width: number, height: number, sourceDatabase: string) {
     return invoke<void>("open_browser_panel", { url, x, y, width, height, sourceDatabase });
   },

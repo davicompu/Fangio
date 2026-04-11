@@ -1024,6 +1024,24 @@ async fn delete_journal(id: i64, state: State<'_, AppState>) -> Result<(), Strin
     db.delete_journal(id).await.map_err(err)
 }
 
+#[derive(Debug, Deserialize)]
+struct QualityThresholdArgs {
+    abs_min: Option<String>,
+    abdc_min: Option<String>,
+    if_min: Option<f64>,
+}
+
+#[tauri::command]
+async fn apply_quality_exclusions(
+    args: QualityThresholdArgs,
+    state: State<'_, AppState>,
+) -> Result<i64, String> {
+    let db = state.current().await.ok_or("no project open")?;
+    db.apply_quality_exclusions(args.abs_min, args.abdc_min, args.if_min)
+        .await
+        .map_err(err)
+}
+
 // ── Assessing stage commands ──────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
@@ -1582,6 +1600,7 @@ pub fn run() {
             list_journals,
             save_journal,
             delete_journal,
+            apply_quality_exclusions,
         ])
         .setup(|_app| Ok(()))
         .run(tauri::generate_context!())

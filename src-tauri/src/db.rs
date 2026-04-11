@@ -702,7 +702,7 @@ impl ProjectDb {
     ) -> Result<Vec<ArticleRow>> {
         let rows = sqlx::query(
             "SELECT id, title, authors, year, journal, abstract, doi, url, source_databases, status, dedup_group_id, exclusion_criterion, created_at \
-             FROM article WHERE status = 'included' ORDER BY id LIMIT ? OFFSET ?",
+             FROM article WHERE status IN ('retrieved', 'included') ORDER BY id LIMIT ? OFFSET ?",
         )
         .bind(limit)
         .bind(offset)
@@ -1269,6 +1269,105 @@ impl ProjectDb {
     }
 
     // ── Journal scope ─────────────────────────────────────────────────────
+
+    /// Auto-exclude articles whose journals fail quality thresholds.
+    /// Criterion 0 is reserved for system quality-exclusions; they are reset
+    /// first so that changes to thresholds are always idempotent.
+    pub async fn apply_quality_exclusions(
+        &self,
+        abs_min: Option<String>,
+        abdc_min: Option<String>,
+        if_min: Option<f64>,
+    ) -> Result<i64> {
+        // Helper: ABS rank (higher = better)
+        fn abs_rank(r: &str) -> i32 {
+            match r { "1" => 1, "2" => 2, "3" => 3, "4" => 4, "4*" => 5, _ => 0 }
+        }
+        fn abdc_rank(r: &str) -> i32 {
+            match r { "C" => 1, "B" => 2, "A" => 3, "A*" => 4, _ => 0 }
+        }
+        fn normalize(name: &str) -> String {
+            let lower = name.to_lowercase();
+            lower.trim_start_matches("the ").trim().to_string()
+        }
+
+        // 1. Reset previously auto-excluded articles so re-saves are idempotent
+        let now = chrono::Utc::now().to_rfc3339();
+        sqlx::query(
+            "UPDATE article SET status = 'retrieved', exclusion_criterion = NULL, \
+             exclusion_rationale = NULL, screened_at = NULL, updated_at = ? \
+             WHERE status = 'excluded' AND exclusion_criterion = 0",
+        )
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
+
+        // 2. If no thresholds are set, we're done
+        if abs_min.is_none() && abdc_min.is_none() && if_min.is_none() {
+            return Ok(0);
+        }
+
+        // 3. Load journals into a normalised-name map
+        let journals = self.list_journals().await?;
+        let journal_map: std::collections::HashMap<String, &JournalRow> = journals
+            .iter()
+            .map(|j| (normalize(&j.name), j))
+            .collect();
+
+        // 4. Load all non-excluded articles that have a journal field
+        let articles = sqlx::query(
+            "SELECT id, journal FROM article \
+             WHERE status IN ('retrieved', 'included') AND journal IS NOT NULL AND journal != ''",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        let abs_min_rank  = abs_min.as_deref().map(abs_rank).unwrap_or(0);
+        let abdc_min_rank = abdc_min.as_deref().map(abdc_rank).unwrap_or(0);
+
+        let mut excluded_count: i64 = 0;
+        for row in &articles {
+            let article_id: i64 = row.get("id");
+            let journal_name: String = row.get("journal");
+            let key = normalize(&journal_name);
+
+            if let Some(j) = journal_map.get(&key) {
+                let mut fails = false;
+
+                if abs_min_rank > 0 {
+                    let rank = j.abs_rating.as_deref().map(abs_rank).unwrap_or(0);
+                    if rank < abs_min_rank { fails = true; }
+                }
+                if !fails && abdc_min_rank > 0 {
+                    let rank = j.abdc_rating.as_deref().map(abdc_rank).unwrap_or(0);
+                    if rank < abdc_min_rank { fails = true; }
+                }
+                if !fails {
+                    if let Some(min_if) = if_min {
+                        let article_if = j.impact_factor.unwrap_or(0.0);
+                        if article_if < min_if { fails = true; }
+                    }
+                }
+
+                if fails {
+                    sqlx::query(
+                        "UPDATE article SET status = 'excluded', exclusion_criterion = 0, \
+                         exclusion_rationale = 'Below journal quality threshold', \
+                         screened_at = ?, updated_at = ? WHERE id = ?",
+                    )
+                    .bind(&now)
+                    .bind(&now)
+                    .bind(article_id)
+                    .execute(&self.pool)
+                    .await?;
+                    excluded_count += 1;
+                }
+            }
+            // Articles with no journal match are NOT excluded — benefit of the doubt
+        }
+
+        Ok(excluded_count)
+    }
 
     pub async fn list_journals(&self) -> Result<Vec<JournalRow>> {
         let rows = sqlx::query(

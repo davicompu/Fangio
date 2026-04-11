@@ -37,7 +37,7 @@ const ABDC_ORDER = ["C", "B", "A", "A*"];
 
 function parseJournalQuality(raw: string | null) {
   try {
-    return raw ? (JSON.parse(raw) as { abs_min?: string; abdc_min?: string }) : {};
+    return raw ? (JSON.parse(raw) as { abs_min?: string; abdc_min?: string; if_min?: number }) : {};
   } catch {
     return {};
   }
@@ -51,6 +51,11 @@ function meetsAbsThreshold(rating: string | null | undefined, min: string): bool
 function meetsAbdcThreshold(rating: string | null | undefined, min: string): boolean {
   if (!rating) return false;
   return ABDC_ORDER.indexOf(rating) >= ABDC_ORDER.indexOf(min);
+}
+
+function meetsIfThreshold(impactFactor: number | null | undefined, min: number): boolean {
+  if (impactFactor == null) return false;
+  return impactFactor >= min;
 }
 
 /** Case-insensitive journal name match, ignoring leading "The " */
@@ -182,6 +187,16 @@ export function ScreeningPanel({ project, refreshKey, onChanged }: Props) {
           />
         ))}
       </div>
+
+      {/* Footnote — shown when at least one article in this batch has an IF badge */}
+      {!loading && articles.some((a) => lookupJournal(a.journal)?.impact_factor != null) && (
+        <p className="mt-6 text-[11px] text-[var(--color-paper-400)] leading-relaxed max-w-2xl">
+          * <strong className="font-medium text-[var(--color-paper-500)]">IF</strong> — Impact
+          factor sourced from your journal scope list. Values reflect the data entered when the
+          journal list was imported and may not match the current year's official JCR release.
+          Use as a screening guide only.
+        </p>
+      )}
     </div>
   );
 }
@@ -198,7 +213,7 @@ function ScreeningCard({
   article: ArticleRow;
   criteria: ExclusionCriterionRow[];
   journalMatch: JournalRow | null;
-  jq: { abs_min?: string; abdc_min?: string };
+  jq: { abs_min?: string; abdc_min?: string; if_min?: number };
   expanded: boolean;
   onToggle: () => void;
   onDecision: () => Promise<void>;
@@ -210,7 +225,8 @@ function ScreeningCard({
   // Determine journal quality status
   const absFails = jq.abs_min && !meetsAbsThreshold(journalMatch?.abs_rating, jq.abs_min);
   const abdcFails = jq.abdc_min && !meetsAbdcThreshold(journalMatch?.abdc_rating, jq.abdc_min);
-  const qualityFlagged = absFails || abdcFails;
+  const ifFails = jq.if_min != null && !meetsIfThreshold(journalMatch?.impact_factor, jq.if_min);
+  const qualityFlagged = absFails || abdcFails || ifFails;
 
   const keep = async () => {
     setBusy(true);
@@ -272,22 +288,22 @@ function ScreeningCard({
               {journalMatch ? (
                 <div className="flex items-center gap-1">
                   {journalMatch.abs_rating && (
-                    <JournalBadge
-                      label="ABS"
-                      value={journalMatch.abs_rating}
-                      flagged={!!absFails}
-                    />
+                    <JournalBadge label="ABS" value={journalMatch.abs_rating} flagged={!!absFails} />
                   )}
                   {journalMatch.abdc_rating && (
+                    <JournalBadge label="ABDC" value={journalMatch.abdc_rating} flagged={!!abdcFails} />
+                  )}
+                  {journalMatch.impact_factor != null && (
                     <JournalBadge
-                      label="ABDC"
-                      value={journalMatch.abdc_rating}
-                      flagged={!!abdcFails}
+                      label="IF"
+                      value={journalMatch.impact_factor.toFixed(2)}
+                      flagged={!!ifFails}
+                      title="Impact factor from the journal scope list"
                     />
                   )}
                 </div>
               ) : (
-                article.journal && (jq.abs_min || jq.abdc_min) && (
+                (jq.abs_min || jq.abdc_min || jq.if_min != null) && (
                   <span className="text-[10px] text-[var(--color-paper-400)] italic">
                     not in journal list
                   </span>
@@ -305,6 +321,7 @@ function ScreeningCard({
                 {[
                   absFails && `ABS min ${jq.abs_min}`,
                   abdcFails && `ABDC min ${jq.abdc_min}`,
+                  ifFails && `IF min ${jq.if_min}`,
                 ]
                   .filter(Boolean)
                   .join(", ")}
@@ -377,15 +394,18 @@ function JournalBadge({
   label,
   value,
   flagged,
+  title,
 }: {
   label: string;
   value: string;
   flagged: boolean;
+  title?: string;
 }) {
   return (
     <span
+      title={title}
       className={cn(
-        "inline-flex items-center gap-1 px-1.5 py-px rounded text-[10px] font-semibold font-mono",
+        "inline-flex items-center gap-1 px-1.5 py-px rounded text-[10px] font-semibold font-mono cursor-default",
         flagged
           ? "bg-[var(--color-warn-500)]/15 text-[var(--color-warn-600)] border border-[var(--color-warn-500)]/30"
           : "bg-[var(--color-paper-100)] text-[var(--color-paper-600)] border border-[var(--color-paper-300)]",

@@ -20,6 +20,7 @@ import { PrismaPanel } from "./PrismaPanel";
 interface Props {
   project: ProjectRow;
   onLeaveStage: () => void;
+  onProjectChanged: () => Promise<void>;
 }
 
 type Tab = "organization" | "coding" | "criteria" | "screening" | "prisma";
@@ -32,10 +33,13 @@ const tabs: { id: Tab; label: string; icon: any }[] = [
   { id: "prisma", label: "PRISMA flow", icon: GitBranch },
 ];
 
-export function ArrangingStage({ project, onLeaveStage }: Props) {
+export function ArrangingStage({ project, onLeaveStage, onProjectChanged }: Props) {
   const [tab, setTab] = useState<Tab>("organization");
   const [refreshTick, setRefreshTick] = useState(0);
-  const onChanged = () => setRefreshTick((t) => t + 1);
+  const onChanged = async () => {
+    await onProjectChanged();
+    setRefreshTick((t) => t + 1);
+  };
 
   return (
     <div className="min-h-screen flex flex-col">
