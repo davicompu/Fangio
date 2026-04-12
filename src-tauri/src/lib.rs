@@ -1,4 +1,4 @@
-//! Carta Tauri backend.
+//! Reeves Tauri backend.
 
 mod backup;
 mod browser;
@@ -29,7 +29,7 @@ use recent::{RecentMeta, RecentProject, RecentStore};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
 use tokio::sync::RwLock;
 
 /// App-wide state. The currently-open project (if any) lives behind an RwLock
@@ -90,7 +90,7 @@ async fn open_project(
     let sqlite = path.join(db::DB_FILENAME);
     if !sqlite.exists() {
         return Err(format!(
-            "No Carta project found at {} (missing project.sqlite)",
+            "No Reeves project found at {} (missing project.sqlite)",
             path.display()
         ));
     }
@@ -815,6 +815,11 @@ async fn exclude_article(
     db.apply_exclusion(args.article_id, args.criterion_number, args.rationale.as_deref())
         .await
         .map_err(err)?;
+    // Eagerly remove any index chunks for this article so the RAG corpus
+    // stays consistent without requiring a manual rebuild.
+    db.delete_chunks_for_article(args.article_id)
+        .await
+        .map_err(err)?;
     db.record_telemetry(
         "screen.excluded",
         &serde_json::json!({
@@ -841,6 +846,26 @@ async fn keep_article(article_id: i64, state: State<'_, AppState>) -> Result<(),
 async fn unscreen_article(article_id: i64, state: State<'_, AppState>) -> Result<(), String> {
     let db = state.current().await.ok_or("no project open")?;
     db.clear_exclusion(article_id).await.map_err(err)
+}
+
+#[tauri::command]
+async fn update_article_journal(
+    article_id: i64,
+    journal: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let db = state.current().await.ok_or("no project open")?;
+    db.update_article_journal(article_id, journal).await.map_err(err)
+}
+
+#[tauri::command]
+async fn update_article_source(
+    article_id: i64,
+    source_databases: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let db = state.current().await.ok_or("no project open")?;
+    db.update_article_source(article_id, source_databases).await.map_err(err)
 }
 
 #[tauri::command]
@@ -943,9 +968,66 @@ async fn suggest_codes(
 }
 
 #[derive(Debug, Deserialize)]
+struct SuggestStepArgs {
+    step_id: String,
+    current_value: String,
+}
+
+#[derive(Debug, Serialize)]
+struct SuggestStepResult {
+    suggestion: String,
+    rationale: String,
+}
+
+#[tauri::command]
+async fn suggest_step(
+    args: SuggestStepArgs,
+    state: State<'_, AppState>,
+) -> Result<SuggestStepResult, String> {
+    let db = state.current().await.ok_or("no project open")?;
+    let project = db.get_project().await.map_err(err)?;
+    let settings = db.all_settings().await.map_err(err)?;
+    let base_url = settings
+        .get("lmstudio.base_url")
+        .and_then(|v| v.as_str())
+        .unwrap_or("http://127.0.0.1:1234/v1")
+        .to_string();
+    let api_key = settings
+        .get("lmstudio.api_key")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let model = settings
+        .get("lmstudio.chat_model")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    if model.is_empty() {
+        return Err("Pick a chat model in Settings first.".into());
+    }
+    let (suggestion, rationale) = suggest::suggest_step(
+        &base_url,
+        &model,
+        &args.step_id,
+        &args.current_value,
+        &project.name,
+        project.slr_type.as_deref().unwrap_or(""),
+        project.framework.as_deref().unwrap_or(""),
+        project.domain.as_deref().unwrap_or(""),
+        api_key.as_deref(),
+    )
+    .await
+    .map_err(err)?;
+    Ok(SuggestStepResult { suggestion, rationale })
+}
+
+#[derive(Debug, Deserialize)]
 struct SuggestQueryArgs {
     databases: Vec<String>,
     existing_query: Option<String>,
+    #[serde(default)]
+    inclusion_criteria: Vec<String>,
+    #[serde(default)]
+    exclusion_criteria: Vec<String>,
 }
 
 #[tauri::command]
@@ -983,6 +1065,8 @@ async fn suggest_boolean_query(
         project.rq_where.as_deref(),
         &args.databases,
         args.existing_query.as_deref(),
+        &args.inclusion_criteria,
+        &args.exclusion_criteria,
         api_key.as_deref(),
     )
     .await
@@ -1202,6 +1286,12 @@ struct AskArgs {
     top_k: Option<usize>,
 }
 
+#[derive(Debug, Deserialize)]
+struct AskArticleArgs {
+    article_id: i64,
+    question: String,
+}
+
 #[derive(Debug, Serialize)]
 struct AskCitation {
     article_id: i64,
@@ -1294,9 +1384,17 @@ async fn ask_corpus(args: AskArgs, state: State<'_, AppState>) -> Result<AskResu
         let _ = id; // chunk id unused in citation payload but kept for future
     }
 
-    let system = "You are a research assistant answering questions strictly from the provided excerpts. Cite excerpts inline as [1], [2], etc. If the excerpts do not contain the answer, say so plainly — do not invent.".to_string();
+    let system = "You are a research assistant helping a scholar analyse their systematic literature review corpus. \
+The excerpts below are chunks extracted automatically from academic PDFs — they are your primary source of truth. \
+IMPORTANT RULES: \
+1. The researcher is asking because they know the content exists. Assume the answer is present in the excerpts and look for it carefully, even if phrasing differs from the question. \
+2. Academic papers use varied section labels — 'DISCUSSION', 'Findings', 'Results', 'Analysis', 'Implications', '5. Discussion' all mean the same thing. Do not claim a section is absent based on its label; look at the substance of the text. \
+3. PDF extraction can scramble layout: headers may appear mid-sentence, text may be out of order. Reason through the content, not the formatting. \
+4. Synthesise what the excerpts say. Cite inline with [1], [2], etc. whenever you draw on a specific excerpt. \
+5. Use markdown: headers for themes, bullets for lists, bold for key terms. \
+6. Only say content is absent if you have genuinely read all excerpts and found nothing relevant — never refuse to engage when substantive text is present.".to_string();
     let user = format!(
-        "Question: {}\n\nExcerpts from the corpus:\n\n{}\n\nAnswer the question using only the excerpts. Cite as you go.",
+        "Question: {}\n\nRelevant excerpts from the corpus:\n\n{}\n\nSynthesise an answer from the excerpts above. Use markdown. Cite as you go with [1], [2], etc.",
         args.question, context
     );
     let chat = lmstudio::chat(
@@ -1330,6 +1428,281 @@ async fn ask_corpus(args: AskArgs, state: State<'_, AppState>) -> Result<AskResu
         model: chat.model,
         embed_model,
     })
+}
+
+#[tauri::command]
+async fn get_indexed_article_ids(state: State<'_, AppState>) -> Result<Vec<i64>, String> {
+    let db = state.current().await.ok_or("no project open")?;
+    db.get_indexed_article_ids().await.map_err(err)
+}
+
+#[tauri::command]
+async fn purge_embeddings(state: State<'_, AppState>) -> Result<usize, String> {
+    let db = state.current().await.ok_or("no project open")?;
+    db.purge_embeddings().await.map_err(err)
+}
+
+#[tauri::command]
+async fn ask_article(args: AskArticleArgs, state: State<'_, AppState>) -> Result<AskResult, String> {
+    let db = state.current().await.ok_or("no project open")?;
+    let settings = db.all_settings().await.map_err(err)?;
+    let base_url = settings
+        .get("lmstudio.base_url")
+        .and_then(|v| v.as_str())
+        .unwrap_or("http://127.0.0.1:1234/v1")
+        .to_string();
+    let api_key = settings
+        .get("lmstudio.api_key")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let chat_model = settings
+        .get("lmstudio.chat_model")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let embed_model = settings
+        .get("lmstudio.embed_model")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    if chat_model.is_empty() || embed_model.is_empty() {
+        return Err("Set both a chat model and an embedding model in Settings.".into());
+    }
+
+    let q_embeddings = lmstudio::embed(&base_url, &embed_model, &[args.question.as_str()], api_key.as_deref())
+        .await
+        .map_err(err)?;
+    let q_emb = q_embeddings
+        .into_iter()
+        .next()
+        .ok_or("embedding model returned no vectors")?;
+
+    let all = db.embedded_chunks_for_article(args.article_id).await.map_err(err)?;
+    if all.is_empty() {
+        return Err("This article has no indexed chunks. Build the RAG index first.".into());
+    }
+    let scored = vector::top_k(
+        all.into_iter()
+            .map(|(id, art_id, title, ci, text, bytes)| {
+                ((id, art_id, title, ci, text), vector::bytes_to_f32s(&bytes))
+            })
+            .collect(),
+        &q_emb,
+        6,
+    );
+
+    let mut context = String::new();
+    let mut citations = Vec::new();
+    for (i, s) in scored.iter().enumerate() {
+        let (id, art_id, title, ci, text) = &s.item;
+        context.push_str(&format!(
+            "[{}] (chunk {ci}, score {:.2})\n{text}\n\n",
+            i + 1,
+            s.score,
+        ));
+        citations.push(AskCitation {
+            article_id: *art_id,
+            article_title: title.clone(),
+            chunk_index: *ci,
+            text: text.clone(),
+            score: s.score,
+        });
+        let _ = id;
+    }
+
+    let system = "You are a senior academic colleague who has read excerpts of a paper and is helping a fellow researcher understand it. \
+Speak like a knowledgeable peer — direct, clear, substantive. Never hedge unless the information genuinely is not there. \
+\
+Your job is to synthesise and explain, not to report what the excerpts do or do not contain. \
+When someone asks 'what is this article about?', give them a clear, synthesised answer about the research — its question, context, method, and contribution — drawn from whatever the excerpts show. \
+Do not open with phrases like 'the provided excerpts do not contain…' or 'based on the excerpts…' — just answer. \
+\
+How to handle the excerpts: \
+- PDF extraction scrambles layout. Headers appear mid-sentence, columns merge, text is out of order. Read for meaning, not structure. \
+- Section labels vary widely ('DISCUSSION', 'Findings', 'Analysis', '5. Results') — never claim a section is absent because of a heading mismatch; read what is actually there. \
+- Synthesise across multiple excerpts. A coherent answer about a paper can come from piecing together several chunks. \
+- When a quote makes a point vividly, use it — format as a blockquote (> text), keep it to one or two sentences. Do not use [1][2] citation numbers. \
+\
+Confidence and intellectual honesty: \
+- This is a research context. Accuracy matters more than appearing helpful. \
+- Only state something as fact if the excerpts clearly support it. If you are not at least 90% confident a claim is grounded in the excerpts, do not make it — say 'I don't know' instead. \
+- Never fill gaps with general knowledge about the topic, plausible extrapolations, or what the paper 'probably' says. If it is not in the excerpts, it is not in your answer. \
+- A confident 'I don't know' is more useful to a researcher than a fluent guess. \
+\
+When you genuinely cannot answer: \
+- If the excerpts retrieved contain ONLY administrative metadata (author names, submission dates, funding bodies, competing interests) and nothing about the paper's substance, say so plainly in one sentence and suggest the researcher ask about a specific aspect or rebuild the index. \
+- Do not present funding statements or acceptance dates as answers to content questions. \
+- Do not say 'the excerpts do not contain X' when you mean 'I found X but it was partial' — give the partial answer and note what is missing in one brief clause.".to_string();
+    let user = format!(
+        "Excerpts from the article:\n\n{}\n\n---\n\nQuestion: {}",
+        context, args.question
+    );
+    let chat = lmstudio::chat(
+        &base_url,
+        &chat_model,
+        &[
+            lmstudio::ChatMessage { role: "system".into(), content: system },
+            lmstudio::ChatMessage { role: "user".into(), content: user },
+        ],
+        Some(0.2),
+        api_key.as_deref(),
+    )
+    .await
+    .map_err(err)?;
+
+    Ok(AskResult {
+        answer: chat.content,
+        citations,
+        model: chat.model,
+        embed_model,
+    })
+}
+
+#[tauri::command]
+async fn get_rag_status(state: State<'_, AppState>) -> Result<db::RagStatusDetail, String> {
+    let db = state.current().await.ok_or("no project open")?;
+    db.rag_status().await.map_err(err)
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct BuildRagProgress {
+    done: usize,
+    total: usize,
+    article_title: String,
+    phase: String, // "indexing" | "embedding" | "done"
+}
+
+#[derive(Debug, Serialize)]
+struct BuildRagResult {
+    indexed: usize,
+    embedded_chunks: usize,
+}
+
+#[tauri::command]
+async fn build_rag_index(
+    app: tauri::AppHandle<tauri::Wry>,
+    state: State<'_, AppState>,
+) -> Result<BuildRagResult, String> {
+    let db = state.current().await.ok_or("no project open")?;
+    let settings = db.all_settings().await.map_err(err)?;
+    let base_url = settings
+        .get("lmstudio.base_url")
+        .and_then(|v| v.as_str())
+        .unwrap_or("http://127.0.0.1:1234/v1")
+        .to_string();
+    let api_key = settings
+        .get("lmstudio.api_key")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let embed_model = settings
+        .get("lmstudio.embed_model")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    if embed_model.is_empty() {
+        return Err("Pick an embedding model in Settings → AI models first.".into());
+    }
+
+    // Step 1: purge chunks for articles the user has excluded
+    db.delete_orphaned_chunks().await.map_err(err)?;
+
+    // Step 2: get all non-excluded articles with a linked PDF
+    let articles = db.included_articles_with_pdf().await.map_err(err)?;
+
+    // Step 3: filter to only those that actually need (re-)indexing
+    let mut to_index: Vec<&(i64, i64, String, String)> = Vec::new();
+    for article in &articles {
+        let already_done = db
+            .is_pdf_fully_embedded(article.0, &embed_model)
+            .await
+            .map_err(err)?;
+        if !already_done {
+            to_index.push(article);
+        }
+    }
+
+    let total = to_index.len();
+    let mut indexed = 0usize;
+    let mut embedded_chunks = 0usize;
+
+    for (i, (pdf_id, article_id, article_title, stored_path)) in to_index.iter().enumerate() {
+        // Emit progress: indexing phase
+        let _ = app.emit(
+            "rag:progress",
+            BuildRagProgress {
+                done: i,
+                total,
+                article_title: article_title.clone(),
+                phase: "indexing".into(),
+            },
+        );
+
+        // Extract + chunk text — skip on error so one bad PDF doesn't abort the whole build
+        let extracted = match pdf::extract(std::path::Path::new(stored_path)) {
+            Ok(e) => e,
+            Err(e) => {
+                eprintln!("pdf extract error for {stored_path}: {e}");
+                let _ = app.emit(
+                    "rag:progress",
+                    BuildRagProgress {
+                        done: i + 1,
+                        total,
+                        article_title: format!("⚠ Skipped: {article_title}"),
+                        phase: "indexing".into(),
+                    },
+                );
+                continue;
+            }
+        };
+        let chunks = pdf::chunk(&extracted.text);
+        let chunk_records: Vec<(i64, String)> =
+            chunks.iter().map(|c| (c.index as i64, c.text.clone())).collect();
+        db.save_pdf_chunks(*pdf_id, *article_id, extracted.text.len() as i64, &chunk_records)
+            .await
+            .map_err(err)?;
+
+        // Emit progress: embedding phase
+        let _ = app.emit(
+            "rag:progress",
+            BuildRagProgress {
+                done: i,
+                total,
+                article_title: article_title.clone(),
+                phase: "embedding".into(),
+            },
+        );
+
+        // Embed chunks in batches
+        let chunk_list = db.list_chunks_for_pdf(*pdf_id).await.map_err(err)?;
+        let batch_size = 16usize;
+        for batch in chunk_list.chunks(batch_size) {
+            let texts: Vec<&str> = batch.iter().map(|c| c.text.as_str()).collect();
+            let embeddings = lmstudio::embed(&base_url, &embed_model, &texts, api_key.as_deref())
+                .await
+                .map_err(err)?;
+            for (chunk, emb) in batch.iter().zip(embeddings.iter()) {
+                let bytes = vector::f32s_to_bytes(emb);
+                db.save_chunk_embedding(chunk.id, &bytes, &embed_model)
+                    .await
+                    .map_err(err)?;
+                embedded_chunks += 1;
+            }
+        }
+        db.mark_pdf_embedded(*pdf_id).await.map_err(err)?;
+        indexed += 1;
+    }
+
+    let _ = app.emit(
+        "rag:progress",
+        BuildRagProgress {
+            done: total,
+            total,
+            article_title: String::new(),
+            phase: "done".into(),
+        },
+    );
+
+    Ok(BuildRagResult { indexed, embedded_chunks })
 }
 
 #[tauri::command]
@@ -1568,9 +1941,12 @@ pub fn run() {
             exclude_article,
             keep_article,
             unscreen_article,
+            update_article_journal,
+            update_article_source,
             list_screening_batch,
             get_prisma_state,
             suggest_codes,
+            suggest_step,
             suggest_boolean_query,
             add_pdf,
             list_pdfs,
@@ -1579,6 +1955,11 @@ pub fn run() {
             index_pdf,
             embed_pdf,
             ask_corpus,
+            ask_article,
+            get_indexed_article_ids,
+            purge_embeddings,
+            get_rag_status,
+            build_rag_index,
             generate_draft,
             export_csvs,
             check_project_lock,

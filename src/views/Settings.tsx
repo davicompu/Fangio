@@ -42,6 +42,8 @@ export function Settings({ open: openSetting, onClose, settings, onUpdate, lm, o
   const [backupBusy, setBackupBusy] = useState(false);
   const [cloneBusy, setCloneBusy] = useState(false);
   const [projectMsg, setProjectMsg] = useState<string | null>(null);
+  const [pendingEmbedModel, setPendingEmbedModel] = useState<string | null>(null);
+  const [purging, setPurging] = useState(false);
 
   useEffect(() => {
     setLocalUrl(settings["lmstudio.base_url"]);
@@ -94,6 +96,28 @@ export function Settings({ open: openSetting, onClose, settings, onUpdate, lm, o
     }
   };
 
+  const handleEmbedModelChange = (newModel: string) => {
+    const current = settings["lmstudio.embed_model"];
+    // Only warn if there was a model set before (implying embeddings exist)
+    if (current && current !== newModel) {
+      setPendingEmbedModel(newModel);
+    } else {
+      onUpdate("lmstudio.embed_model", newModel);
+    }
+  };
+
+  const confirmEmbedModelChange = async () => {
+    if (!pendingEmbedModel) return;
+    setPurging(true);
+    try {
+      await api.purgeEmbeddings();
+      await onUpdate("lmstudio.embed_model", pendingEmbedModel);
+    } finally {
+      setPurging(false);
+      setPendingEmbedModel(null);
+    }
+  };
+
   return (
     <AnimatePresence>
       {openSetting && (
@@ -136,7 +160,7 @@ export function Settings({ open: openSetting, onClose, settings, onUpdate, lm, o
                 <SectionHeader
                   icon={<Cpu size={14} strokeWidth={1.75} />}
                   title="Local inference"
-                  description="Carta talks to a local OpenAI-compatible server (LM Studio, Ollama, llama.cpp). Nothing about your research leaves this machine."
+                  description="Reeves talks to a local OpenAI-compatible server (LM Studio, Ollama, llama.cpp). Nothing about your research leaves this machine."
                 />
 
                 <div className="space-y-4 mt-5">
@@ -146,7 +170,7 @@ export function Settings({ open: openSetting, onClose, settings, onUpdate, lm, o
                     mono
                     onChange={(e) => setLocalUrl(e.target.value)}
                     placeholder="http://127.0.0.1:1234/v1"
-                    hint="Loopback only — Carta refuses any non-localhost host."
+                    hint="Loopback only — Reeves refuses any non-localhost host."
                   />
 
                   <TextField
@@ -197,8 +221,8 @@ export function Settings({ open: openSetting, onClose, settings, onUpdate, lm, o
                       <Select
                         label="Default embedding model"
                         value={settings["lmstudio.embed_model"]}
-                        onChange={(e) => onUpdate("lmstudio.embed_model", e.target.value)}
-                        hint="Required for the PDF library and the corpus RAG (Stage 3 feature). Not needed yet."
+                        onChange={(e) => handleEmbedModelChange(e.target.value)}
+                        hint="Required for the PDF library and the corpus RAG (Stage 3 feature). Changing model purges all indexed vectors."
                       >
                         <option value="">— optional —</option>
                         {lm.models.map((m) => (
@@ -288,7 +312,7 @@ export function Settings({ open: openSetting, onClose, settings, onUpdate, lm, o
                 <SectionHeader
                   icon={<Database size={14} strokeWidth={1.75} />}
                   title="Search databases"
-                  description="Add, remove, or configure any bibliographic database. Paste the URL for each one you have institutional access to — Carta opens them in your default browser when you run searches."
+                  description="Add, remove, or configure any bibliographic database. Paste the URL for each one you have institutional access to — Reeves opens them in your default browser when you run searches."
                 />
                 <DatabaseManager
                   databases={settings["databases.config"]}
@@ -301,7 +325,7 @@ export function Settings({ open: openSetting, onClose, settings, onUpdate, lm, o
                 <SectionHeader
                   icon={<ShieldCheck size={14} strokeWidth={1.75} />}
                   title="Network sovereignty"
-                  description="Carta refuses to talk to anything except hosts in this allowlist."
+                  description="Reeves refuses to talk to anything except hosts in this allowlist."
                 />
                 <div className="mt-4 rounded-[var(--radius-sm)] border border-[var(--color-paper-300)] bg-[var(--color-paper-100)] divide-y divide-[var(--color-paper-200)]">
                   <AllowedHost host="http://127.0.0.1:*" reason="LM Studio (default)" />
@@ -315,6 +339,69 @@ export function Settings({ open: openSetting, onClose, settings, onUpdate, lm, o
               </section>
             </div>
           </motion.aside>
+
+          {/* Embed model change confirmation */}
+          <AnimatePresence>
+            {pendingEmbedModel && (
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                className="fixed inset-0 z-[60] flex items-center justify-center"
+              >
+                <div
+                  className="absolute inset-0 bg-[var(--color-ink-900)]/40 backdrop-blur-sm"
+                  onClick={() => !purging && setPendingEmbedModel(null)}
+                />
+                <motion.div
+                  initial={{ scale: 0.95, opacity: 0 }}
+                  animate={{ scale: 1, opacity: 1 }}
+                  exit={{ scale: 0.95, opacity: 0 }}
+                  transition={{ duration: 0.18 }}
+                  className="relative z-10 w-[400px] rounded-[var(--radius-md)] bg-[var(--color-paper-50)] border border-[var(--color-paper-300)] shadow-[var(--shadow-paper-lg)] p-6"
+                >
+                  <div className="flex items-start gap-3 mb-4">
+                    <Database size={18} strokeWidth={1.75} className="text-amber-800 shrink-0 mt-0.5" />
+                    <div>
+                      <p className="text-[14px] font-semibold text-[var(--color-ink-900)]">
+                        Changing the embedding model
+                      </p>
+                      <p className="mt-1.5 text-[13px] text-[var(--color-paper-700)] leading-relaxed">
+                        Switching to <span className="font-mono text-[12px] text-[var(--color-ink-800)]">{pendingEmbedModel}</span> will
+                        delete all existing indexed vectors — they are incompatible across models.
+                        You will need to rebuild the index before chatting with your corpus again.
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center justify-end gap-2 pt-2">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setPendingEmbedModel(null)}
+                      disabled={purging}
+                    >
+                      Cancel
+                    </Button>
+                    <Button
+                      variant="primary"
+                      size="sm"
+                      onClick={confirmEmbedModelChange}
+                      disabled={purging}
+                    >
+                      {purging ? (
+                        <>
+                          <Loader2 size={13} className="animate-spin" />
+                          Purging…
+                        </>
+                      ) : (
+                        <>Purge &amp; switch model</>
+                      )}
+                    </Button>
+                  </div>
+                </motion.div>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </>
       )}
     </AnimatePresence>
@@ -516,7 +603,7 @@ function DatabaseManager({
                     onBlur={(e) => update(db.id, { url: e.target.value })}
                     placeholder="https://..."
                     mono
-                    hint="Paste the advanced-search page URL. Carta opens it in your default browser."
+                    hint="Paste the advanced-search page URL. Reeves opens it in your default browser."
                   />
                   <div className="flex justify-end pt-1">
                     <button

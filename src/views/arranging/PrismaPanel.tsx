@@ -31,7 +31,7 @@ export function PrismaPanel({ refreshKey }: Props) {
   const sought = state.identified_databases - state.duplicates_removed;
 
   return (
-    <div className="max-w-5xl">
+    <div className="pl-6 pr-4 xl:pl-12 xl:pr-8">
       <div className="mb-8">
         <div className="eyebrow text-[var(--color-paper-500)] flex items-center gap-2">
           <GitBranch size={11} strokeWidth={1.75} />

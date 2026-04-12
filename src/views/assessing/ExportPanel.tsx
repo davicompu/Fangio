@@ -77,7 +77,7 @@ export function ExportPanel() {
         <ExportCard
           icon={<ListChecks size={20} strokeWidth={1.5} />}
           title="PRISMA 2020 checklist"
-          description="The full 27-item reporting checklist, pre-filled with everything Carta knows about your review."
+          description="The full 27-item reporting checklist, pre-filled with everything Reeves knows about your review."
           path="drafts/prisma_checklist.md"
           busy={busy === "checklist"}
           onRun={() => run("checklist")}

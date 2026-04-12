@@ -8,10 +8,11 @@ import { StageHub } from "./views/StageHub";
 import { AssemblingStage } from "./views/assembling/AssemblingStage";
 import { ArrangingStage } from "./views/arranging/ArrangingStage";
 import { AssessingStage } from "./views/assessing/AssessingStage";
+import { RagChatView } from "./views/RagChatView";
 import { Settings } from "./views/Settings";
 import { StatusBar } from "./components/StatusBar";
 
-type Route = "hub" | "assembling" | "arranging" | "assessing";
+type Route = "hub" | "assembling" | "arranging" | "assessing" | "rag";
 
 function App() {
   const {
@@ -26,6 +27,12 @@ function App() {
   } = useAppState();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [route, setRoute] = useState<Route>("hub");
+  const [ragReturn, setRagReturn] = useState<Route>("hub");
+
+  const openRag = (from: Route) => {
+    setRagReturn(from);
+    setRoute("rag");
+  };
 
   // Belt-and-suspenders JS drag — handles cases where CSS -webkit-app-region
   // is stripped by the CSS processor or not honoured by WKWebView.
@@ -97,6 +104,7 @@ function App() {
                 if (s === "arranging") setRoute("arranging");
                 if (s === "assessing") setRoute("assessing");
               }}
+              onOpenRag={() => openRag("hub")}
               onCloseProject={async () => {
                 await api.closeProject();
                 setProject(null);
@@ -116,6 +124,18 @@ function App() {
               project={project}
               settings={settings}
               onLeaveStage={() => setRoute("hub")}
+              onAdvanceStage={async (nextStage) => {
+                await api.saveDecision({
+                  stage: "assembling",
+                  sub_stage: null,
+                  decision_key: "project.current_stage",
+                  value_json: JSON.stringify(nextStage),
+                  rationale: null,
+                });
+                await refreshProject();
+                setRoute("hub");
+              }}
+              onOpenRag={() => openRag("assembling")}
               onOpenSettings={() => setSettingsOpen(true)}
             />
           </motion.div>
@@ -139,7 +159,21 @@ function App() {
             exit={{ opacity: 0 }}
             transition={{ duration: 0.35 }}
           >
-            <AssessingStage project={project} onLeaveStage={() => setRoute("hub")} />
+            <AssessingStage project={project} onLeaveStage={() => setRoute("hub")} onOpenRag={() => openRag("assessing")} />
+          </motion.div>
+        )}
+        {project && project.onboarding_complete && route === "rag" && (
+          <motion.div
+            key="rag"
+            initial={{ opacity: 0, x: 24 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.35 }}
+          >
+            <RagChatView
+              onBack={() => setRoute(ragReturn)}
+              onOpenSettings={() => setSettingsOpen(true)}
+            />
           </motion.div>
         )}
       </AnimatePresence>

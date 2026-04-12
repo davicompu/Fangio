@@ -46,7 +46,7 @@ export function ProjectPicker({ onProjectOpened }: ProjectPickerProps) {
     const dir = await open({
       directory: true,
       multiple: false,
-      title: "Open an existing Carta project",
+      title: "Open an existing Reeves project",
     });
     if (!dir || Array.isArray(dir)) return;
     setBusy(true);
@@ -97,13 +97,13 @@ export function ProjectPicker({ onProjectOpened }: ProjectPickerProps) {
             <div className="flex items-center gap-4 mb-3">
               <img
                 src={cartaMark}
-                alt="Carta"
+                alt="Reeves"
                 className="w-14 h-14 rounded-[var(--radius-md)] shadow-[var(--shadow-paper)]"
               />
               <div>
                 <div className="flex items-baseline gap-3">
                   <h1 className="font-serif text-[44px] tracking-tight leading-none text-[var(--color-ink-900)]">
-                    Carta
+                    Reeves
                   </h1>
                   <span className="eyebrow">From search to synthesis · v0.1</span>
                 </div>
@@ -192,7 +192,7 @@ export function ProjectPicker({ onProjectOpened }: ProjectPickerProps) {
                 No reviews yet.
               </p>
               <p className="text-[13px] text-[var(--color-paper-500)] max-w-sm mx-auto leading-relaxed">
-                A review is a folder. Start a new one above and Carta will set up the
+                A review is a folder. Start a new one above and Reeves will set up the
                 workspace, database, and PRISMA tracking inside it.
               </p>
             </motion.div>

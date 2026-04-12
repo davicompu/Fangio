@@ -48,7 +48,7 @@ export function AskCorpusPanel() {
             Ask the corpus
           </h2>
           <p className="text-[13px] text-[var(--color-paper-600)] mt-1.5 max-w-xl leading-relaxed">
-            Ask any question; Carta retrieves the most relevant passages from your indexed PDFs
+            Ask any question; Reeves retrieves the most relevant passages from your indexed PDFs
             and asks your local model to answer using only those excerpts, with inline citations.
           </p>
         </div>

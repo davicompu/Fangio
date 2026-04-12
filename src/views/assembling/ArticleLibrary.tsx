@@ -9,7 +9,7 @@ import {
   type SortingState,
 } from "@tanstack/react-table";
 import { AnimatePresence, motion } from "framer-motion";
-import { ArrowUpDown, Check, ExternalLink, Library, Loader2, Search, Star, Tags, X } from "lucide-react";
+import { ArrowUpDown, Check, ExternalLink, Library, Loader2, Pencil, Search, Star, Tags, X } from "lucide-react";
 import { api, type ArticleRow, type JournalRow } from "../../lib/api";
 import { cn } from "../../lib/utils";
 
@@ -409,6 +409,243 @@ function BulkRateModal({
   );
 }
 
+// ── Inline-editable source cell ───────────────────────────────────────────────
+
+function parseSourceDbs(raw: string | null | undefined): string[] {
+  if (!raw) return [];
+  try { return JSON.parse(raw) as string[]; } catch { return [raw]; }
+}
+
+function SourceCell({
+  article,
+  onSaved,
+}: {
+  article: ArticleRow;
+  onSaved: (newRaw: string | null) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const names = parseSourceDbs(article.source_databases);
+
+  const startEdit = () => {
+    setDraft(names.join(", "));
+    setEditing(true);
+    setTimeout(() => inputRef.current?.focus(), 0);
+  };
+
+  const confirm = async () => {
+    setBusy(true);
+    try {
+      const parts = draft
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+      const newRaw = parts.length > 0 ? JSON.stringify(parts) : null;
+      await api.updateArticleSource(article.id, newRaw);
+      onSaved(newRaw);
+      setEditing(false);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const cancel = () => {
+    setEditing(false);
+  };
+
+  if (editing) {
+    return (
+      <div className="flex items-center gap-1.5 min-w-0">
+        <input
+          ref={inputRef}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") confirm();
+            if (e.key === "Escape") cancel();
+          }}
+          placeholder="Scopus, WoS…"
+          className="flex-1 h-7 px-2 text-[12px] rounded-[var(--radius-xs)] border border-[var(--color-ink-400)] bg-white text-[var(--color-ink-800)] focus:outline-none focus:border-[var(--color-ink-600)] min-w-0"
+        />
+        <button
+          onClick={confirm}
+          disabled={busy}
+          className="p-1 rounded-[var(--radius-xs)] text-[var(--color-ok-600)] hover:bg-[var(--color-ok-500)]/10 transition-paper"
+        >
+          {busy ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} strokeWidth={2.5} />}
+        </button>
+        <button
+          onClick={cancel}
+          className="p-1 rounded-[var(--radius-xs)] text-[var(--color-paper-500)] hover:bg-[var(--color-paper-200)] transition-paper"
+        >
+          <X size={12} strokeWidth={2} />
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="group flex items-start gap-1 min-w-0">
+      <div className="flex-1 flex flex-wrap gap-1 min-w-0">
+        {names.length > 0 ? names.map((n) => (
+          <span
+            key={n}
+            className="text-[10px] font-medium uppercase tracking-wider px-1.5 py-0.5 rounded-sm bg-[var(--color-paper-200)] text-[var(--color-paper-700)]"
+          >
+            {n}
+          </span>
+        )) : (
+          <span className="text-[12px] text-[var(--color-paper-400)]">—</span>
+        )}
+      </div>
+      <button
+        onClick={startEdit}
+        className="p-0.5 rounded opacity-0 group-hover:opacity-100 text-[var(--color-paper-400)] hover:text-[var(--color-ink-600)] hover:bg-[var(--color-paper-200)] transition-paper shrink-0"
+        title="Edit source databases"
+      >
+        <Pencil size={11} strokeWidth={1.75} />
+      </button>
+    </div>
+  );
+}
+
+// ── Inline-editable journal cell ──────────────────────────────────────────────
+
+function JournalCell({
+  article,
+  journalMatch,
+  onRate,
+  onSaved,
+}: {
+  article: ArticleRow;
+  journalMatch: JournalRow | null;
+  onRate: () => void;
+  onSaved: (newJournal: string | null) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(article.journal ?? "");
+  const [busy, setBusy] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const startEdit = () => {
+    setDraft(article.journal ?? "");
+    setEditing(true);
+    setTimeout(() => inputRef.current?.focus(), 0);
+  };
+
+  const confirm = async () => {
+    setBusy(true);
+    try {
+      const val = draft.trim() || null;
+      await api.updateArticleJournal(article.id, val);
+      onSaved(val);
+      setEditing(false);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const cancel = () => {
+    setEditing(false);
+    setDraft(article.journal ?? "");
+  };
+
+  const hasRatings = journalMatch && (
+    journalMatch.abs_rating || journalMatch.abdc_rating || journalMatch.impact_factor != null
+  );
+
+  if (editing) {
+    return (
+      <div className="flex items-center gap-1.5 min-w-0">
+        <input
+          ref={inputRef}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") confirm();
+            if (e.key === "Escape") cancel();
+          }}
+          className="flex-1 h-7 px-2 text-[12px] rounded-[var(--radius-xs)] border border-[var(--color-ink-400)] bg-white text-[var(--color-ink-800)] focus:outline-none focus:border-[var(--color-ink-600)] min-w-0"
+          placeholder="Journal name…"
+        />
+        <button
+          onClick={confirm}
+          disabled={busy}
+          className="p-1 rounded-[var(--radius-xs)] text-[var(--color-ok-600)] hover:bg-[var(--color-ok-500)]/10 transition-paper"
+        >
+          {busy ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} strokeWidth={2.5} />}
+        </button>
+        <button
+          onClick={cancel}
+          className="p-1 rounded-[var(--radius-xs)] text-[var(--color-paper-500)] hover:bg-[var(--color-paper-200)] transition-paper"
+        >
+          <X size={12} strokeWidth={2} />
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="group min-w-0">
+      <div className="flex items-center gap-1 min-w-0">
+        {article.journal ? (
+          <span className="text-[12px] italic text-[var(--color-ink-700)] leading-snug line-clamp-2 flex-1 min-w-0">
+            {article.journal}
+          </span>
+        ) : (
+          <span className="text-[12px] text-[var(--color-paper-400)] flex-1">—</span>
+        )}
+        <button
+          onClick={startEdit}
+          className="p-0.5 rounded opacity-0 group-hover:opacity-100 text-[var(--color-paper-400)] hover:text-[var(--color-ink-600)] hover:bg-[var(--color-paper-200)] transition-paper shrink-0"
+          title="Edit journal name"
+        >
+          <Pencil size={11} strokeWidth={1.75} />
+        </button>
+      </div>
+      {article.journal && (
+        <div className="mt-1 flex items-center gap-1 flex-wrap">
+          {hasRatings ? (
+            <>
+              {journalMatch.abs_rating && (
+                <span className="text-[10px] font-mono font-semibold px-1 py-px rounded bg-[var(--color-paper-100)] text-[var(--color-paper-600)] border border-[var(--color-paper-300)]">
+                  ABS {journalMatch.abs_rating}
+                </span>
+              )}
+              {journalMatch.abdc_rating && (
+                <span className="text-[10px] font-mono font-semibold px-1 py-px rounded bg-[var(--color-paper-100)] text-[var(--color-paper-600)] border border-[var(--color-paper-300)]">
+                  ABDC {journalMatch.abdc_rating}
+                </span>
+              )}
+              {journalMatch.impact_factor != null && (
+                <span className="text-[10px] font-mono font-semibold px-1 py-px rounded bg-[var(--color-paper-100)] text-[var(--color-paper-600)] border border-[var(--color-paper-300)]">
+                  IF {journalMatch.impact_factor.toFixed(2)}
+                </span>
+              )}
+              <button
+                onClick={onRate}
+                className="text-[10px] px-1.5 py-px rounded border border-transparent text-[var(--color-paper-400)] hover:text-[var(--color-ink-600)] hover:border-[var(--color-paper-300)] transition-paper"
+              >
+                Edit ratings
+              </button>
+            </>
+          ) : (
+            <button
+              onClick={onRate}
+              className="text-[10px] px-1.5 py-px rounded border border-[var(--color-paper-300)] text-[var(--color-paper-500)] hover:border-[var(--color-ink-400)] hover:text-[var(--color-ink-700)] transition-paper"
+            >
+              + Rate
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function ArticleLibrary({ refreshKey, onChanged }: Props) {
   const [data, setData] = useState<ArticleRow[]>([]);
   const [journals, setJournals] = useState<JournalRow[]>([]);
@@ -464,8 +701,6 @@ export function ArticleLibrary({ refreshKey, onChanged }: Props) {
         header: "Title",
         cell: ({ row }) => {
           const a = row.original;
-          const jEntry = a.journal ? journalMap.get(normalizeJournal(a.journal)) : null;
-          const hasRatings = jEntry && (jEntry.abs_rating || jEntry.abdc_rating || jEntry.impact_factor != null);
           return (
             <div className="min-w-0">
               <div className="font-serif text-[14px] text-[var(--color-ink-900)] leading-snug line-clamp-2">
@@ -476,46 +711,31 @@ export function ArticleLibrary({ refreshKey, onChanged }: Props) {
                   {a.authors}
                 </div>
               )}
-              {a.journal && (
-                <div className="mt-1 flex items-center gap-1.5 flex-wrap">
-                  <span className="text-[11px] italic text-[var(--color-paper-500)]">
-                    {a.journal}
-                  </span>
-                  {hasRatings && (
-                    <>
-                      {jEntry.abs_rating && (
-                        <span className="text-[10px] font-mono font-semibold px-1 py-px rounded bg-[var(--color-paper-100)] text-[var(--color-paper-600)] border border-[var(--color-paper-300)]">
-                          ABS {jEntry.abs_rating}
-                        </span>
-                      )}
-                      {jEntry.abdc_rating && (
-                        <span className="text-[10px] font-mono font-semibold px-1 py-px rounded bg-[var(--color-paper-100)] text-[var(--color-paper-600)] border border-[var(--color-paper-300)]">
-                          ABDC {jEntry.abdc_rating}
-                        </span>
-                      )}
-                      {jEntry.impact_factor != null && (
-                        <span className="text-[10px] font-mono font-semibold px-1 py-px rounded bg-[var(--color-paper-100)] text-[var(--color-paper-600)] border border-[var(--color-paper-300)]">
-                          IF {jEntry.impact_factor.toFixed(2)}
-                        </span>
-                      )}
-                    </>
-                  )}
-                  <button
-                    onClick={() => setRatingArticle(a)}
-                    className={cn(
-                      "text-[10px] px-1.5 py-px rounded border transition-paper",
-                      hasRatings
-                        ? "border-transparent text-[var(--color-paper-400)] hover:text-[var(--color-ink-600)] hover:border-[var(--color-paper-300)]"
-                        : "border-[var(--color-paper-300)] text-[var(--color-paper-500)] hover:border-[var(--color-ink-400)] hover:text-[var(--color-ink-700)]"
-                    )}
-                  >
-                    {hasRatings ? "Edit ratings" : "+ Rate"}
-                  </button>
-                </div>
-              )}
             </div>
           );
         },
+      },
+      {
+        accessorKey: "journal",
+        header: "Journal",
+        cell: ({ row }) => {
+          const a = row.original;
+          const jEntry = a.journal ? journalMap.get(normalizeJournal(a.journal)) : null;
+          return (
+            <JournalCell
+              article={a}
+              journalMatch={jEntry ?? null}
+              onRate={() => setRatingArticle(a)}
+              onSaved={(newJournal) => {
+                setData((prev) =>
+                  prev.map((r) => r.id === a.id ? { ...r, journal: newJournal } : r)
+                );
+                onChanged();
+              }}
+            />
+          );
+        },
+        size: 220,
       },
       {
         accessorKey: "year",
@@ -531,28 +751,20 @@ export function ArticleLibrary({ refreshKey, onChanged }: Props) {
         accessorKey: "source_databases",
         header: "Source",
         cell: ({ row }) => {
-          const raw = row.original.source_databases;
-          if (!raw) return null;
-          let names: string[] = [];
-          try {
-            names = JSON.parse(raw);
-          } catch {
-            names = [raw];
-          }
+          const a = row.original;
           return (
-            <div className="flex flex-wrap gap-1">
-              {names.map((n) => (
-                <span
-                  key={n}
-                  className="text-[10px] font-medium uppercase tracking-wider px-1.5 py-0.5 rounded-sm bg-[var(--color-paper-200)] text-[var(--color-paper-700)]"
-                >
-                  {n}
-                </span>
-              ))}
-            </div>
+            <SourceCell
+              article={a}
+              onSaved={(newRaw) => {
+                setData((prev) =>
+                  prev.map((r) => r.id === a.id ? { ...r, source_databases: newRaw } : r)
+                );
+                onChanged();
+              }}
+            />
           );
         },
-        size: 160,
+        size: 175,
       },
       {
         accessorKey: "status",

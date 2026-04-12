@@ -8,23 +8,28 @@ import {
   Check,
   ChevronDown,
   ChevronUp,
+  Download,
   ExternalLink,
   FileText,
   GraduationCap,
   HelpCircle,
   Loader2,
+  MessageSquare,
   Plus,
   RefreshCw,
+  Send,
   Sparkles,
   Tag,
   Upload,
   X,
 } from "lucide-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
+import { writeTextFile } from "@tauri-apps/plugin-fs";
 import { listen } from "@tauri-apps/api/event";
 import {
   api,
+  type AskResult,
   type ArticleRow,
   type CodingRow,
   type DimensionInfo,
@@ -34,19 +39,28 @@ import {
 } from "../../lib/api";
 import { Card } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
+import { Markdown } from "../../components/Markdown";
 import { cn } from "../../lib/utils";
 
 interface Props {
   project: ProjectRow;
   refreshKey: number;
   onChanged: () => void;
+  initialCodeFilter?: { dimension: string; code: string } | null;
+  onCodeFilterConsumed?: () => void;
+  lastEditedArticleId?: number | null;
+  onArticleEdited?: (id: number) => void;
 }
 
-type Filter = "all" | "uncoded" | "coded" | "with-pdf" | "no-pdf" | "excluded";
+type ToggleFilter = "uncoded" | "coded" | "with-pdf" | "no-pdf";
+const OPPOSITES: Record<ToggleFilter, ToggleFilter> = {
+  coded: "uncoded", uncoded: "coded",
+  "with-pdf": "no-pdf", "no-pdf": "with-pdf",
+};
 
 const LOAD_LIMIT = 9999;
 
-export function CodingPanel({ project, refreshKey, onChanged }: Props) {
+export function CodingPanel({ project, refreshKey, onChanged, initialCodeFilter, onCodeFilterConsumed, lastEditedArticleId, onArticleEdited }: Props) {
   const isCustom = project.framework === "Custom";
 
   const [dimensions, setDimensions] = useState<DimensionInfo[]>([]);
@@ -57,13 +71,18 @@ export function CodingPanel({ project, refreshKey, onChanged }: Props) {
   const [unreviewedCount, setUnreviewedCount] = useState(0);
   const [codings, setCodings] = useState<CodingRow[]>([]);
   const [pdfMap, setPdfMap] = useState<Record<string, string>>({});
+  const [indexedIds, setIndexedIds] = useState<Set<number>>(new Set());
   const [loading, setLoading] = useState(true);
   const [scanning, setScanning] = useState(false);
   const [scanMsg, setScanMsg] = useState<string | null>(null);
   const [showNamingHint, setShowNamingHint] = useState(false);
 
+  // Multi-select filters
+  const [activeFilters, setActiveFilters] = useState<Set<ToggleFilter>>(new Set());
+  const [showExcluded, setShowExcluded] = useState(false);
+  // Code filter: Set of "dimension::code" strings, OR logic across selected codes
+  const [codeFilters, setCodeFilters] = useState<Set<string>>(new Set());
 
-  const [filter, setFilter] = useState<Filter>("all");
   const [cardIndex, setCardIndex] = useState(0);
   const [abstractExpanded, setAbstractExpanded] = useState(false);
 
@@ -74,18 +93,20 @@ export function CodingPanel({ project, refreshKey, onChanged }: Props) {
 
   const reload = useCallback(async () => {
     setLoading(true);
-    const [dims, defs, batch, allArticles, crits] = await Promise.all([
+    const [dims, defs, batch, allArticles, crits, idxIds] = await Promise.all([
       api.listFrameworkDimensions(),
       api.listFrameworkCodeDefs(),
       api.listCodingBatch(0, LOAD_LIMIT),
       api.listArticles(),
       api.listCriteria(),
+      api.getIndexedArticleIds(),
     ]);
     setDimensions(dims);
     setCodeDefs(defs);
     setArticles(batch.articles);
     setCodings(batch.codings);
     setPdfMap(batch.pdf_map);
+    setIndexedIds(new Set(idxIds));
     setExcludedArticles(allArticles.filter((a) => a.status === "excluded"));
     setUnreviewedCount(allArticles.filter((a) => a.status === "retrieved").length);
     setCriteria(crits);
@@ -111,19 +132,76 @@ export function CodingPanel({ project, refreshKey, onChanged }: Props) {
     return s;
   }, [codings]);
 
+  // Consume jump-to-code from OrganizationPanel
+  useEffect(() => {
+    if (!initialCodeFilter) return;
+    const key = `${initialCodeFilter.dimension}::${initialCodeFilter.code}`;
+    setCodeFilters(new Set([key]));
+    setActiveFilters(new Set());
+    setShowExcluded(false);
+    setCardIndex(0);
+    onCodeFilterConsumed?.();
+  }, [initialCodeFilter]);
+
+  // Build per-article code set for fast lookup: articleId → Set<"dim::code">
+  const articleCodeSet = useMemo(() => {
+    const m = new Map<number, Set<string>>();
+    for (const c of codings) {
+      if (!m.has(c.article_id)) m.set(c.article_id, new Set());
+      m.get(c.article_id)!.add(`${c.dimension}::${c.code}`);
+    }
+    return m;
+  }, [codings]);
+
   const filtered = useMemo(() => {
-    if (filter === "excluded") return [];
-    if (filter === "coded")    return articles.filter((a) => codedIds.has(a.id));
-    if (filter === "uncoded")  return articles.filter((a) => !codedIds.has(a.id));
-    if (filter === "with-pdf") return articles.filter((a) => !!pdfMap[String(a.id)]);
-    if (filter === "no-pdf")   return articles.filter((a) => !pdfMap[String(a.id)]);
-    return articles;
-  }, [articles, codedIds, pdfMap, filter]);
+    if (showExcluded) return [];
+    let result = articles;
+    if (activeFilters.has("coded"))    result = result.filter((a) => codedIds.has(a.id));
+    if (activeFilters.has("uncoded"))  result = result.filter((a) => !codedIds.has(a.id));
+    if (activeFilters.has("with-pdf")) result = result.filter((a) => !!pdfMap[String(a.id)]);
+    if (activeFilters.has("no-pdf"))   result = result.filter((a) => !pdfMap[String(a.id)]);
+    if (codeFilters.size > 0) {
+      result = result.filter((a) => {
+        const codes = articleCodeSet.get(a.id);
+        if (!codes) return false;
+        for (const cf of codeFilters) if (codes.has(cf)) return true;
+        return false;
+      });
+    }
+    return result;
+  }, [articles, codedIds, pdfMap, activeFilters, showExcluded, codeFilters, articleCodeSet]);
+
+  const toggleFilter = (key: ToggleFilter) => {
+    setShowExcluded(false);
+    setActiveFilters((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) { next.delete(key); }
+      else { next.delete(OPPOSITES[key]); next.add(key); }
+      return next;
+    });
+    setCardIndex(0);
+  };
+
+  const toggleCodeFilter = (key: string) => {
+    setCodeFilters((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+    setCardIndex(0);
+  };
+
+  const clearAllFilters = () => {
+    setActiveFilters(new Set());
+    setCodeFilters(new Set());
+    setShowExcluded(false);
+    setCardIndex(0);
+  };
 
   useEffect(() => {
     setCardIndex((i) => Math.min(i, Math.max(0, filtered.length - 1)));
     setAbstractExpanded(false);
-  }, [filter, filtered.length]);
+  }, [activeFilters, showExcluded, codeFilters, filtered.length]);
 
   // Keep a ref to current article so the drop handler (closed over at mount) can read it
   const currentArticleRef = useRef<ArticleRow | null>(null);
@@ -184,6 +262,7 @@ export function CodingPanel({ project, refreshKey, onChanged }: Props) {
   }, [cardIndex, filtered.length]);
 
   const onCodingChanged = async () => {
+    if (currentArticle) onArticleEdited?.(currentArticle.id);
     onChanged();
     await reload();
   };
@@ -281,7 +360,7 @@ export function CodingPanel({ project, refreshKey, onChanged }: Props) {
   const withPdfCount = Object.keys(pdfMap).length;
 
   return (
-    <div className="w-full">
+    <div className="w-full pl-6 pr-4 xl:pl-12 xl:pr-8">
       {/* ── Page header ────────────────────────────────────────────────── */}
       <div className="flex items-start justify-between mb-5">
         <div>
@@ -292,11 +371,6 @@ export function CodingPanel({ project, refreshKey, onChanged }: Props) {
               · {dimensions.length} dimension{dimensions.length !== 1 ? "s" : ""}
             </span>
           </h2>
-          {isCustom && (
-            <p className="text-[12px] text-[var(--color-accent-500)] mt-2">
-              Manage dimensions and starter codes in the <strong>Organisation</strong> tab.
-            </p>
-          )}
         </div>
 
         <div className="flex flex-col items-end gap-1.5">
@@ -372,43 +446,111 @@ export function CodingPanel({ project, refreshKey, onChanged }: Props) {
         </div>
       )}
 
-      {/* ── Filter tabs ────────────────────────────────────────────────── */}
-      <div className="flex items-center gap-1 flex-wrap mb-5">
-        {([
-          { key: "all",      label: "Included",  count: total },
-          { key: "uncoded",  label: "Uncoded",   count: total - codedCount },
-          { key: "coded",    label: "Coded",     count: codedCount },
-          { key: "with-pdf", label: "Has PDF",   count: withPdfCount },
-          { key: "no-pdf",   label: "No PDF",    count: total - withPdfCount },
-        ] as { key: Filter; label: string; count: number }[]).map(({ key, label, count }) => (
+      {/* ── Filters ────────────────────────────────────────────────────── */}
+      <div className="mb-5 space-y-2">
+        {/* Row 1: toggle chips */}
+        <div className="flex items-center gap-1 flex-wrap">
+          {/* "All" pill — clears all toggles */}
           <button
-            key={key}
-            onClick={() => { setFilter(key); setCardIndex(0); }}
+            onClick={clearAllFilters}
             className={cn(
               "px-3 py-1.5 rounded-full text-[12px] font-medium transition-paper",
-              filter === key
-                ? "bg-[var(--color-ink-800)] text-[var(--color-paper-50)]"
+              activeFilters.size === 0 && !showExcluded && codeFilters.size === 0
+                ? "bg-[var(--color-ink-800)] text-white"
                 : "text-[var(--color-paper-600)] hover:bg-[var(--color-paper-200)]"
             )}
           >
-            {label}
-            <span className="ml-1.5 tabular-nums text-[var(--color-paper-400)]">{count}</span>
+            All
+            <span className="ml-1.5 tabular-nums text-[var(--color-paper-400)]">{total}</span>
           </button>
-        ))}
-        {/* Excluded tab — always visible, separated visually */}
-        <span className="mx-1 text-[var(--color-paper-300)]">|</span>
-        <button
-          onClick={() => { setFilter("excluded"); setCardIndex(0); }}
-          className={cn(
-            "px-3 py-1.5 rounded-full text-[12px] font-medium transition-paper",
-            filter === "excluded"
-              ? "bg-[var(--color-error-500)] text-white"
-              : "text-[var(--color-error-500)] hover:bg-[var(--color-error-500)]/10"
+
+          {([
+            { key: "uncoded"  as ToggleFilter, label: "Uncoded",  count: total - codedCount },
+            { key: "coded"    as ToggleFilter, label: "Coded",    count: codedCount },
+            { key: "with-pdf" as ToggleFilter, label: "Has PDF",  count: withPdfCount },
+            { key: "no-pdf"   as ToggleFilter, label: "No PDF",   count: total - withPdfCount },
+          ]).map(({ key, label, count }) => (
+            <button
+              key={key}
+              onClick={() => toggleFilter(key)}
+              className={cn(
+                "px-3 py-1.5 rounded-full text-[12px] font-medium transition-paper",
+                activeFilters.has(key)
+                  ? "bg-[var(--color-ink-700)] text-white"
+                  : "text-[var(--color-paper-600)] hover:bg-[var(--color-paper-200)] border border-transparent hover:border-[var(--color-paper-300)]"
+              )}
+            >
+              {label}
+              <span className={cn("ml-1.5 tabular-nums", activeFilters.has(key) ? "text-white/60" : "text-[var(--color-paper-400)]")}>{count}</span>
+            </button>
+          ))}
+
+          <span className="mx-1 text-[var(--color-paper-300)]">|</span>
+          <button
+            onClick={() => { setShowExcluded((v) => !v); setActiveFilters(new Set()); setCodeFilters(new Set()); setCardIndex(0); }}
+            className={cn(
+              "px-3 py-1.5 rounded-full text-[12px] font-medium transition-paper",
+              showExcluded
+                ? "bg-[var(--color-error-500)] text-white"
+                : "text-[var(--color-error-500)] hover:bg-[var(--color-error-500)]/10"
+            )}
+          >
+            Excluded
+            <span className="ml-1.5 tabular-nums opacity-75">{excludedArticles.length}</span>
+          </button>
+
+          {/* Clear active filters badge */}
+          {(activeFilters.size > 0 || codeFilters.size > 0) && (
+            <button
+              onClick={clearAllFilters}
+              className="ml-1 inline-flex items-center gap-1 px-2 py-1 rounded-full text-[11px] text-[var(--color-paper-500)] hover:text-[var(--color-ink-700)] hover:bg-[var(--color-paper-200)] transition-paper"
+            >
+              <X size={10} strokeWidth={2} /> Clear filters
+            </button>
           )}
-        >
-          Excluded
-          <span className="ml-1.5 tabular-nums opacity-75">{excludedArticles.length}</span>
-        </button>
+        </div>
+
+        {/* Row 2: code filters — only shown when codings exist */}
+        {codings.length > 0 && !showExcluded && (
+          <div className="flex items-start gap-2 flex-wrap">
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--color-paper-400)] mt-1.5 shrink-0">
+              By code:
+            </span>
+            <div className="flex flex-wrap gap-1">
+              {Array.from(
+                codings.reduce((acc, c) => {
+                  const key = `${c.dimension}::${c.code}`;
+                  if (!acc.has(key)) acc.set(key, { dimension: c.dimension, code: c.code, count: 0 });
+                  acc.get(key)!.count++;
+                  return acc;
+                }, new Map<string, { dimension: string; code: string; count: number }>())
+                .values()
+              )
+                .sort((a, b) => b.count - a.count)
+                .map(({ dimension, code, count }) => {
+                  const key = `${dimension}::${code}`;
+                  const active = codeFilters.has(key);
+                  return (
+                    <button
+                      key={key}
+                      onClick={() => toggleCodeFilter(key)}
+                      title={dimension}
+                      className={cn(
+                        "inline-flex items-center gap-1 pl-2 pr-1.5 py-0.5 rounded-full text-[11px] border transition-paper",
+                        active
+                          ? "bg-[var(--color-accent-600)] border-[var(--color-accent-600)] text-white"
+                          : "bg-[var(--color-paper-50)] border-[var(--color-paper-300)] text-[var(--color-paper-700)] hover:border-[var(--color-accent-400)] hover:text-[var(--color-accent-700)]"
+                      )}
+                    >
+                      <Tag size={9} strokeWidth={2} />
+                      <span className="font-medium">{code}</span>
+                      <span className={cn("font-mono text-[10px] ml-0.5", active ? "text-white/70" : "text-[var(--color-paper-400)]")}>×{count}</span>
+                    </button>
+                  );
+                })}
+            </div>
+          </div>
+        )}
       </div>
 
       {loading && (
@@ -430,25 +572,32 @@ export function CodingPanel({ project, refreshKey, onChanged }: Props) {
         </div>
       )}
 
-      {!loading && filtered.length === 0 && filter !== "excluded" && (
+      {!loading && filtered.length === 0 && !showExcluded && (
         <div className="border border-dashed border-[var(--color-paper-300)] rounded-[var(--radius-md)] p-12 text-center">
           <p className="text-[14px] text-[var(--color-paper-700)] font-medium mb-1">
-            {filter === "coded"    ? "No coded articles yet." :
-             filter === "uncoded"  ? "All articles have been coded." :
-             filter === "with-pdf" ? "No articles have a PDF linked." :
-             filter === "no-pdf"   ? "All articles have a PDF linked." :
-             "No articles to code."}
+            {codeFilters.size > 0
+              ? "No articles match the selected code filter."
+              : activeFilters.has("coded")    ? "No coded articles yet."
+              : activeFilters.has("uncoded")  ? "All articles have been coded."
+              : activeFilters.has("with-pdf") ? "No articles have a PDF linked."
+              : activeFilters.has("no-pdf")   ? "All articles have a PDF linked."
+              : "No articles to code."}
           </p>
           <p className="text-[13px] text-[var(--color-paper-500)] max-w-md mx-auto leading-relaxed">
-            {filter === "all"
+            {activeFilters.size === 0 && codeFilters.size === 0
               ? "Import records in Stage 1 first, or check the Library tab."
-              : `Switch to "All" to see every article.`}
+              : "Clear the filters to see all articles."}
           </p>
+          {(activeFilters.size > 0 || codeFilters.size > 0) && (
+            <button onClick={clearAllFilters} className="mt-3 text-[12px] text-[var(--color-ink-600)] underline underline-offset-2 hover:text-[var(--color-ink-900)]">
+              Clear filters
+            </button>
+          )}
         </div>
       )}
 
       {/* ── Excluded articles list ─────────────────────────────────────── */}
-      {!loading && filter === "excluded" && (
+      {!loading && showExcluded && (
         <div className="space-y-2">
           {excludedArticles.length === 0 ? (
             <div className="border border-dashed border-[var(--color-paper-300)] rounded-[var(--radius-md)] p-12 text-center">
@@ -507,35 +656,43 @@ export function CodingPanel({ project, refreshKey, onChanged }: Props) {
               onClick={() => goTo(cardIndex - 1)}
               disabled={cardIndex === 0}
               className={cn(
-                "flex items-center gap-1.5 px-3 py-2 rounded-[var(--radius-sm)] border text-[12px] font-medium transition-paper shrink-0",
+                "flex items-center gap-1.5 px-3 py-2 rounded-[var(--radius-sm)] border text-[13px] font-semibold transition-paper shrink-0",
                 cardIndex === 0
-                  ? "border-transparent text-[var(--color-paper-300)] cursor-not-allowed"
-                  : "border-[var(--color-paper-300)] text-[var(--color-paper-600)] hover:border-[var(--color-ink-400)] hover:text-[var(--color-ink-800)] hover:bg-[var(--color-paper-50)]"
+                  ? "border-[var(--color-paper-200)] text-[var(--color-paper-400)] cursor-not-allowed bg-[var(--color-paper-50)]"
+                  : "border-[var(--color-paper-400)] text-[var(--color-ink-700)] hover:border-[var(--color-ink-500)] hover:text-[var(--color-ink-900)] hover:bg-[var(--color-paper-100)]"
               )}
             >
-              <ArrowLeft size={13} strokeWidth={2} /> Prev
+              <ArrowLeft size={13} strokeWidth={2.5} /> Prev
             </button>
+
+            {/* Counter — always visible outside the scrollable strip */}
+            <span className="shrink-0 text-[13px] font-semibold tabular-nums text-[var(--color-ink-800)] min-w-[3.5rem] text-center">
+              {cardIndex + 1} <span className="font-normal text-[var(--color-paper-400)]">/ {filtered.length}</span>
+            </span>
 
             <div className="flex-1 overflow-x-auto no-scrollbar">
               <div className="flex gap-1 min-w-max py-0.5">
                 {filtered.map((a, i) => {
-                  const isCoded   = codedIds.has(a.id);
-                  const isCurrent = i === cardIndex;
+                  const isCoded      = codedIds.has(a.id);
+                  const isCurrent    = i === cardIndex;
+                  const isLastEdited = !isCurrent && a.id === lastEditedArticleId;
                   return (
                     <button
                       key={a.id}
                       onClick={() => goTo(i)}
-                      title={a.title}
+                      title={`#${i + 1} — ${a.title}${isLastEdited ? " (last edited)" : ""}`}
                       className={cn(
-                        "h-[22px] rounded-full transition-paper text-[9px] font-mono tabular-nums flex items-center justify-center shrink-0",
+                        "h-[24px] min-w-[28px] px-1.5 rounded-full transition-paper text-[11px] font-medium tabular-nums flex items-center justify-center shrink-0",
                         isCurrent
-                          ? "w-9 bg-[var(--color-ink-800)] text-[var(--color-paper-50)]"
+                          ? "bg-[var(--color-ink-800)] text-white ring-2 ring-[var(--color-ink-800)] ring-offset-1"
+                          : isLastEdited
+                          ? "bg-[var(--color-accent-100)] text-[var(--color-accent-700)] border border-[var(--color-accent-300)] hover:bg-[var(--color-accent-200)] ring-1 ring-[var(--color-accent-400)] ring-offset-1"
                           : isCoded
-                          ? "w-5 bg-[var(--color-ok-200)] hover:bg-[var(--color-ok-300)] text-[var(--color-ok-700)]"
-                          : "w-5 bg-[var(--color-paper-200)] hover:bg-[var(--color-paper-300)] text-transparent"
+                          ? "bg-[var(--color-ok-100)] text-[var(--color-ok-700)] border border-[var(--color-ok-300)] hover:bg-[var(--color-ok-200)]"
+                          : "bg-[var(--color-paper-100)] text-[var(--color-paper-600)] border border-[var(--color-paper-300)] hover:bg-[var(--color-paper-200)] hover:text-[var(--color-ink-700)]"
                       )}
                     >
-                      {isCurrent ? i + 1 : ""}
+                      {i + 1}
                     </button>
                   );
                 })}
@@ -546,13 +703,13 @@ export function CodingPanel({ project, refreshKey, onChanged }: Props) {
               onClick={() => goTo(cardIndex + 1)}
               disabled={cardIndex >= filtered.length - 1}
               className={cn(
-                "flex items-center gap-1.5 px-3 py-2 rounded-[var(--radius-sm)] border text-[12px] font-medium transition-paper shrink-0",
+                "flex items-center gap-1.5 px-3 py-2 rounded-[var(--radius-sm)] border text-[13px] font-semibold transition-paper shrink-0",
                 cardIndex >= filtered.length - 1
-                  ? "border-transparent text-[var(--color-paper-300)] cursor-not-allowed"
-                  : "border-[var(--color-paper-300)] text-[var(--color-paper-600)] hover:border-[var(--color-ink-400)] hover:text-[var(--color-ink-800)] hover:bg-[var(--color-paper-50)]"
+                  ? "border-[var(--color-paper-200)] text-[var(--color-paper-400)] cursor-not-allowed bg-[var(--color-paper-50)]"
+                  : "border-[var(--color-paper-400)] text-[var(--color-ink-700)] hover:border-[var(--color-ink-500)] hover:text-[var(--color-ink-900)] hover:bg-[var(--color-paper-100)]"
               )}
             >
-              Next <ArrowRight size={13} strokeWidth={2} />
+              Next <ArrowRight size={13} strokeWidth={2.5} />
             </button>
           </div>
 
@@ -572,7 +729,9 @@ export function CodingPanel({ project, refreshKey, onChanged }: Props) {
                 dimensions={dimensions}
                 codeDefs={codeDefs}
                 codings={codingsByArticle.get(currentArticle.id) ?? []}
+                criteria={criteria.filter((c) => c.number > 1)}
                 pdfPath={pdfMap[String(currentArticle.id)] ?? null}
+                isIndexed={indexedIds.has(currentArticle.id)}
                 isDragOver={cardDragOver}
                 dropping={dropping}
                 pdfError={pdfError}
@@ -583,6 +742,11 @@ export function CodingPanel({ project, refreshKey, onChanged }: Props) {
                 onBrowsePdf={() => handleBrowsePdf(currentArticle.id)}
                 onReplacePdf={() => handleReplacePdf(currentArticle.id)}
                 onChanged={onCodingChanged}
+                onExcluded={async () => {
+                  await onCodingChanged();
+                  // stay on same index — the excluded article drops out of the list,
+                  // so the next article slides into this position automatically
+                }}
               />
             </motion.div>
           </AnimatePresence>
@@ -601,7 +765,9 @@ function ArticleCodingCard({
   dimensions,
   codeDefs,
   codings,
+  criteria,
   pdfPath,
+  isIndexed,
   isDragOver,
   dropping,
   pdfError,
@@ -612,6 +778,7 @@ function ArticleCodingCard({
   onBrowsePdf,
   onReplacePdf,
   onChanged,
+  onExcluded,
 }: {
   index: number;
   total: number;
@@ -619,7 +786,9 @@ function ArticleCodingCard({
   dimensions: DimensionInfo[];
   codeDefs: FrameworkCodeDefinition[];
   codings: CodingRow[];
+  criteria: import("../../lib/api").ExclusionCriterionRow[];
   pdfPath: string | null;
+  isIndexed: boolean;
   isDragOver: boolean;
   dropping: boolean;
   pdfError: string | null;
@@ -630,8 +799,113 @@ function ArticleCodingCard({
   onBrowsePdf: () => void;
   onReplacePdf: () => void;
   onChanged: () => Promise<void>;
+  onExcluded: () => Promise<void>;
 }) {
+  const [excludeOpen, setExcludeOpen] = useState(false);
+  const [excluding, setExcluding] = useState(false);
+  const [chatOpen, setChatOpen] = useState(false);
+  const [chatInput, setChatInput] = useState("");
+  const [chatHistory, setChatHistory] = useState<{ q: string; result: AskResult | null; error: string | null }[]>([]);
+  const [chatBusy, setChatBusy] = useState(false);
+  const chatInputRef = useRef<HTMLTextAreaElement>(null);
+  const chatScrollRef = useRef<HTMLDivElement>(null);
   const coded = codings.length > 0;
+
+  // Auto-scroll to bottom whenever history grows or a pending entry resolves
+  useEffect(() => {
+    if (chatScrollRef.current) {
+      chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight;
+    }
+  }, [chatHistory]);
+
+  const sendChat = async () => {
+    const q = chatInput.trim();
+    if (!q || chatBusy) return;
+    setChatInput("");
+    setChatBusy(true);
+    const entry = { q, result: null as AskResult | null, error: null as string | null };
+    setChatHistory((h) => [...h, entry]);
+    try {
+      const result = await api.askArticle(article.id, q);
+      setChatHistory((h) => h.map((e, i) => i === h.length - 1 ? { ...e, result } : e));
+    } catch (err: any) {
+      setChatHistory((h) => h.map((e, i) => i === h.length - 1 ? { ...e, error: err?.message ?? String(err) } : e));
+    } finally {
+      setChatBusy(false);
+    }
+  };
+
+  const exportChat = async () => {
+    if (chatHistory.length === 0) return;
+
+    // Build citation slug: firstAuthorLastName[_etal]_year
+    const buildCitationSlug = (): string => {
+      const parts: string[] = [];
+      if (article.authors) {
+        // Authors may be "Last, First; Last, First" or "First Last, First Last"
+        const authorList = article.authors.split(/[;]/).map((s) => s.trim()).filter(Boolean);
+        const first = authorList[0];
+        // If "Last, First" format — last name is before the comma
+        // If "First Last" format — last name is the last token
+        let lastName = first.includes(",")
+          ? first.split(",")[0].trim()
+          : first.split(/\s+/).slice(-1)[0];
+        lastName = lastName.replace(/[^a-z0-9]/gi, "").toLowerCase();
+        if (lastName) parts.push(lastName);
+        if (authorList.length > 1) parts.push("etal");
+      }
+      if (article.year) parts.push(String(article.year));
+      return parts.join("_") || "unknown";
+    };
+
+    const now = new Date();
+    const dt = [
+      now.getFullYear(),
+      String(now.getMonth() + 1).padStart(2, "0"),
+      String(now.getDate()).padStart(2, "0"),
+      "_",
+      String(now.getHours()).padStart(2, "0"),
+      String(now.getMinutes()).padStart(2, "0"),
+      String(now.getSeconds()).padStart(2, "0"),
+    ].join("");
+
+    const slug = buildCitationSlug();
+    const defaultName = `${slug}_${dt}.md`;
+
+    const lines: string[] = [
+      `# Article chat — ${article.title}`,
+      `*Exported from Reeves · ${now.toLocaleString()}*`,
+      "",
+    ];
+    for (const entry of chatHistory) {
+      lines.push(`**Q:** ${entry.q}`, "");
+      if (entry.result) {
+        lines.push(`**A:** ${entry.result.answer}`, "");
+      } else if (entry.error) {
+        lines.push(`**Error:** ${entry.error}`, "");
+      }
+    }
+
+    const path = await saveDialog({
+      defaultPath: defaultName,
+      filters: [{ name: "Markdown", extensions: ["md"] }],
+      title: "Export article chat",
+    });
+    if (!path) return;
+    await writeTextFile(path, lines.join("\n"));
+  };
+
+  const exclude = async (criterionNumber: number) => {
+    setExcluding(true);
+    try {
+      await api.excludeArticle(article.id, criterionNumber);
+      await onExcluded();
+    } finally {
+      setExcluding(false);
+      setExcludeOpen(false);
+    }
+  };
+
   // HTML5 drag events only used to prevent default browser drop behavior;
   // actual file paths come from Tauri's tauri://drag-drop event in the parent.
   const handleDragOver = (e: React.DragEvent) => { e.preventDefault(); };
@@ -705,7 +979,12 @@ function ArticleCodingCard({
                 <p className="text-[12px] italic text-[var(--color-paper-500)]">{article.journal}</p>
               )}
               {article.doi && (
-                <p className="text-[11px] font-mono text-[var(--color-paper-500)]">DOI: {article.doi}</p>
+                <button
+                  onClick={() => openUrl(`https://doi.org/${article.doi}`).catch(() => {})}
+                  className="text-left text-[11px] font-mono text-[var(--color-paper-500)] hover:text-[var(--color-accent-600)] hover:underline underline-offset-2 transition-paper"
+                >
+                  DOI: {article.doi}
+                </button>
               )}
             </div>
             {/* Abstract toggle */}
@@ -733,7 +1012,7 @@ function ArticleCodingCard({
           </div>
 
           {/* Right: PDF zone */}
-          <div className="shrink-0 w-[160px] flex flex-col gap-2">
+          <div className="shrink-0 w-[130px] xl:w-[160px] flex flex-col gap-2">
             {pdfPath ? (
               <>
                 <button
@@ -743,6 +1022,20 @@ function ArticleCodingCard({
                   <FileText size={20} strokeWidth={1.5} />
                   <span className="text-[12px] font-medium">Open PDF</span>
                 </button>
+                {isIndexed && (
+                  <button
+                    onClick={() => { setChatOpen((v) => !v); setTimeout(() => chatInputRef.current?.focus(), 80); }}
+                    className={cn(
+                      "w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-[var(--radius-sm)] border text-[11px] font-medium transition-paper",
+                      chatOpen
+                        ? "bg-[var(--color-accent-600)] border-[var(--color-accent-600)] text-white"
+                        : "bg-[var(--color-accent-50)] border-[var(--color-accent-200)] text-[var(--color-accent-700)] hover:bg-[var(--color-accent-100)]"
+                    )}
+                  >
+                    <MessageSquare size={12} strokeWidth={1.75} />
+                    Chat
+                  </button>
+                )}
                 <button
                   onClick={onReplacePdf}
                   className="text-[10px] text-[var(--color-paper-500)] hover:text-[var(--color-ink-700)] text-center transition-paper flex items-center justify-center gap-1"
@@ -790,6 +1083,92 @@ function ArticleCodingCard({
         </div>
       </div>
 
+      {/* ── Article chat panel ─────────────────────────────────────────── */}
+      <AnimatePresence>
+        {chatOpen && (
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: "auto" }}
+            exit={{ opacity: 0, height: 0 }}
+            transition={{ duration: 0.2 }}
+            className="overflow-hidden border-t border-[var(--color-accent-200)] bg-[var(--color-accent-50)]"
+          >
+            <div className="px-6 py-4">
+              <div className="flex items-center gap-2 mb-3">
+                <MessageSquare size={13} strokeWidth={1.75} className="text-[var(--color-accent-600)]" />
+                <span className="text-[12px] font-semibold text-[var(--color-accent-800)]">Chat with this article</span>
+                <span className="text-[10px] text-[var(--color-accent-500)] ml-1">— scoped to this PDF only</span>
+                {chatHistory.length > 0 && (
+                  <button
+                    onClick={exportChat}
+                    className="ml-auto flex items-center gap-1 px-2 py-0.5 rounded text-[10px] text-[var(--color-accent-600)] hover:bg-[var(--color-accent-100)] transition-paper"
+                    title="Export conversation as Markdown"
+                  >
+                    <Download size={10} strokeWidth={2} /> Export
+                  </button>
+                )}
+              </div>
+
+              {/* Chat history */}
+              {chatHistory.length > 0 && (
+                <div ref={chatScrollRef} className="mb-3 space-y-3 max-h-64 overflow-y-auto pr-1 scroll-smooth">
+                  {chatHistory.map((entry, i) => (
+                    <div key={i} className="space-y-2">
+                      <div className="flex items-start gap-2">
+                        <span className="shrink-0 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-accent-500)] mt-0.5 w-4 text-right">Q</span>
+                        <p className="text-[12px] text-[var(--color-ink-800)] leading-snug">{entry.q}</p>
+                      </div>
+                      {entry.result && (
+                        <div className="flex items-start gap-2">
+                          <span className="shrink-0 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-accent-600)] mt-0.5 w-4 text-right">A</span>
+                          <div className="flex-1 min-w-0 text-[12px] text-[var(--color-ink-700)] leading-relaxed prose-editorial">
+                            <Markdown>{entry.result.answer}</Markdown>
+                          </div>
+                        </div>
+                      )}
+                      {entry.error && (
+                        <div className="flex items-start gap-2">
+                          <span className="shrink-0 text-[10px] font-semibold uppercase tracking-wider text-amber-800 mt-0.5 w-4 text-right">!</span>
+                          <p className="text-[12px] text-amber-900">{entry.error}</p>
+                        </div>
+                      )}
+                      {!entry.result && !entry.error && (
+                        <div className="flex items-start gap-2">
+                          <span className="shrink-0 w-4" />
+                          <Loader2 size={13} className="animate-spin text-[var(--color-accent-500)] mt-0.5" />
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Input row */}
+              <div className="flex gap-2 items-end">
+                <textarea
+                  ref={chatInputRef}
+                  value={chatInput}
+                  onChange={(e) => setChatInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChat(); }
+                  }}
+                  placeholder="Ask about this article… (Enter to send)"
+                  rows={2}
+                  className="flex-1 resize-none px-3 py-2 rounded-[var(--radius-sm)] border border-[var(--color-accent-200)] bg-white text-[12px] text-[var(--color-ink-800)] placeholder:text-[var(--color-paper-400)] focus:outline-none focus:ring-1 focus:ring-[var(--color-accent-400)] transition-paper"
+                />
+                <button
+                  onClick={sendChat}
+                  disabled={!chatInput.trim() || chatBusy}
+                  className="shrink-0 flex items-center justify-center w-9 h-9 rounded-[var(--radius-sm)] bg-[var(--color-accent-500)] text-white hover:bg-[var(--color-accent-600)] disabled:opacity-40 transition-paper"
+                >
+                  {chatBusy ? <Loader2 size={13} className="animate-spin" /> : <Send size={13} strokeWidth={2} />}
+                </button>
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* ── Dimensions ─────────────────────────────────────────────────── */}
       <div className="border-t border-[var(--color-paper-200)] divide-y divide-[var(--color-paper-200)]">
         {dimensions.map((dim) => (
@@ -803,6 +1182,44 @@ function ArticleCodingCard({
           />
         ))}
       </div>
+
+      {/* ── Exclude footer ─────────────────────────────────────────────── */}
+      {criteria.length > 0 && (
+        <div className="border-t border-[var(--color-paper-200)]">
+          <button
+            onClick={() => setExcludeOpen((v) => !v)}
+            className="w-full flex items-center gap-2 px-6 py-3 text-[11px] font-medium text-[var(--color-paper-500)] hover:text-[var(--color-error-600)] hover:bg-[var(--color-error-500)]/5 transition-paper"
+          >
+            <Ban size={12} strokeWidth={1.75} />
+            Exclude this article
+            {excludeOpen ? <ChevronUp size={12} className="ml-auto" /> : <ChevronDown size={12} className="ml-auto" />}
+          </button>
+          <AnimatePresence>
+            {excludeOpen && (
+              <motion.div
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: "auto" }}
+                exit={{ opacity: 0, height: 0 }}
+                className="overflow-hidden"
+              >
+                <div className="px-6 pb-4 flex flex-wrap gap-1.5">
+                  {criteria.map((c) => (
+                    <button
+                      key={c.id}
+                      onClick={() => exclude(c.number)}
+                      disabled={excluding}
+                      title={c.rationale ?? c.label}
+                      className="px-2.5 py-1 text-[11px] rounded-full border border-[var(--color-paper-300)] bg-[var(--color-paper-50)] hover:bg-[var(--color-error-500)]/5 hover:border-[var(--color-error-500)]/40 hover:text-[var(--color-error-500)] text-[var(--color-paper-700)] disabled:opacity-50 transition-paper"
+                    >
+                      #{c.number} {c.label}
+                    </button>
+                  ))}
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+      )}
     </Card>
   );
 }
@@ -870,11 +1287,28 @@ function DimensionRow({
   };
 
   return (
-    <div className="px-6 py-4 grid grid-cols-[180px_1fr_auto] gap-4 items-start">
+    <div className="px-6 py-4 grid grid-cols-[180px_1fr] gap-4 items-start">
       <div className="pt-0.5">
-        <span className="text-[12px] font-semibold tracking-tight text-[var(--color-ink-800)]">
-          {dimension.name}
-        </span>
+        <div className="flex items-center gap-1">
+          <span className="text-[12px] font-semibold tracking-tight text-[var(--color-ink-800)]">
+            {dimension.name}
+          </span>
+          <button
+            onClick={() => setAdding(true)}
+            className="p-1 rounded-[var(--radius-xs)] hover:bg-[var(--color-paper-200)] text-[var(--color-paper-500)] hover:text-[var(--color-ink-800)] transition-paper"
+            title="Add code"
+          >
+            <Plus size={12} strokeWidth={2} />
+          </button>
+          <button
+            onClick={requestSuggestions}
+            disabled={suggesting}
+            className="p-1 rounded-[var(--radius-xs)] hover:bg-[var(--color-accent-50)] text-[var(--color-accent-500)] transition-paper disabled:opacity-40"
+            title="AI suggestions"
+          >
+            {suggesting ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} strokeWidth={1.75} />}
+          </button>
+        </div>
         {dimension.description && (
           <div className="text-[10px] text-[var(--color-paper-500)] mt-0.5 line-clamp-3 leading-relaxed">
             {dimension.description}
@@ -976,23 +1410,6 @@ function DimensionRow({
         )}
       </div>
 
-      <div className="flex items-center gap-0.5 pt-0.5 shrink-0">
-        <button
-          onClick={() => setAdding(true)}
-          className="p-1.5 rounded-[var(--radius-xs)] hover:bg-[var(--color-paper-200)] text-[var(--color-paper-500)] hover:text-[var(--color-ink-800)] transition-paper"
-          title="Add code"
-        >
-          <Plus size={13} strokeWidth={2} />
-        </button>
-        <button
-          onClick={requestSuggestions}
-          disabled={suggesting}
-          className="p-1.5 rounded-[var(--radius-xs)] hover:bg-[var(--color-accent-50)] text-[var(--color-accent-500)] transition-paper disabled:opacity-40"
-          title="AI suggestions"
-        >
-          {suggesting ? <Loader2 size={13} className="animate-spin" /> : <Sparkles size={13} strokeWidth={1.75} />}
-        </button>
-      </div>
     </div>
   );
 }

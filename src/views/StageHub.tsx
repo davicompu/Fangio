@@ -1,7 +1,6 @@
 import { useState } from "react";
-import { motion } from "framer-motion";
+import { AnimatePresence, motion } from "framer-motion";
 import {
-  ArrowUpRight,
   Boxes,
   CheckCircle2,
   Compass,
@@ -13,7 +12,10 @@ import {
   Save,
   Search,
   Settings as SettingsIcon,
+  Sparkles,
+  X,
 } from "lucide-react";
+import { Markdown } from "../components/Markdown";
 import type { ProjectRow } from "../lib/api";
 import { api } from "../lib/api";
 import { Card } from "../components/ui/Card";
@@ -26,6 +28,7 @@ interface StageHubProps {
   onOpenSettings: () => void;
   onProjectChanged: () => Promise<void>;
   onEnterStage: (stage: "assembling" | "arranging" | "assessing") => void;
+  onOpenRag: () => void;
   onCloseProject: () => Promise<void>;
 }
 
@@ -57,21 +60,63 @@ const stages = [
   },
 ];
 
-export function StageHub({ project, onOpenSettings, onProjectChanged, onEnterStage, onCloseProject }: StageHubProps) {
+export function StageHub({ project, onOpenSettings, onProjectChanged, onEnterStage, onOpenRag, onCloseProject }: StageHubProps) {
   const currentStage = project.current_stage;
+  const [lockedStage, setLockedStage] = useState<string | null>(null);
 
   const [editing, setEditing] = useState(false);
   const [draftWhat, setDraftWhat] = useState("");
   const [draftHow, setDraftHow] = useState("");
   const [draftWhere, setDraftWhere] = useState("");
+  const [draftDomain, setDraftDomain] = useState("");
   const [saving, setSaving] = useState(false);
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
+
+  // Per-field AI assistant state
+  const [suggestingField, setSuggestingField] = useState<string | null>(null);
+  const [fieldSuggestions, setFieldSuggestions] = useState<Record<string, { suggestion: string; rationale: string } | null>>({});
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string | null>>({});
+
+  const handleFieldSuggest = async (fieldId: string, currentValue: string) => {
+    setSuggestingField(fieldId);
+    setFieldSuggestions((prev) => ({ ...prev, [fieldId]: null }));
+    setFieldErrors((prev) => ({ ...prev, [fieldId]: null }));
+    try {
+      const result = await api.suggestStep(fieldId, currentValue);
+      setFieldSuggestions((prev) => ({ ...prev, [fieldId]: result }));
+    } catch (e: unknown) {
+      const msg: string = e instanceof Error ? e.message : String(e);
+      setFieldErrors((prev) => ({
+        ...prev,
+        [fieldId]: msg.includes("chat model")
+          ? "Pick a chat model in Settings first."
+          : msg.includes("Connection refused") || msg.includes("error sending request")
+          ? "Could not reach LM Studio — check Settings."
+          : "Unexpected error. Try again.",
+      }));
+    } finally {
+      setSuggestingField(null);
+    }
+  };
+
+  const applyFieldSuggestion = (fieldId: string, setter: (v: string) => void) => {
+    const s = fieldSuggestions[fieldId];
+    if (!s) return;
+    setter(s.suggestion);
+    setFieldSuggestions((prev) => ({ ...prev, [fieldId]: null }));
+  };
+
+  const dismissFieldSuggestion = (fieldId: string) => {
+    setFieldSuggestions((prev) => ({ ...prev, [fieldId]: null }));
+    setFieldErrors((prev) => ({ ...prev, [fieldId]: null }));
+  };
 
   const handleEdit = () => {
     setDraftWhat(project.rq_what ?? "");
     setDraftHow(project.rq_how ?? "");
     setDraftWhere(project.rq_where ?? "");
+    setDraftDomain(project.domain ?? "");
     setSavedAt(null);
     setEditing(true);
   };
@@ -101,6 +146,13 @@ export function StageHub({ project, onOpenSettings, onProjectChanged, onEnterSta
         value_json: JSON.stringify(draftWhere.trim()),
         rationale: null,
       });
+      await api.saveDecision({
+        stage: "onboarding",
+        sub_stage: null,
+        decision_key: "project.domain",
+        value_json: JSON.stringify(draftDomain.trim()),
+        rationale: null,
+      });
       await onProjectChanged();
       setSavedAt(Date.now());
       setTimeout(() => setSavedAt(null), 4000);
@@ -117,41 +169,53 @@ export function StageHub({ project, onOpenSettings, onProjectChanged, onEnterSta
     setDraftWhat("");
     setDraftHow("");
     setDraftWhere("");
+    setDraftDomain("");
+    setFieldSuggestions({});
+    setFieldErrors({});
   };
 
   return (
     <div className="min-h-screen flex flex-col">
       {/* Top bar doubles as drag region */}
-      <div className="drag-region px-12 pt-10 pb-8 flex items-start justify-between">
+      <div className="drag-region px-6 xl:px-12 pt-10 pb-8 flex items-start justify-between">
         <div>
           <span className="eyebrow">In progress</span>
           <h1 className="font-serif text-[32px] tracking-tight text-[var(--color-ink-900)] mt-1">
             {project.name}
           </h1>
           <p className="text-[13px] text-[var(--color-paper-600)] mt-1.5 max-w-2xl">
-            {project.framework} framework · {project.slr_type} review
+            {project.framework} framework · {slrTypeLabel(project.slr_type)} review
           </p>
         </div>
-        <div className="no-drag flex items-center gap-2">
+        <div className="no-drag flex flex-col items-end gap-2">
+          <div className="flex items-center gap-2">
+            <button
+              onClick={onCloseProject}
+              className="inline-flex items-center gap-1.5 px-3 h-8 rounded-[var(--radius-sm)] text-[12px] text-[var(--color-paper-600)] hover:bg-[var(--color-paper-100)] hover:text-[var(--color-ink-800)] transition-paper"
+            >
+              <FolderOpen size={13} strokeWidth={1.75} />
+              Projects
+            </button>
+            <button
+              onClick={onOpenSettings}
+              className="inline-flex items-center gap-1.5 px-3 h-8 rounded-[var(--radius-sm)] text-[12px] text-[var(--color-paper-600)] hover:bg-[var(--color-paper-100)] hover:text-[var(--color-ink-800)] transition-paper"
+            >
+              <SettingsIcon size={13} strokeWidth={1.75} />
+              Settings
+            </button>
+          </div>
           <button
-            onClick={onCloseProject}
-            className="inline-flex items-center gap-1.5 px-3 h-8 rounded-[var(--radius-sm)] text-[12px] text-[var(--color-paper-600)] hover:bg-[var(--color-paper-100)] hover:text-[var(--color-ink-800)] transition-paper"
+            onClick={onOpenRag}
+            className="group inline-flex items-center gap-2 px-4 h-9 rounded-[var(--radius-sm)] text-[12px] font-semibold bg-[var(--color-ink-800)] text-[var(--color-paper-50)] hover:bg-[var(--color-ink-900)] shadow-sm transition-paper"
           >
-            <FolderOpen size={13} strokeWidth={1.75} />
-            Projects
-          </button>
-          <button
-            onClick={onOpenSettings}
-            className="inline-flex items-center gap-1.5 px-3 h-8 rounded-[var(--radius-sm)] text-[12px] text-[var(--color-paper-600)] hover:bg-[var(--color-paper-100)] hover:text-[var(--color-ink-800)] transition-paper"
-          >
-            <SettingsIcon size={13} strokeWidth={1.75} />
-            Settings
+            <Sparkles size={13} strokeWidth={1.75} className="text-[var(--color-accent-400)] group-hover:text-[var(--color-accent-300)]" />
+            Ask the literature
           </button>
         </div>
       </div>
 
       {/* Research Question summary card — anchors the whole project */}
-      <div className="px-12 mb-10">
+      <div className="px-6 xl:px-12 mb-10">
         <Card className="p-7">
           {/* Card header */}
           <div className="flex items-center justify-between mb-4">
@@ -199,28 +263,112 @@ export function StageHub({ project, onOpenSettings, onProjectChanged, onEnterSta
 
           {/* Edit mode */}
           {editing && (
-            <div className="space-y-4">
-              <TextArea
-                label="What do we know about this domain?"
-                value={draftWhat}
-                onChange={(e) => setDraftWhat(e.target.value)}
-                rows={3}
-                placeholder="e.g., What is currently known about the antecedents, behaviours, and outcomes of consumer engagement in social commerce platforms?"
-              />
-              <TextArea
-                label="How do we know what we know?"
-                value={draftHow}
-                onChange={(e) => setDraftHow(e.target.value)}
-                rows={3}
-                placeholder="e.g., What theories, contexts, and methods have been used to study consumer behaviour in social commerce, and how has methodological rigour evolved?"
-              />
-              <TextArea
-                label="Where should this field be heading?"
-                value={draftWhere}
-                onChange={(e) => setDraftWhere(e.target.value)}
-                rows={3}
-                placeholder="e.g., What gaps, contradictions, and unexplored contexts should future research on consumer behaviour in social commerce address?"
-              />
+            <div className="space-y-6">
+              {/* rq_what */}
+              <div className="space-y-1">
+                <div className="flex items-center justify-between">
+                  <label className="text-[12px] font-medium text-[var(--color-ink-700)]">What do we know about this domain?</label>
+                  <AiFieldButton
+                    fieldId="rq_what"
+                    value={draftWhat}
+                    suggesting={suggestingField === "rq_what"}
+                    onSuggest={() => handleFieldSuggest("rq_what", draftWhat)}
+                  />
+                </div>
+                <AiFieldBubble
+                  fieldId="rq_what"
+                  suggestions={fieldSuggestions}
+                  errors={fieldErrors}
+                  onApply={(id) => applyFieldSuggestion(id, setDraftWhat)}
+                  onDismiss={dismissFieldSuggestion}
+                />
+                <TextArea
+                  value={draftWhat}
+                  onChange={(e) => setDraftWhat(e.target.value)}
+                  rows={3}
+                  placeholder="e.g., What is currently known about the antecedents, behaviours, and outcomes of consumer engagement in social commerce platforms?"
+                />
+              </div>
+
+              {/* rq_how */}
+              <div className="space-y-1">
+                <div className="flex items-center justify-between">
+                  <label className="text-[12px] font-medium text-[var(--color-ink-700)]">How do we know what we know?</label>
+                  <AiFieldButton
+                    fieldId="rq_how"
+                    value={draftHow}
+                    suggesting={suggestingField === "rq_how"}
+                    onSuggest={() => handleFieldSuggest("rq_how", draftHow)}
+                  />
+                </div>
+                <AiFieldBubble
+                  fieldId="rq_how"
+                  suggestions={fieldSuggestions}
+                  errors={fieldErrors}
+                  onApply={(id) => applyFieldSuggestion(id, setDraftHow)}
+                  onDismiss={dismissFieldSuggestion}
+                />
+                <TextArea
+                  value={draftHow}
+                  onChange={(e) => setDraftHow(e.target.value)}
+                  rows={3}
+                  placeholder="e.g., What theories, contexts, and methods have been used to study consumer behaviour in social commerce, and how has methodological rigour evolved?"
+                />
+              </div>
+
+              {/* rq_where */}
+              <div className="space-y-1">
+                <div className="flex items-center justify-between">
+                  <label className="text-[12px] font-medium text-[var(--color-ink-700)]">Where should this field be heading?</label>
+                  <AiFieldButton
+                    fieldId="rq_where"
+                    value={draftWhere}
+                    suggesting={suggestingField === "rq_where"}
+                    onSuggest={() => handleFieldSuggest("rq_where", draftWhere)}
+                  />
+                </div>
+                <AiFieldBubble
+                  fieldId="rq_where"
+                  suggestions={fieldSuggestions}
+                  errors={fieldErrors}
+                  onApply={(id) => applyFieldSuggestion(id, setDraftWhere)}
+                  onDismiss={dismissFieldSuggestion}
+                />
+                <TextArea
+                  value={draftWhere}
+                  onChange={(e) => setDraftWhere(e.target.value)}
+                  rows={3}
+                  placeholder="e.g., What gaps, contradictions, and unexplored contexts should future research on consumer behaviour in social commerce address?"
+                />
+              </div>
+
+              {/* domain */}
+              <div className="space-y-1">
+                <div className="flex items-center justify-between">
+                  <label className="text-[12px] font-medium text-[var(--color-ink-700)]">Domain description</label>
+                  <AiFieldButton
+                    fieldId="domain"
+                    value={draftDomain}
+                    suggesting={suggestingField === "domain"}
+                    onSuggest={() => handleFieldSuggest("domain", draftDomain)}
+                  />
+                </div>
+                <AiFieldBubble
+                  fieldId="domain"
+                  suggestions={fieldSuggestions}
+                  errors={fieldErrors}
+                  onApply={(id) => applyFieldSuggestion(id, setDraftDomain)}
+                  onDismiss={dismissFieldSuggestion}
+                />
+                <TextArea
+                  value={draftDomain}
+                  onChange={(e) => setDraftDomain(e.target.value)}
+                  rows={4}
+                  placeholder="A paragraph that defines the domain's scope — what's in, what's out, and how to handle ambiguous cases. This is the reference used for every exclusion decision in Stage 2."
+                  hint="Every exclusion decision in Stage 2 references this paragraph. The more concrete it is, the easier screening will be."
+                />
+              </div>
+
               <div className="flex items-center gap-3 pt-2">
                 <Button onClick={handleSave} disabled={saving} variant="primary" size="sm">
                   <Save size={13} strokeWidth={2} />
@@ -250,17 +398,29 @@ export function StageHub({ project, onOpenSettings, onProjectChanged, onEnterSta
       </div>
 
       {/* Stage cards */}
-      <div className="px-12 pb-32">
+      <div className="px-6 xl:px-12 pb-32">
         <div className="flex items-center gap-3 mb-5">
           <span className="eyebrow">SPAR-4-SLR pipeline</span>
           <div className="flex-1 hairline" />
         </div>
         <div className="grid grid-cols-3 gap-5">
           {stages.map((stage, i) => {
+            const currentIndex = stages.findIndex((s) => s.id === currentStage);
             const isCurrent = stage.id === currentStage;
-            const isPast =
-              stages.findIndex((s) => s.id === currentStage) > i;
+            const isPast = currentIndex > i;
+            const isLocked = !isCurrent && !isPast;
+            const isShowingLocked = lockedStage === stage.id;
             const Icon = stage.icon;
+
+            const handleClick = () => {
+              if (isLocked) {
+                setLockedStage(stage.id);
+                setTimeout(() => setLockedStage(null), 4000);
+              } else {
+                onEnterStage(stage.id as any);
+              }
+            };
+
             return (
               <motion.div
                 key={stage.id}
@@ -270,9 +430,14 @@ export function StageHub({ project, onOpenSettings, onProjectChanged, onEnterSta
               >
                 <Card
                   hoverable
+                  role="button"
+                  tabIndex={0}
+                  onClick={handleClick}
+                  onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") handleClick(); }}
                   className={cn(
-                    "p-6 h-full",
+                    "p-6 h-full cursor-pointer select-none",
                     isCurrent && "border-[var(--color-ink-700)] shadow-[var(--shadow-paper-md)]",
+                    isLocked && "opacity-70",
                   )}
                 >
                   <div className="flex items-start gap-4">
@@ -288,7 +453,7 @@ export function StageHub({ project, onOpenSettings, onProjectChanged, onEnterSta
                     >
                       {isPast ? (
                         <CheckCircle2 size={20} strokeWidth={1.75} />
-                      ) : !isCurrent && !isPast ? (
+                      ) : isLocked ? (
                         <Lock size={16} strokeWidth={1.75} />
                       ) : (
                         <Icon size={20} strokeWidth={1.75} />
@@ -318,16 +483,26 @@ export function StageHub({ project, onOpenSettings, onProjectChanged, onEnterSta
                     ))}
                   </ul>
 
-                  <div className="mt-6 pt-5 border-t border-[var(--color-paper-200)]">
-                    <button
-                      type="button"
-                      onClick={() => onEnterStage(stage.id as any)}
-                      className="inline-flex items-center gap-1.5 text-[12px] font-medium text-[var(--color-ink-700)] hover:text-[var(--color-ink-900)] transition-paper"
-                    >
-                      Open
-                      <ArrowUpRight size={13} strokeWidth={2} />
-                    </button>
-                  </div>
+                  <AnimatePresence>
+                    {isShowingLocked && (
+                      <motion.div
+                        initial={{ opacity: 0, y: 4 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0 }}
+                        transition={{ duration: 0.2 }}
+                        className="mt-5 pt-4 border-t border-[var(--color-paper-200)] flex items-start gap-2"
+                      >
+                        <Lock size={12} strokeWidth={2} className="shrink-0 mt-0.5 text-[var(--color-warn-600)]" />
+                        <p className="text-[12px] text-[var(--color-warn-700)] leading-snug">
+                          Complete{" "}
+                          <strong>
+                            {stages.slice(0, i).map((s) => s.name).join(" and ")}
+                          </strong>{" "}
+                          before opening this stage.
+                        </p>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
                 </Card>
               </motion.div>
             );
@@ -336,6 +511,130 @@ export function StageHub({ project, onOpenSettings, onProjectChanged, onEnterSta
 
       </div>
     </div>
+  );
+}
+
+function slrTypeLabel(type: string | null | undefined): string {
+  const map: Record<string, string> = {
+    domain: "Domain",
+    theory: "Theory-based",
+    method: "Method-based",
+    "meta-analytical": "Meta-analytical",
+    "meta-systematic": "Meta-systematic",
+  };
+  if (!type) return "";
+  return map[type] ?? type.charAt(0).toUpperCase() + type.slice(1);
+}
+
+function ThinkingDots({ small }: { small?: boolean }) {
+  const size = small ? "w-1.5 h-1.5" : "w-2 h-2";
+  return (
+    <div className="flex items-center gap-1">
+      {[0, 1, 2].map((i) => (
+        <motion.span
+          key={i}
+          className={`${size} rounded-full bg-[var(--color-paper-400)]`}
+          animate={{ y: [0, -4, 0], opacity: [0.4, 1, 0.4] }}
+          transition={{ duration: 0.9, repeat: Infinity, delay: i * 0.18, ease: "easeInOut" }}
+        />
+      ))}
+    </div>
+  );
+}
+
+function AiFieldButton({
+  value,
+  suggesting,
+  onSuggest,
+}: {
+  fieldId: string;
+  value: string;
+  suggesting: boolean;
+  onSuggest: () => void;
+}) {
+  const canSuggest = value.trim().length > 0;
+  return (
+    <button
+      type="button"
+      onClick={onSuggest}
+      disabled={!canSuggest || suggesting}
+      title={!canSuggest ? "Write your answer first" : `Ask AI to refine this field`}
+      className={cn(
+        "inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium transition-paper",
+        canSuggest && !suggesting
+          ? "text-[var(--color-accent-600)] border border-[var(--color-accent-300)] bg-[var(--color-accent-50)] hover:bg-[var(--color-accent-100)]"
+          : "text-[var(--color-paper-400)] border border-[var(--color-paper-200)] cursor-not-allowed",
+      )}
+    >
+      {suggesting ? <ThinkingDots small /> : <Sparkles size={11} strokeWidth={2} />}
+      {suggesting ? "Working…" : "✦ Refine"}
+    </button>
+  );
+}
+
+function AiFieldBubble({
+  fieldId,
+  suggestions,
+  errors,
+  onApply,
+  onDismiss,
+}: {
+  fieldId: string;
+  suggestions: Record<string, { suggestion: string; rationale: string } | null>;
+  errors: Record<string, string | null>;
+  onApply: (fieldId: string) => void;
+  onDismiss: (fieldId: string) => void;
+}) {
+  const suggestion = suggestions[fieldId];
+  const error = errors[fieldId];
+  if (!suggestion && !error) return null;
+  return (
+    <AnimatePresence>
+      <motion.div
+        initial={{ opacity: 0, y: -6 }}
+        animate={{ opacity: 1, y: 0 }}
+        exit={{ opacity: 0, y: -6 }}
+        transition={{ duration: 0.2 }}
+        className="rounded-[var(--radius-md)] bg-[var(--color-accent-50)] border border-[var(--color-accent-100)] p-3"
+      >
+        <div className="flex items-start gap-2.5">
+          <div className="shrink-0 w-6 h-6 rounded-full bg-[var(--color-accent-600)] flex items-center justify-center">
+            <Sparkles size={11} strokeWidth={1.75} className="text-white" />
+          </div>
+          <div className="flex-1 min-w-0">
+            {error && (
+              <p className="text-[12px] text-[var(--color-warn-700)]">{error}</p>
+            )}
+            {suggestion && (
+              <div className="space-y-2">
+                <div className="flex items-start justify-between gap-2">
+                  <Markdown className="markdown-sm flex-1">{suggestion.suggestion}</Markdown>
+                  <button
+                    type="button"
+                    onClick={() => onDismiss(fieldId)}
+                    className="shrink-0 mt-0.5 text-[var(--color-paper-400)] hover:text-[var(--color-ink-700)] transition-paper"
+                  >
+                    <X size={11} strokeWidth={2} />
+                  </button>
+                </div>
+                {suggestion.rationale && (
+                  <p className="text-[11px] text-[var(--color-accent-600)] leading-snug border-t border-[var(--color-accent-100)] pt-1.5">
+                    {suggestion.rationale}
+                  </p>
+                )}
+                <button
+                  type="button"
+                  onClick={() => onApply(fieldId)}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-[var(--radius-xs)] text-[11px] font-medium bg-[var(--color-accent-600)] text-white hover:bg-[var(--color-accent-700)] transition-paper"
+                >
+                  Use this
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      </motion.div>
+    </AnimatePresence>
   );
 }
 

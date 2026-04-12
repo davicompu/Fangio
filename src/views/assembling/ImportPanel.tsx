@@ -305,7 +305,7 @@ export function ImportPanel({ onCommitted }: Props) {
             </ul>
             <div className="hairline my-4" />
             <p className="text-[12px] text-[var(--color-paper-600)] leading-relaxed">
-              Carta auto-detects the format from extension and content. All records are imported
+              Reeves auto-detects the format from extension and content. All records are imported
               — cross-database duplicates surface in the Deduplication tab for your review.
             </p>
           </Card>
@@ -339,7 +339,7 @@ function Dropzone({ onPick, busy, isDragOver }: { onPick: () => void; busy: bool
         {busy ? "Parsing…" : isDragOver ? "Release to import" : "Drop a bibliographic export"}
       </h3>
       <p className="text-[13px] text-[var(--color-paper-600)] max-w-md mx-auto leading-relaxed">
-        Drag a file here or click to choose. Carta handles RIS, BibTeX, Web of Science
+        Drag a file here or click to choose. Reeves handles RIS, BibTeX, Web of Science
         tab-delimited, and Scopus CSV.
       </p>
     </button>

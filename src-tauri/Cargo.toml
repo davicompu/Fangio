@@ -1,12 +1,16 @@
 [package]
-name = "app"
+name = "reeves"
 version = "0.1.0"
-description = "Fangio — systematic literature reviews on your own machine"
-authors = ["Fangio contributors"]
+description = "Reeves — systematic literature reviews on your own machine"
+authors = ["Reeves contributors"]
 edition = "2021"
 
+[[bin]]
+name = "Reeves"
+path = "src/main.rs"
+
 [lib]
-name = "app_lib"
+name = "reeves_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

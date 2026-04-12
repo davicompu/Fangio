@@ -5,7 +5,7 @@
 @import "@fontsource-variable/jetbrains-mono";
 
 /* ──────────────────────────────────────────────────────────────────────────
-   Carta design tokens
+   Reeves design tokens
 
    Philosophy: this is a tool researchers use for many hours per day on dense
    textual content. It should feel like a well-bound notebook, not a SaaS
@@ -51,12 +51,15 @@
 
   /* Accent — used sparingly for the live model + critical actions.
      A muted, slightly desaturated coral that reads warm against the paper. */
-  --color-accent-50:  #fdf1ec;
-  --color-accent-100: #f9ddd0;
-  --color-accent-300: #efa385;
-  --color-accent-500: #d96f47;
-  --color-accent-600: #b95630;
-  --color-accent-700: #8e3d20;
+  --color-accent-50:  #fffbeb;
+  --color-accent-100: #fef3c7;
+  --color-accent-200: #fde68a;
+  --color-accent-300: #fcd34d;
+  --color-accent-400: #fbbf24;
+  --color-accent-500: #f59e0b;
+  --color-accent-600: #d97706;
+  --color-accent-700: #b45309;
+  --color-accent-800: #92400e;
 
   /* Status colors — desaturated to coexist with paper */
   --color-ok-500:    #4f7a55;
@@ -216,3 +219,85 @@ textarea {
     transition-timing-function: cubic-bezier(0.2, 0.7, 0.2, 1);
   }
 }
+
+/* ── Markdown body — used in chat windows and AI panels ───────────────────── */
+.markdown-body {
+  font-size: 14px;
+  line-height: 1.65;
+  color: var(--color-ink-800);
+}
+.markdown-body p { margin: 0 0 0.75em; }
+.markdown-body p:last-child { margin-bottom: 0; }
+.markdown-body h1, .markdown-body h2, .markdown-body h3,
+.markdown-body h4, .markdown-body h5, .markdown-body h6 {
+  font-family: var(--font-serif, Georgia, serif);
+  font-weight: 600;
+  line-height: 1.25;
+  margin: 1.1em 0 0.4em;
+  color: var(--color-ink-900);
+}
+.markdown-body h1 { font-size: 1.25em; }
+.markdown-body h2 { font-size: 1.1em; }
+.markdown-body h3 { font-size: 1em; }
+.markdown-body ul, .markdown-body ol {
+  margin: 0 0 0.75em;
+  padding-left: 1.4em;
+}
+.markdown-body li { margin-bottom: 0.25em; }
+.markdown-body li:last-child { margin-bottom: 0; }
+.markdown-body code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.875em;
+  background: var(--color-paper-100);
+  border: 1px solid var(--color-paper-300);
+  border-radius: 3px;
+  padding: 0.1em 0.35em;
+}
+.markdown-body pre {
+  background: var(--color-paper-100);
+  border: 1px solid var(--color-paper-300);
+  border-radius: 6px;
+  padding: 0.75em 1em;
+  overflow-x: auto;
+  margin: 0 0 0.75em;
+}
+.markdown-body pre code {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 0.85em;
+}
+.markdown-body blockquote {
+  position: relative;
+  margin: 0.5em 0 0.9em;
+  padding: 0.65em 0.9em 0.65em 2.4em;
+  background: #f3f4f6; /* gray-100 */
+  border-radius: 6px;
+  color: #374151; /* gray-700 */
+  font-style: italic;
+}
+.markdown-body blockquote::before {
+  content: "\201C"; /* left double quotation mark */
+  position: absolute;
+  left: 0.55em;
+  top: 0.35em;
+  font-size: 1.6em;
+  line-height: 1;
+  color: #9ca3af; /* gray-400 */
+  font-style: normal;
+  font-family: Georgia, serif;
+}
+.markdown-body blockquote p {
+  margin: 0;
+}
+.markdown-body strong { font-weight: 600; }
+.markdown-body em { font-style: italic; }
+.markdown-body hr {
+  border: none;
+  border-top: 1px solid var(--color-paper-200);
+  margin: 0.75em 0;
+}
+.markdown-body a { color: var(--color-accent-600); text-decoration: underline; }
+
+/* Tighter variant for inline assistant panels */
+.markdown-body.markdown-sm { font-size: 13px; line-height: 1.6; }

@@ -478,7 +478,7 @@ export function JournalScopePanel() {
           Scale: A* (top) → A → B → C.
         </p>
         <p>
-          <strong className="text-[var(--color-paper-500)]">Impact factor</strong> — approximate Journal Impact Factor (Clarivate/Web of Science) as bundled in Carta's default list at the time of the last release. These figures are <em>not</em> updated live; always verify current values directly in Web of Science or Journal Citation Reports before citing them in your methods section.
+          <strong className="text-[var(--color-paper-500)]">Impact factor</strong> — approximate Journal Impact Factor (Clarivate/Web of Science) as bundled in Reeves's default list at the time of the last release. These figures are <em>not</em> updated live; always verify current values directly in Web of Science or Journal Citation Reports before citing them in your methods section.
         </p>
         <p>Custom entries (starred) are stored only in this project and not verified against any external source.</p>
       </div>

@@ -16,9 +16,10 @@ interface Props {
   project: ProjectRow;
   refreshKey: number;
   onChanged: () => void;
+  onJumpToCode?: (dimension: string, code: string) => void;
 }
 
-export function OrganizationPanel({ project, onChanged, refreshKey }: Props) {
+export function OrganizationPanel({ project, onChanged, refreshKey, onJumpToCode }: Props) {
   const isCustom = project.framework === "Custom";
 
   const [dimensions, setDimensions] = useState<DimensionInfo[]>([]);
@@ -155,7 +156,7 @@ export function OrganizationPanel({ project, onChanged, refreshKey }: Props) {
   const allDims = dimensions;
 
   return (
-    <div className="max-w-5xl">
+    <div className="pl-6 pr-4 xl:pl-12 xl:pr-8">
       <div className="mb-8 flex items-start justify-between">
         <div>
           <div className="eyebrow text-[var(--color-paper-500)] mb-1">
@@ -352,21 +353,36 @@ export function OrganizationPanel({ project, onChanged, refreshKey }: Props) {
                     <span className="ml-1.5 font-mono normal-case tracking-normal text-[var(--color-paper-300)]">
                       · {appliedCodes.size} unique
                     </span>
+                    {onJumpToCode && (
+                      <span className="ml-1.5 font-sans normal-case tracking-normal text-[var(--color-paper-400)] italic">
+                        · click to filter in Coding
+                      </span>
+                    )}
                   </div>
                   <div className="flex flex-wrap gap-1.5">
                     {Array.from(appliedCodes.entries())
                       .sort((a, b) => b[1] - a[1])
                       .map(([code, count]) => (
-                        <span
-                          key={code}
-                          className="inline-flex items-center gap-1.5 pl-2.5 pr-2 py-0.5 rounded-full bg-[var(--color-ok-50)] border border-[var(--color-ok-200)] text-[11px] text-[var(--color-ok-700)]"
-                        >
-                          <Tag size={9} strokeWidth={2} />
-                          <span className="font-medium">{code}</span>
-                          <span className="font-mono text-[10px] text-[var(--color-ok-500)]">
-                            ×{count}
+                        onJumpToCode ? (
+                          <button
+                            key={code}
+                            onClick={() => onJumpToCode(originalName, code)}
+                            className="inline-flex items-center gap-1.5 pl-2.5 pr-2 py-0.5 rounded-full bg-[var(--color-ok-50)] border border-[var(--color-ok-200)] text-[11px] text-[var(--color-ok-700)] hover:bg-[var(--color-ok-100)] hover:border-[var(--color-ok-400)] transition-paper"
+                          >
+                            <Tag size={9} strokeWidth={2} />
+                            <span className="font-medium">{code}</span>
+                            <span className="font-mono text-[10px] text-[var(--color-ok-500)]">×{count}</span>
+                          </button>
+                        ) : (
+                          <span
+                            key={code}
+                            className="inline-flex items-center gap-1.5 pl-2.5 pr-2 py-0.5 rounded-full bg-[var(--color-ok-50)] border border-[var(--color-ok-200)] text-[11px] text-[var(--color-ok-700)]"
+                          >
+                            <Tag size={9} strokeWidth={2} />
+                            <span className="font-medium">{code}</span>
+                            <span className="font-mono text-[10px] text-[var(--color-ok-500)]">×{count}</span>
                           </span>
-                        </span>
+                        )
                       ))}
                   </div>
                 </div>

@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { ArrowLeft, ArrowRight, Check, Lightbulb, Sparkles } from "lucide-react";
+import { ArrowLeft, ArrowRight, Check, Lightbulb, Sparkles, X } from "lucide-react";
+import { Markdown } from "../../components/Markdown";
 import { api, type ProjectRow } from "../../lib/api";
 import { Button } from "../../components/ui/Button";
 import { TextField, TextArea } from "../../components/ui/TextField";
@@ -27,12 +28,21 @@ function initialAnswersFromProject(p: ProjectRow): Answers {
   };
 }
 
+// Steps where the suggestion replaces the field value vs. advisory only
+const REPLACEABLE_STEPS = new Set(["name", "domain", "rq_what", "rq_how", "rq_where"]);
+
 export function OnboardingWizard({ project, onComplete }: OnboardingWizardProps) {
   const [answers, setAnswers] = useState<Answers>(() => initialAnswersFromProject(project));
   const [stepIndex, setStepIndex] = useState(0);
   const [direction, setDirection] = useState<1 | -1>(1);
   const [busy, setBusy] = useState(false);
   const [validationError, setValidationError] = useState<string | null>(null);
+
+  // AI assistant state
+  const [suggesting, setSuggesting] = useState(false);
+  const [suggestion, setSuggestion] = useState<{ suggestion: string; rationale: string } | null>(null);
+  const [suggestError, setSuggestError] = useState<string | null>(null);
+  const previousValue = useRef<string | null>(null);
 
   const step = STEPS[stepIndex];
   const value = answers[step.decisionKey] ?? "";
@@ -43,6 +53,12 @@ export function OnboardingWizard({ project, onComplete }: OnboardingWizardProps)
   const setValue = (v: string) => {
     setAnswers((a) => ({ ...a, [step.decisionKey]: v }));
     if (validationError) setValidationError(null);
+  };
+
+  const clearAssistant = () => {
+    setSuggestion(null);
+    setSuggestError(null);
+    previousValue.current = null;
   };
 
   const persistCurrent = async () => {
@@ -58,15 +74,9 @@ export function OnboardingWizard({ project, onComplete }: OnboardingWizardProps)
   const next = async () => {
     if (step.validate) {
       const err = step.validate(value);
-      if (err) {
-        setValidationError(err);
-        return;
-      }
+      if (err) { setValidationError(err); return; }
     }
-    if (!value.trim()) {
-      setValidationError("Please answer to continue.");
-      return;
-    }
+    if (!value.trim()) { setValidationError("Please answer to continue."); return; }
     setBusy(true);
     try {
       await persistCurrent();
@@ -83,6 +93,7 @@ export function OnboardingWizard({ project, onComplete }: OnboardingWizardProps)
       } else {
         setDirection(1);
         setStepIndex((i) => i + 1);
+        clearAssistant();
       }
     } finally {
       setBusy(false);
@@ -93,31 +104,66 @@ export function OnboardingWizard({ project, onComplete }: OnboardingWizardProps)
     if (stepIndex === 0) return;
     setDirection(-1);
     setStepIndex((i) => i - 1);
+    clearAssistant();
+  };
+
+  const handleSuggest = async () => {
+    setSuggesting(true);
+    setSuggestion(null);
+    setSuggestError(null);
+    try {
+      const result = await api.suggestStep(step.id, value);
+      setSuggestion(result);
+    } catch (e: any) {
+      const msg: string = e?.message ?? String(e);
+      setSuggestError(
+        msg.includes("chat model")
+          ? "Pick a chat model in Settings first."
+          : msg.includes("Connection refused") || msg.includes("error sending request")
+          ? "Could not reach LM Studio — check Settings."
+          : "Unexpected error. Try again.",
+      );
+    } finally {
+      setSuggesting(false);
+    }
+  };
+
+  const acceptSuggestion = () => {
+    if (!suggestion) return;
+    previousValue.current = value;
+    setValue(suggestion.suggestion);
+    setSuggestion(null);
+  };
+
+  const undoAccept = () => {
+    if (previousValue.current === null) return;
+    setValue(previousValue.current);
+    previousValue.current = null;
   };
 
   // Cmd/Ctrl+Enter to advance
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
-        e.preventDefault();
-        next();
-      }
+      if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); next(); }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   });
 
+  const canSuggest = value.trim().length > 0;
+  const isReplaceable = REPLACEABLE_STEPS.has(step.id);
+
   return (
     <div className="min-h-screen flex flex-col">
-      {/* Drag region + thin progress bar */}
+      {/* Drag region + progress bar */}
       <div className="drag-region h-10" />
-      <div className="px-12 pb-6">
+      <div className="px-6 xl:px-12 pb-6">
         <ProgressTrail current={stepIndex} total={totalSteps} progress={progress} />
       </div>
 
-      <div className="flex-1 grid grid-cols-[1fr_360px] gap-12 px-12 pb-32">
+      <div className="flex-1 grid grid-cols-[1fr_280px] xl:grid-cols-[1fr_360px] gap-8 xl:gap-12 px-6 xl:px-12 pb-32">
         {/* Main column */}
-        <div className="max-w-2xl">
+        <div>
           <AnimatePresence mode="wait" custom={direction}>
             <motion.div
               key={step.id}
@@ -137,6 +183,83 @@ export function OnboardingWizard({ project, onComplete }: OnboardingWizardProps)
                 </p>
               )}
 
+              {/* AI assistant trigger */}
+              <div className="flex justify-end mb-2">
+                <button
+                  type="button"
+                  onClick={handleSuggest}
+                  disabled={!canSuggest || suggesting}
+                  className={cn(
+                    "inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[12px] font-medium transition-paper",
+                    canSuggest && !suggesting
+                      ? "text-[var(--color-accent-600)] border border-[var(--color-accent-300)] bg-[var(--color-accent-50)] hover:bg-[var(--color-accent-100)]"
+                      : "text-[var(--color-paper-400)] border border-[var(--color-paper-200)] cursor-not-allowed",
+                  )}
+                  title={!canSuggest ? "Write your answer first" : undefined}
+                >
+                  {suggesting ? <ThinkingDots small /> : <Sparkles size={12} strokeWidth={2} />}
+                  {suggesting ? "Working…" : "✦ Ask assistant"}
+                </button>
+              </div>
+
+              {/* AI chat bubble */}
+              <AnimatePresence>
+                {(suggesting || suggestion || suggestError) && (
+                  <motion.div
+                    initial={{ opacity: 0, y: -8 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -8 }}
+                    transition={{ duration: 0.25 }}
+                    className="mb-4 rounded-[var(--radius-md)] bg-[var(--color-accent-50)] border border-[var(--color-accent-100)] p-4"
+                  >
+                    <div className="flex items-start gap-3">
+                      <div className="shrink-0 w-7 h-7 rounded-full bg-[var(--color-accent-600)] flex items-center justify-center">
+                        <Sparkles size={13} strokeWidth={1.75} className="text-white" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        {suggesting && (
+                          <div className="flex items-center gap-2 py-1">
+                            <ThinkingDots />
+                            <span className="text-[12px] text-[var(--color-paper-500)]">Analysing your answer…</span>
+                          </div>
+                        )}
+                        {suggestError && (
+                          <p className="text-[13px] text-[var(--color-warn-700)]">{suggestError}</p>
+                        )}
+                        {suggestion && (
+                          <div className="space-y-3">
+                            <div className="flex items-start justify-between gap-2">
+                              <Markdown className="markdown-sm flex-1">{suggestion.suggestion}</Markdown>
+                              <button
+                                type="button"
+                                onClick={() => setSuggestion(null)}
+                                className="shrink-0 mt-0.5 text-[var(--color-paper-400)] hover:text-[var(--color-ink-700)] transition-paper"
+                              >
+                                <X size={12} strokeWidth={2} />
+                              </button>
+                            </div>
+                            {suggestion.rationale && (
+                              <p className="text-[11px] text-[var(--color-accent-600)] leading-snug border-t border-[var(--color-accent-100)] pt-2">
+                                {suggestion.rationale}
+                              </p>
+                            )}
+                            {isReplaceable && (
+                              <button
+                                type="button"
+                                onClick={acceptSuggestion}
+                                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-[var(--radius-xs)] text-[11px] font-medium bg-[var(--color-accent-600)] text-white hover:bg-[var(--color-accent-700)] transition-paper"
+                              >
+                                Use this
+                              </button>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+
               <StepInput
                 step={step}
                 value={value}
@@ -145,76 +268,76 @@ export function OnboardingWizard({ project, onComplete }: OnboardingWizardProps)
                 error={validationError}
               />
 
-              <div className="mt-10 flex items-center gap-3">
-                <Button
-                  variant="secondary"
-                  size="md"
-                  onClick={back}
-                  disabled={stepIndex === 0 || busy}
+              {/* Undo link after accepting a suggestion */}
+              {previousValue.current !== null && (
+                <button
+                  type="button"
+                  onClick={undoAccept}
+                  className="mt-2 text-[11px] text-[var(--color-paper-500)] hover:text-[var(--color-ink-700)] transition-paper"
                 >
+                  Undo AI suggestion
+                </button>
+              )}
+
+              <div className="mt-10 flex items-center gap-3">
+                <Button variant="secondary" size="md" onClick={back} disabled={stepIndex === 0 || busy}>
                   <ArrowLeft size={15} strokeWidth={1.75} />
                   Back
                 </Button>
                 <Button variant="primary" size="md" onClick={next} disabled={busy}>
                   {isLast ? (
-                    <>
-                      Finish onboarding
-                      <Check size={15} strokeWidth={2.25} />
-                    </>
+                    <>Finish onboarding <Check size={15} strokeWidth={2.25} /></>
                   ) : (
-                    <>
-                      Continue
-                      <ArrowRight size={15} strokeWidth={2.25} />
-                    </>
+                    <>Continue <ArrowRight size={15} strokeWidth={2.25} /></>
                   )}
                 </Button>
-                <span className="ml-2 text-[11px] text-[var(--color-paper-500)] font-mono">
-                  ⌘ ↵
-                </span>
+                <span className="ml-2 text-[11px] text-[var(--color-paper-500)] font-mono">⌘ ↵</span>
               </div>
             </motion.div>
           </AnimatePresence>
         </div>
 
-        {/* Why this step panel */}
-        <div className="pt-2">
+        {/* Right panel — why this step */}
+        <div className="pt-16">
           <AnimatePresence mode="wait">
             <motion.aside
-              key={step.id + "-why"}
+              key={step.id + "-aside"}
               initial={{ opacity: 0, y: 8 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -8 }}
               transition={{ duration: 0.4, delay: 0.1 }}
-              className="sticky top-12"
+              className="sticky top-12 space-y-6"
             >
-              <div className="flex items-center gap-2 mb-4">
-                <Lightbulb size={14} strokeWidth={1.75} className="text-[var(--color-accent-500)]" />
-                <span className="eyebrow">Why this step?</span>
-              </div>
-              <h3 className="font-semibold text-[15px] text-[var(--color-ink-900)] mb-3 tracking-tight">
-                {step.why.headline}
-              </h3>
-              <div className="prose-editorial text-[14px] leading-[1.7] whitespace-pre-line text-[var(--color-paper-700)]">
-                {step.why.body}
-              </div>
-              {step.why.citation && (
-                <div className="mt-4 pt-4 border-t border-[var(--color-paper-200)]">
-                  <span className="eyebrow text-[var(--color-paper-500)]">Source</span>
-                  <p className="text-[12px] text-[var(--color-paper-600)] mt-1 italic">
-                    {step.why.citation}
+              {/* Why this step — info box */}
+              <div className="rounded-[var(--radius-md)] border border-[var(--color-paper-300)] bg-[var(--color-paper-50)] overflow-hidden">
+                {/* Info box header */}
+                <div className="flex items-center gap-2 px-4 py-3 bg-[var(--color-paper-100)] border-b border-[var(--color-paper-200)]">
+                  <Lightbulb size={13} strokeWidth={1.75} className="text-[var(--color-accent-500)]" />
+                  <span className="eyebrow text-[var(--color-paper-600)]">Why this step?</span>
+                </div>
+                {/* Info box body */}
+                <div className="px-4 py-4 space-y-3">
+                  <h3 className="font-semibold text-[14px] text-[var(--color-ink-900)] tracking-tight leading-snug">
+                    {step.why.headline}
+                  </h3>
+                  <div className="prose-editorial text-[13px] leading-[1.65] whitespace-pre-line text-[var(--color-paper-700)]">
+                    {step.why.body}
+                  </div>
+                  {step.why.citation && (
+                    <div className="pt-3 border-t border-[var(--color-paper-200)]">
+                      <p className="text-[11px] text-[var(--color-paper-500)] italic leading-snug">
+                        {step.why.citation}
+                      </p>
+                    </div>
+                  )}
+                </div>
+                {/* Footer note */}
+                <div className="px-4 py-3 bg-[var(--color-accent-50)] border-t border-[var(--color-accent-100)] flex gap-2">
+                  <Sparkles size={12} strokeWidth={1.75} className="text-[var(--color-accent-500)] shrink-0 mt-0.5" />
+                  <p className="text-[11px] text-[var(--color-accent-700)] leading-relaxed">
+                    Answers are saved to your project's decision log. Revisit and revise from the project hub.
                   </p>
                 </div>
-              )}
-              <div className="mt-6 px-3 py-2.5 rounded-[var(--radius-sm)] bg-[var(--color-accent-50)] border border-[var(--color-accent-100)] flex gap-2">
-                <Sparkles
-                  size={13}
-                  strokeWidth={1.75}
-                  className="text-[var(--color-accent-500)] shrink-0 mt-0.5"
-                />
-                <p className="text-[12px] text-[var(--color-accent-700)] leading-relaxed">
-                  Your answer is saved as a decision in this project's log. You can revisit and
-                  revise it any time without losing later work.
-                </p>
               </div>
             </motion.aside>
           </AnimatePresence>
@@ -251,9 +374,7 @@ function StepInput({
             badge={opt.badge}
           />
         ))}
-        {error && (
-          <p className="text-xs text-[var(--color-error-500)] mt-2">{error}</p>
-        )}
+        {error && <p className="text-xs text-[var(--color-error-500)] mt-2">{error}</p>}
       </div>
     );
   }
@@ -268,10 +389,7 @@ function StepInput({
         error={error || undefined}
         hint={step.hint}
         onKeyDown={(e) => {
-          if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
-            e.preventDefault();
-            onSubmit();
-          }
+          if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); onSubmit(); }
         }}
       />
     );
@@ -285,24 +403,29 @@ function StepInput({
       error={error || undefined}
       hint={step.hint}
       onKeyDown={(e) => {
-        if (e.key === "Enter") {
-          e.preventDefault();
-          onSubmit();
-        }
+        if (e.key === "Enter") { e.preventDefault(); onSubmit(); }
       }}
     />
   );
 }
 
-function ProgressTrail({
-  current,
-  total,
-  progress,
-}: {
-  current: number;
-  total: number;
-  progress: number;
-}) {
+function ThinkingDots({ small }: { small?: boolean }) {
+  const size = small ? "w-1.5 h-1.5" : "w-2 h-2";
+  return (
+    <div className="flex items-center gap-1">
+      {[0, 1, 2].map((i) => (
+        <motion.span
+          key={i}
+          className={`${size} rounded-full bg-[var(--color-paper-400)]`}
+          animate={{ y: [0, -4, 0], opacity: [0.4, 1, 0.4] }}
+          transition={{ duration: 0.9, repeat: Infinity, delay: i * 0.18, ease: "easeInOut" }}
+        />
+      ))}
+    </div>
+  );
+}
+
+function ProgressTrail({ current, total, progress }: { current: number; total: number; progress: number }) {
   return (
     <div className="flex items-center gap-3">
       <div className="flex items-center gap-1.5">
@@ -311,11 +434,9 @@ function ProgressTrail({
             key={i}
             className={cn(
               "h-1 rounded-full transition-paper",
-              i < current
-                ? "w-6 bg-[var(--color-ink-700)]"
-                : i === current
-                ? "w-10 bg-[var(--color-ink-700)]"
-                : "w-6 bg-[var(--color-paper-300)]",
+              i < current ? "w-6 bg-[var(--color-ink-700)]"
+              : i === current ? "w-10 bg-[var(--color-ink-700)]"
+              : "w-6 bg-[var(--color-paper-300)]",
             )}
           />
         ))}

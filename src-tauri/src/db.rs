@@ -39,6 +39,8 @@ pub struct ProjectRow {
     pub custom_dimensions: Option<String>,
     pub dimension_overrides: Option<String>,
     pub journal_quality: Option<String>,
+    pub search_inclusion_criteria: Option<String>,
+    pub search_exclusion_criteria: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -71,6 +73,9 @@ pub struct ArticleRow {
     pub dedup_group_id: Option<i64>,
     pub exclusion_criterion: Option<i64>,
     pub created_at: String,
+    /// Set only when the user explicitly screened the article (include or exclude).
+    /// NULL for articles auto-included via PDF attachment.
+    pub screened_at: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -79,6 +84,18 @@ pub struct AssemblingState {
     pub unique_records: i64,
     pub duplicate_records: i64,
     pub import_batches: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RagStatusDetail {
+    /// Non-excluded articles that have an attached PDF.
+    pub articles_with_pdf: usize,
+    /// Non-excluded articles with a PDF but no chunks in the index yet.
+    pub unindexed_articles: usize,
+    /// Chunks that belong to articles the user has since excluded.
+    pub orphaned_chunks: usize,
+    /// Chunks that have been fully embedded (ready for search).
+    pub embedded_chunks: usize,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -261,6 +278,8 @@ impl ProjectDb {
             custom_dimensions: row.get("custom_dimensions"),
             dimension_overrides: row.get("dimension_overrides"),
             journal_quality: row.get("journal_quality"),
+            search_inclusion_criteria: row.get("search_inclusion_criteria"),
+            search_exclusion_criteria: row.get("search_exclusion_criteria"),
             created_at: row.get("created_at"),
             updated_at: row.get("updated_at"),
         })
@@ -291,6 +310,9 @@ impl ProjectDb {
             "project.dimension_overrides" => Some("dimension_overrides"),
             "project.custom_dimensions" => Some("custom_dimensions"),
             "project.journal_quality" => Some("journal_quality"),
+            "project.search_inclusion_criteria" => Some("search_inclusion_criteria"),
+            "project.search_exclusion_criteria" => Some("search_exclusion_criteria"),
+            "project.current_stage" => Some("current_stage"),
             _ => None,
         };
 
@@ -450,7 +472,7 @@ impl ProjectDb {
 
     pub async fn list_articles(&self) -> Result<Vec<ArticleRow>> {
         let rows = sqlx::query(
-            "SELECT id, title, authors, year, journal, abstract, doi, url, source_databases, status, dedup_group_id, exclusion_criterion, created_at \
+            "SELECT id, title, authors, year, journal, abstract, doi, url, source_databases, status, dedup_group_id, exclusion_criterion, created_at, screened_at \
              FROM article ORDER BY created_at DESC",
         )
         .fetch_all(&self.pool)
@@ -471,6 +493,7 @@ impl ProjectDb {
                 dedup_group_id: r.get("dedup_group_id"),
                 exclusion_criterion: r.get("exclusion_criterion"),
                 created_at: r.get("created_at"),
+                screened_at: r.get("screened_at"),
             })
             .collect())
     }
@@ -701,7 +724,7 @@ impl ProjectDb {
         limit: i64,
     ) -> Result<Vec<ArticleRow>> {
         let rows = sqlx::query(
-            "SELECT id, title, authors, year, journal, abstract, doi, url, source_databases, status, dedup_group_id, exclusion_criterion, created_at \
+            "SELECT id, title, authors, year, journal, abstract, doi, url, source_databases, status, dedup_group_id, exclusion_criterion, created_at, screened_at \
              FROM article WHERE status IN ('retrieved', 'included') ORDER BY id LIMIT ? OFFSET ?",
         )
         .bind(limit)
@@ -724,6 +747,7 @@ impl ProjectDb {
                 dedup_group_id: r.get("dedup_group_id"),
                 exclusion_criterion: r.get("exclusion_criterion"),
                 created_at: r.get("created_at"),
+                screened_at: r.get("screened_at"),
             })
             .collect())
     }
@@ -839,6 +863,28 @@ impl ProjectDb {
         Ok(())
     }
 
+    pub async fn update_article_journal(&self, id: i64, journal: Option<String>) -> Result<()> {
+        let now = chrono::Utc::now().to_rfc3339();
+        sqlx::query("UPDATE article SET journal = ?, updated_at = ? WHERE id = ?")
+            .bind(journal)
+            .bind(&now)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn update_article_source(&self, id: i64, source_databases: Option<String>) -> Result<()> {
+        let now = chrono::Utc::now().to_rfc3339();
+        sqlx::query("UPDATE article SET source_databases = ?, updated_at = ? WHERE id = ?")
+            .bind(source_databases)
+            .bind(&now)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     pub async fn list_articles_for_screening(
         &self,
         offset: i64,
@@ -846,10 +892,10 @@ impl ProjectDb {
     ) -> Result<Vec<ArticleRow>> {
         // Surface unscreened first, then screened-and-included for review
         let rows = sqlx::query(
-            "SELECT id, title, authors, year, journal, abstract, doi, url, source_databases, status, dedup_group_id, exclusion_criterion, created_at \
+            "SELECT id, title, authors, year, journal, abstract, doi, url, source_databases, status, dedup_group_id, exclusion_criterion, created_at, screened_at \
              FROM article \
              WHERE status IN ('retrieved', 'included') \
-             ORDER BY (screened_at IS NOT NULL), id LIMIT ? OFFSET ?",
+             ORDER BY (screened_at IS NOT NULL AND status = 'included'), id LIMIT ? OFFSET ?",
         )
         .bind(limit)
         .bind(offset)
@@ -871,6 +917,7 @@ impl ProjectDb {
                 dedup_group_id: r.get("dedup_group_id"),
                 exclusion_criterion: r.get("exclusion_criterion"),
                 created_at: r.get("created_at"),
+                screened_at: r.get("screened_at"),
             })
             .collect())
     }
@@ -897,6 +944,7 @@ impl ProjectDb {
     }
 
     pub async fn link_pdf_to_article(&self, pdf_id: i64, article_id: i64) -> Result<()> {
+        let now = chrono::Utc::now().to_rfc3339();
         sqlx::query("UPDATE pdf SET article_id = ? WHERE id = ?")
             .bind(article_id)
             .bind(pdf_id)
@@ -907,6 +955,17 @@ impl ProjectDb {
             .bind(article_id)
             .execute(&self.pool)
             .await?;
+        // Auto-include when a PDF is attached, unless the article was explicitly excluded.
+        // Intentionally does NOT set screened_at so the screening panel can distinguish
+        // auto-included articles from those the user explicitly kept.
+        sqlx::query(
+            "UPDATE article SET status = 'included', updated_at = ? \
+             WHERE id = ? AND status != 'excluded'",
+        )
+        .bind(&now)
+        .bind(article_id)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
@@ -1031,6 +1090,69 @@ impl ProjectDb {
         Ok(())
     }
 
+    /// Remove all index chunks for a single article immediately when it is excluded.
+    /// Also clears pdf.embedded_at so the PDF will be re-indexed if the article
+    /// is later un-excluded.
+    pub async fn delete_chunks_for_article(&self, article_id: i64) -> Result<()> {
+        sqlx::query("DELETE FROM pdf_chunk WHERE article_id = ?")
+            .bind(article_id)
+            .execute(&self.pool)
+            .await?;
+        // Reset embedded_at so the status query knows this pdf needs re-indexing
+        // if the article is ever re-included.
+        sqlx::query(
+            "UPDATE pdf SET embedded_at = NULL WHERE article_id = ?",
+        )
+        .bind(article_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Remove chunks that belong to articles the user has explicitly excluded.
+    /// Called at the start of every index build so excluded content is cleaned up.
+    pub async fn delete_orphaned_chunks(&self) -> Result<usize> {
+        let result = sqlx::query(
+            "DELETE FROM pdf_chunk WHERE pdf_id IN ( \
+               SELECT p.id FROM pdf p \
+               INNER JOIN article a ON a.id = p.article_id \
+               WHERE a.status = 'excluded' \
+             )",
+        )
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() as usize)
+    }
+
+    /// Returns true if the PDF already has at least one chunk, all chunks are
+    /// embedded, and all were embedded with `model`.  When this returns true
+    /// the PDF can be skipped during an incremental build.
+    pub async fn is_pdf_fully_embedded(&self, pdf_id: i64, model: &str) -> Result<bool> {
+        // Total chunks for this pdf
+        let total: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pdf_chunk WHERE pdf_id = ?",
+        )
+        .bind(pdf_id)
+        .fetch_one(&self.pool)
+        .await?;
+
+        if total == 0 {
+            return Ok(false); // never indexed
+        }
+
+        // Chunks that are missing an embedding OR were made with a different model
+        let stale: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pdf_chunk \
+             WHERE pdf_id = ? AND (embedding IS NULL OR embedding_model != ?)",
+        )
+        .bind(pdf_id)
+        .bind(model)
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(stale == 0)
+    }
+
     pub async fn save_pdf_chunks(
         &self,
         pdf_id: i64,
@@ -1111,6 +1233,45 @@ impl ProjectDb {
         Ok(())
     }
 
+    /// Article ids that have at least one embedded chunk (indexed PDF).
+    pub async fn get_indexed_article_ids(&self) -> Result<Vec<i64>> {
+        let rows = sqlx::query(
+            "SELECT DISTINCT article_id FROM pdf_chunk WHERE embedding IS NOT NULL",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(|r| r.get::<i64, _>("article_id")).collect())
+    }
+
+    /// Embedded chunks for a single article (for per-article chat).
+    pub async fn embedded_chunks_for_article(
+        &self,
+        article_id: i64,
+    ) -> Result<Vec<(i64, i64, String, i64, String, Vec<u8>)>> {
+        let rows = sqlx::query(
+            "SELECT pc.id, pc.article_id, a.title, pc.chunk_index, pc.text, pc.embedding \
+             FROM pdf_chunk pc \
+             INNER JOIN article a ON a.id = pc.article_id \
+             WHERE pc.embedding IS NOT NULL AND pc.article_id = ?",
+        )
+        .bind(article_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| {
+                (
+                    r.get::<i64, _>("id"),
+                    r.get::<i64, _>("article_id"),
+                    r.get::<String, _>("title"),
+                    r.get::<i64, _>("chunk_index"),
+                    r.get::<String, _>("text"),
+                    r.get::<Vec<u8>, _>("embedding"),
+                )
+            })
+            .collect())
+    }
+
     /// All embedded chunks across the project, with the article id and a
     /// short title slug for citation purposes.
     pub async fn all_embedded_chunks(
@@ -1140,9 +1301,81 @@ impl ProjectDb {
             .collect())
     }
 
+    /// Returns (pdf_id, article_id, article_title, stored_path) for every article
+    /// that has a linked PDF and has NOT been explicitly excluded by the user.
+    pub async fn included_articles_with_pdf(
+        &self,
+    ) -> Result<Vec<(i64, i64, String, String)>> {
+        let rows = sqlx::query(
+            "SELECT p.id AS pdf_id, a.id AS article_id, a.title, p.stored_path \
+             FROM article a \
+             INNER JOIN pdf p ON p.article_id = a.id \
+             WHERE a.status != 'excluded' \
+             GROUP BY a.id \
+             ORDER BY a.id",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| {
+                (
+                    r.get::<i64, _>("pdf_id"),
+                    r.get::<i64, _>("article_id"),
+                    r.get::<String, _>("title"),
+                    r.get::<String, _>("stored_path"),
+                )
+            })
+            .collect())
+    }
+
+    /// Returns (included_with_pdf, total_chunks, embedded_chunks).
+    pub async fn rag_status(&self) -> Result<RagStatusDetail> {
+        // Articles with a PDF that are not excluded
+        let articles_with_pdf: i64 = sqlx::query_scalar(
+            "SELECT COUNT(DISTINCT a.id) FROM article a \
+             INNER JOIN pdf p ON p.article_id = a.id \
+             WHERE a.status != 'excluded'",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+
+        // Articles with a PDF that are not excluded but have NO chunks yet
+        let unindexed_articles: i64 = sqlx::query_scalar(
+            "SELECT COUNT(DISTINCT a.id) FROM article a \
+             INNER JOIN pdf p ON p.article_id = a.id \
+             WHERE a.status != 'excluded' \
+             AND p.id NOT IN (SELECT DISTINCT pdf_id FROM pdf_chunk)",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+
+        // Chunks that belong to articles the user has since excluded
+        let orphaned_chunks: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pdf_chunk pc \
+             INNER JOIN pdf p ON p.id = pc.pdf_id \
+             INNER JOIN article a ON a.id = p.article_id \
+             WHERE a.status = 'excluded'",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+
+        let embedded_chunks: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM pdf_chunk WHERE embedding IS NOT NULL")
+                .fetch_one(&self.pool)
+                .await?;
+
+        Ok(RagStatusDetail {
+            articles_with_pdf: articles_with_pdf as usize,
+            unindexed_articles: unindexed_articles as usize,
+            orphaned_chunks: orphaned_chunks as usize,
+            embedded_chunks: embedded_chunks as usize,
+        })
+    }
+
     pub async fn list_included_articles_full(&self) -> Result<Vec<ArticleRow>> {
         let rows = sqlx::query(
-            "SELECT id, title, authors, year, journal, abstract, doi, url, source_databases, status, dedup_group_id, exclusion_criterion, created_at \
+            "SELECT id, title, authors, year, journal, abstract, doi, url, source_databases, status, dedup_group_id, exclusion_criterion, created_at, screened_at \
              FROM article WHERE status = 'included' ORDER BY id",
         )
         .fetch_all(&self.pool)
@@ -1163,13 +1396,14 @@ impl ProjectDb {
                 dedup_group_id: r.get("dedup_group_id"),
                 exclusion_criterion: r.get("exclusion_criterion"),
                 created_at: r.get("created_at"),
+                screened_at: r.get("screened_at"),
             })
             .collect())
     }
 
     pub async fn list_excluded_articles_full(&self) -> Result<Vec<ArticleRow>> {
         let rows = sqlx::query(
-            "SELECT id, title, authors, year, journal, abstract, doi, url, source_databases, status, dedup_group_id, exclusion_criterion, exclusion_rationale, created_at \
+            "SELECT id, title, authors, year, journal, abstract, doi, url, source_databases, status, dedup_group_id, exclusion_criterion, exclusion_rationale, created_at, screened_at \
              FROM article WHERE status = 'excluded' ORDER BY id",
         )
         .fetch_all(&self.pool)
@@ -1190,6 +1424,7 @@ impl ProjectDb {
                 dedup_group_id: r.get("dedup_group_id"),
                 exclusion_criterion: r.get("exclusion_criterion"),
                 created_at: r.get("created_at"),
+                screened_at: r.get("screened_at"),
             })
             .collect())
     }
@@ -1457,5 +1692,14 @@ impl ProjectDb {
             .execute(&self.pool)
             .await?;
         Ok(())
+    }
+
+    /// Wipe all pdf chunks and their embeddings.
+    /// Called when the user changes embedding model — old vectors are incompatible.
+    pub async fn purge_embeddings(&self) -> Result<usize> {
+        let result = sqlx::query("DELETE FROM pdf_chunk")
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() as usize)
     }
 }

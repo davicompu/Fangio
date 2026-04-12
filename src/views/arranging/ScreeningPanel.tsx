@@ -116,7 +116,7 @@ export function ScreeningPanel({ project, refreshKey, onChanged }: Props) {
   };
 
   return (
-    <div className="max-w-5xl">
+    <div className="pl-6 pr-4 xl:pl-12 xl:pr-8">
       <div className="flex items-end justify-between mb-6">
         <div>
           <div className="eyebrow text-[var(--color-paper-500)]">Title & abstract screening</div>
@@ -139,7 +139,7 @@ export function ScreeningPanel({ project, refreshKey, onChanged }: Props) {
             <ArrowLeft size={13} strokeWidth={2} />
             Prev
           </Button>
-          <span className="px-3 text-[11px] font-mono tabular-nums text-[var(--color-paper-500)]">
+          <span className="px-3 text-[12px] font-semibold tabular-nums text-[var(--color-ink-700)]">
             Batch {Math.floor(offset / BATCH_SIZE) + 1}
           </span>
           <Button
@@ -225,8 +225,9 @@ function ScreeningCard({
   onDecision: () => Promise<void>;
 }) {
   const [busy, setBusy] = useState(false);
-  const isIncluded = article.status === "included";
-  const isDecided = isIncluded;
+  // Only show "Included" for articles the user explicitly kept via screening.
+  // Articles auto-included by PDF attachment have screened_at = null.
+  const isDecided = article.status === "included" && article.screened_at !== null;
 
   // Determine journal quality status
   const absFails = jq.abs_min && !meetsAbsThreshold(journalMatch?.abs_rating, jq.abs_min);
@@ -269,7 +270,7 @@ function ScreeningCard({
       className={cn(
         "p-5",
         isDecided && "bg-[var(--color-ok-500)]/5 border-[var(--color-ok-500)]/30",
-        qualityFlagged && !isDecided && "border-[var(--color-warn-500)]/40",
+        qualityFlagged && !isDecided && article.status !== "included" && "border-[var(--color-warn-500)]/40",
       )}
     >
       <div className="flex items-start gap-4">

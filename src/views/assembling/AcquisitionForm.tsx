@@ -1,7 +1,7 @@
 import { useState, useRef } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { motion } from "framer-motion";
-import { Calendar, Database, ExternalLink, Globe, Lightbulb, Save, Search, Settings as SettingsIcon, Sparkles } from "lucide-react";
+import { Calendar, Database, ExternalLink, Filter, Globe, Lightbulb, Plus, Save, Search, Settings as SettingsIcon, Sparkles, X } from "lucide-react";
 import { api, type ProjectRow, type SuggestQueryResult } from "../../lib/api";
 import { Card } from "../../components/ui/Card";
 import { TextField, TextArea } from "../../components/ui/TextField";
@@ -25,6 +25,14 @@ export function AcquisitionForm({ project, settings, onSaved, onOpenSettings }: 
   const [start, setStart] = useState(project.search_period_start ?? "");
   const [end, setEnd] = useState(project.search_period_end ?? "");
   const [query, setQuery] = useState(project.boolean_query ?? "");
+  const [inclusions, setInclusions] = useState<string[]>(
+    () => project.search_inclusion_criteria ? (JSON.parse(project.search_inclusion_criteria) as string[]) : [],
+  );
+  const [exclusions, setExclusions] = useState<string[]>(
+    () => project.search_exclusion_criteria ? (JSON.parse(project.search_exclusion_criteria) as string[]) : [],
+  );
+  const [newInclusion, setNewInclusion] = useState("");
+  const [newExclusion, setNewExclusion] = useState("");
   const [busy, setBusy] = useState(false);
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -79,6 +87,20 @@ export function AcquisitionForm({ project, settings, onSaved, onOpenSettings }: 
         value_json: JSON.stringify(query),
         rationale: null,
       });
+      await api.saveDecision({
+        stage: "assembling",
+        sub_stage: "acquisition",
+        decision_key: "project.search_inclusion_criteria",
+        value_json: JSON.stringify(inclusions),
+        rationale: null,
+      });
+      await api.saveDecision({
+        stage: "assembling",
+        sub_stage: "acquisition",
+        decision_key: "project.search_exclusion_criteria",
+        value_json: JSON.stringify(exclusions),
+        rationale: null,
+      });
       setSavedAt(Date.now());
       onSaved();
     } catch (e: unknown) {
@@ -99,6 +121,8 @@ export function AcquisitionForm({ project, settings, onSaved, onOpenSettings }: 
       const result = await api.suggestBooleanQuery(
         Array.from(databases),
         query.trim() || null,
+        inclusions.length > 0 ? inclusions : null,
+        exclusions.length > 0 ? exclusions : null,
       );
       setSuggestResult(result);
     } catch (e: any) {
@@ -220,6 +244,49 @@ export function AcquisitionForm({ project, settings, onSaved, onOpenSettings }: 
             onChange={(e) => setEnd(e.target.value)}
             placeholder="e.g., 2025"
             mono
+          />
+        </div>
+      </section>
+
+      {/* Eligibility criteria */}
+      <section>
+        <SectionHeader
+          icon={<Filter size={14} strokeWidth={1.75} />}
+          title="Search eligibility criteria"
+          description="Define what qualifies a record for inclusion. These guide both manual screening and the AI query builder."
+        />
+        <div className="mt-4 grid grid-cols-2 gap-4">
+          <CriteriaList
+            label="Inclusion"
+            color="ok"
+            items={inclusions}
+            newValue={newInclusion}
+            onNewValueChange={setNewInclusion}
+            onAdd={() => {
+              const trimmed = newInclusion.trim();
+              if (trimmed && !inclusions.includes(trimmed)) {
+                setInclusions((prev) => [...prev, trimmed]);
+              }
+              setNewInclusion("");
+            }}
+            onRemove={(i) => setInclusions((prev) => prev.filter((_, idx) => idx !== i))}
+            placeholder="e.g., Empirical study"
+          />
+          <CriteriaList
+            label="Exclusion"
+            color="warn"
+            items={exclusions}
+            newValue={newExclusion}
+            onNewValueChange={setNewExclusion}
+            onAdd={() => {
+              const trimmed = newExclusion.trim();
+              if (trimmed && !exclusions.includes(trimmed)) {
+                setExclusions((prev) => [...prev, trimmed]);
+              }
+              setNewExclusion("");
+            }}
+            onRemove={(i) => setExclusions((prev) => prev.filter((_, idx) => idx !== i))}
+            placeholder="e.g., Conference proceedings"
           />
         </div>
       </section>
@@ -347,6 +414,79 @@ export function AcquisitionForm({ project, settings, onSaved, onOpenSettings }: 
         onAccept={handleAccept}
         onDismiss={() => { setModalOpen(false); setSuggestResult(null); setSuggestError(null); }}
       />
+    </div>
+  );
+}
+
+function CriteriaList({
+  label,
+  color,
+  items,
+  newValue,
+  onNewValueChange,
+  onAdd,
+  onRemove,
+  placeholder,
+}: {
+  label: string;
+  color: "ok" | "warn";
+  items: string[];
+  newValue: string;
+  onNewValueChange: (v: string) => void;
+  onAdd: () => void;
+  onRemove: (i: number) => void;
+  placeholder: string;
+}) {
+  const isOk = color === "ok";
+  const pillCls = isOk
+    ? "bg-[var(--color-ok-50)] border-[var(--color-ok-200)] text-[var(--color-ok-700)]"
+    : "bg-[var(--color-warn-50)] border-[var(--color-warn-200)] text-[var(--color-warn-700)]";
+  const removeCls = isOk
+    ? "hover:text-[var(--color-ok-900)]"
+    : "hover:text-[var(--color-warn-900)]";
+  const addCls = isOk
+    ? "text-[var(--color-ok-600)] border-[var(--color-ok-300)] bg-[var(--color-ok-50)] hover:bg-[var(--color-ok-100)]"
+    : "text-[var(--color-warn-600)] border-[var(--color-warn-300)] bg-[var(--color-warn-50)] hover:bg-[var(--color-warn-100)]";
+
+  return (
+    <div className="rounded-[var(--radius-sm)] border border-[var(--color-paper-300)] p-4 space-y-3">
+      <p className="text-[12px] font-semibold text-[var(--color-ink-700)] uppercase tracking-wide">{label}</p>
+      {items.length > 0 && (
+        <ul className="space-y-1.5">
+          {items.map((item, i) => (
+            <li key={i} className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-full border text-[12px] ${pillCls}`}>
+              <span className="flex-1 leading-snug">{item}</span>
+              <button
+                type="button"
+                onClick={() => onRemove(i)}
+                className={`shrink-0 opacity-50 ${removeCls} transition-paper`}
+                aria-label="Remove"
+              >
+                <X size={11} strokeWidth={2} />
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <div className="flex gap-2">
+        <input
+          type="text"
+          value={newValue}
+          onChange={(e) => onNewValueChange(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); onAdd(); } }}
+          placeholder={placeholder}
+          className="flex-1 px-2.5 py-1.5 text-[12px] rounded-[var(--radius-xs)] border border-[var(--color-paper-300)] bg-white placeholder:text-[var(--color-paper-400)] focus:outline-none focus:ring-1 focus:ring-[var(--color-paper-400)]"
+        />
+        <button
+          type="button"
+          onClick={onAdd}
+          disabled={!newValue.trim()}
+          className={`flex items-center gap-1 px-2.5 py-1.5 rounded-[var(--radius-xs)] text-[12px] font-medium border transition-paper disabled:opacity-40 disabled:cursor-not-allowed ${addCls}`}
+        >
+          <Plus size={12} strokeWidth={2} />
+          Add
+        </button>
+      </div>
     </div>
   );
 }

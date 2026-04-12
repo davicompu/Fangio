@@ -7,8 +7,10 @@ import {
   GitMerge,
   Inbox,
   Library,
+  Lightbulb,
   Search,
   ShieldCheck,
+  Sparkles,
 } from "lucide-react";
 import { api, type AssemblingState, type ProjectRow } from "../../lib/api";
 import type { AppSettings } from "../../lib/useAppState";
@@ -24,10 +26,45 @@ interface AssemblingStageProps {
   project: ProjectRow;
   settings: AppSettings;
   onLeaveStage: () => void;
+  onAdvanceStage: (nextStage: "arranging") => Promise<void>;
+  onOpenRag: () => void;
   onOpenSettings: () => void;
 }
 
 type Tab = "acquisition" | "journals" | "import" | "library" | "dedup" | "checkpoint";
+
+const tabInfo: Record<Tab, { headline: string; body: string; tip?: string }> = {
+  acquisition: {
+    headline: "Defining your search",
+    body: "Record which databases you'll search, the date range, and the boolean query string you'll run. These decisions are logged and appear in your manuscript's method section.\n\nA good boolean query balances recall (catching everything relevant) with precision (not drowning in noise). Build it from your research question keywords.",
+    tip: "Run your query in each database yourself — Fangio stores the results, but you control the search.",
+  },
+  import: {
+    headline: "Importing search results",
+    body: "Export results from each database in RIS, BibTeX, Web of Science, or Scopus CSV format. Fangio parses and deduplicates them automatically.\n\nEach import creates a batch you can trace back — essential for PRISMA reporting.",
+    tip: "Import from every database separately to preserve provenance. Merged exports lose source information.",
+  },
+  journals: {
+    headline: "Journal scope & quality",
+    body: "Use journal quality lists (ABS, ABDC, Scopus) to scope your search and set a quality threshold. Articles below the threshold can be filtered out before screening.\n\nThis step is optional but recommended for domain reviews targeting high-quality outlets.",
+    tip: "Agree on a journal quality threshold before screening — changing it mid-process affects reproducibility.",
+  },
+  library: {
+    headline: "Retrieved corpus",
+    body: "All records imported across every batch are stored here. You can inspect, attach PDFs, and track which articles have been screened.\n\nRecords with attached PDFs are automatically marked as included unless you explicitly exclude them during screening.",
+    tip: "Attaching a PDF to an article auto-includes it — save time by uploading PDFs for your target articles early.",
+  },
+  dedup: {
+    headline: "Deduplication",
+    body: "The same article often appears across multiple databases. Fangio clusters likely duplicates based on title and DOI similarity.\n\nReview each cluster and confirm which records are true duplicates. Merged records keep the richest metadata from the set.",
+    tip: "When in doubt, merge. It's better to deduplicate conservatively and focus screening on unique records.",
+  },
+  checkpoint: {
+    headline: "Stage 1 → 2 gate",
+    body: "SPAR-4-SLR requires four conditions before you commit time to coding. Confirming them now protects you from publishing a redundant or underpowered review.\n\nAll four must be satisfied before Stage 2 (Arranging) unlocks.",
+    tip: "The 40-record threshold is a guideline. Very focused topics can be defensible with fewer, but be prepared to justify it.",
+  },
+};
 
 const tabs: { id: Tab; label: string; eyebrow: string; icon: any; description: string }[] = [
   {
@@ -42,7 +79,7 @@ const tabs: { id: Tab; label: string; eyebrow: string; icon: any; description: s
     label: "Importing",
     eyebrow: "Bring records in",
     icon: Inbox,
-    description: "Drop RIS, BibTeX, WoS or Scopus exports — Carta parses and stores them.",
+    description: "Drop RIS, BibTeX, WoS or Scopus exports — Reeves parses and stores them.",
   },
   {
     id: "journals",
@@ -74,7 +111,7 @@ const tabs: { id: Tab; label: string; eyebrow: string; icon: any; description: s
   },
 ];
 
-export function AssemblingStage({ project, settings, onLeaveStage, onOpenSettings }: AssemblingStageProps) {
+export function AssemblingStage({ project, settings, onLeaveStage, onAdvanceStage, onOpenRag, onOpenSettings }: AssemblingStageProps) {
   const [tab, setTab] = useState<Tab>("acquisition");
   const [assembling, setAssembling] = useState<AssemblingState | null>(null);
   const [refreshTick, setRefreshTick] = useState(0);
@@ -88,7 +125,7 @@ export function AssemblingStage({ project, settings, onLeaveStage, onOpenSetting
   return (
     <div className="min-h-screen flex flex-col">
       {/* Header doubles as drag region so the entire top bar is draggable */}
-      <header className="drag-region px-12 pt-10 pb-6 flex items-start justify-between">
+      <header className="drag-region px-6 xl:px-12 pt-10 pb-6 flex items-start justify-between">
         <div className="flex items-start gap-4">
           <button
             onClick={onLeaveStage}
@@ -107,11 +144,20 @@ export function AssemblingStage({ project, settings, onLeaveStage, onOpenSetting
             </h1>
           </div>
         </div>
-        <StatsStrip assembling={assembling} />
+        <div className="no-drag flex items-center gap-3">
+          <button
+            onClick={onOpenRag}
+            className="group inline-flex items-center gap-2 px-4 h-9 rounded-[var(--radius-sm)] text-[12px] font-semibold bg-[var(--color-accent-50)]0 text-white hover:bg-[var(--color-accent-600)] shadow-sm transition-paper"
+          >
+            <Sparkles size={13} strokeWidth={1.75} className="text-[var(--color-accent-200)] group-hover:text-white" />
+            Ask the literature
+          </button>
+          <StatsStrip assembling={assembling} />
+        </div>
       </header>
 
       {/* Tab strip — feels like a notebook tab divider */}
-      <nav className="px-12 mb-6">
+      <nav className="px-6 xl:px-12 mb-6">
         <div className="flex items-end gap-1 border-b border-[var(--color-paper-300)]">
           {tabs.map((t) => {
             const Icon = t.icon;
@@ -143,40 +189,81 @@ export function AssemblingStage({ project, settings, onLeaveStage, onOpenSetting
         </div>
       </nav>
 
-      {/* Tab content */}
-      <div className="flex-1 px-12 pb-32">
-        <AnimatePresence mode="wait">
-          <motion.div
-            key={tab}
-            initial={{ opacity: 0, y: 8 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -8 }}
-            transition={{ duration: 0.25, ease: [0.2, 0.7, 0.2, 1] }}
-          >
-            {tab === "acquisition" && (
-              <AcquisitionForm
-                project={project}
-                settings={settings}
-                onSaved={onChanged}
-                onOpenSettings={onOpenSettings}
-              />
-            )}
-            {tab === "journals" && <JournalScopePanel />}
-            {tab === "import" && <ImportPanel onCommitted={onChanged} />}
-            {tab === "library" && (
-              <ArticleLibrary refreshKey={refreshTick} onChanged={onChanged} />
-            )}
-            {tab === "dedup" && (
-              <DedupReview refreshKey={refreshTick} onChanged={onChanged} />
-            )}
-            {tab === "checkpoint" && (
-              <CheckpointGate
-                assembling={assembling}
-                onAdvance={onLeaveStage /* placeholder */}
-              />
-            )}
-          </motion.div>
-        </AnimatePresence>
+      {/* Tab content — two columns */}
+      <div className="flex-1 grid grid-cols-[1fr_240px] xl:grid-cols-[1fr_300px] pb-32 min-w-0">
+        {/* Main column */}
+        <div className="min-w-0">
+          <AnimatePresence mode="wait">
+            <motion.div
+              key={tab}
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -8 }}
+              transition={{ duration: 0.25, ease: [0.2, 0.7, 0.2, 1] }}
+              className="pl-6 pr-4 xl:pl-12 xl:pr-8"
+            >
+              {tab === "acquisition" && (
+                <AcquisitionForm
+                  project={project}
+                  settings={settings}
+                  onSaved={onChanged}
+                  onOpenSettings={onOpenSettings}
+                />
+              )}
+              {tab === "journals" && <JournalScopePanel />}
+              {tab === "import" && <ImportPanel onCommitted={onChanged} />}
+              {tab === "library" && (
+                <ArticleLibrary refreshKey={refreshTick} onChanged={onChanged} />
+              )}
+              {tab === "dedup" && (
+                <DedupReview refreshKey={refreshTick} onChanged={onChanged} />
+              )}
+              {tab === "checkpoint" && (
+                <CheckpointGate
+                  assembling={assembling}
+                  onAdvance={() => onAdvanceStage("arranging")}
+                />
+              )}
+            </motion.div>
+          </AnimatePresence>
+        </div>
+
+        {/* Right info column */}
+        <div className="pr-6 pl-3 xl:pr-12 xl:pl-4 pt-2">
+          <AnimatePresence mode="wait">
+            <motion.aside
+              key={tab + "-info"}
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -8 }}
+              transition={{ duration: 0.3, delay: 0.05 }}
+              className="sticky top-8"
+            >
+              <div className="rounded-[var(--radius-md)] border border-[var(--color-paper-300)] bg-[var(--color-paper-50)] overflow-hidden">
+                <div className="flex items-center gap-2 px-4 py-3 bg-[var(--color-paper-100)] border-b border-[var(--color-paper-200)]">
+                  <Lightbulb size={13} strokeWidth={1.75} className="text-[var(--color-accent-500)]" />
+                  <span className="eyebrow text-[var(--color-paper-600)]">About this step</span>
+                </div>
+                <div className="px-4 py-4 space-y-3">
+                  <h3 className="font-semibold text-[14px] text-[var(--color-ink-900)] tracking-tight leading-snug">
+                    {tabInfo[tab].headline}
+                  </h3>
+                  <p className="text-[13px] leading-[1.65] whitespace-pre-line text-[var(--color-paper-700)]">
+                    {tabInfo[tab].body}
+                  </p>
+                </div>
+                {tabInfo[tab].tip && (
+                  <div className="px-4 py-3 bg-[var(--color-accent-50)] border-t border-[var(--color-accent-100)] flex gap-2">
+                    <Sparkles size={12} strokeWidth={1.75} className="text-[var(--color-accent-500)] shrink-0 mt-0.5" />
+                    <p className="text-[11px] text-[var(--color-accent-700)] leading-relaxed">
+                      {tabInfo[tab].tip}
+                    </p>
+                  </div>
+                )}
+              </div>
+            </motion.aside>
+          </AnimatePresence>
+        </div>
       </div>
     </div>
   );

@@ -1,5 +1,7 @@
+import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
-import { Cpu, Database, Gauge, Radio, Sparkles, WifiOff } from "lucide-react";
+import { Database, Gauge, MessageSquare, Radio, Type, WifiOff } from "lucide-react";
+import { getVersion } from "@tauri-apps/api/app";
 import { cn } from "../lib/utils";
 
 interface StatusBarProps {
@@ -40,6 +42,29 @@ function Dot({ state }: { state: "ok" | "warn" | "error" | "idle" }) {
   );
 }
 
+function useVersion() {
+  const [version, setVersion] = useState<string | null>(null);
+  useEffect(() => {
+    getVersion().then(setVersion).catch(() => {});
+  }, []);
+  return version;
+}
+
+function useClock() {
+  const fmt = () => {
+    const d = new Date();
+    const date = d.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
+    const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
+    return `${date}  ${time}`;
+  };
+  const [clock, setClock] = useState(fmt);
+  useEffect(() => {
+    const id = setInterval(() => setClock(fmt()), 1000);
+    return () => clearInterval(id);
+  }, []);
+  return clock;
+}
+
 export function StatusBar({
   serverReachable,
   serverLabel,
@@ -52,6 +77,8 @@ export function StatusBar({
 }: StatusBarProps) {
   const dotState =
     serverReachable === null ? "idle" : serverReachable ? "ok" : "error";
+  const clock = useClock();
+  const version = useVersion();
 
   return (
     <button
@@ -62,11 +89,30 @@ export function StatusBar({
         "bg-[var(--color-paper-100)]/90 backdrop-blur-md",
         "border-t border-[var(--color-paper-300)]",
         "text-[11px] text-[var(--color-paper-600)]",
-        "flex items-center gap-5 select-none",
+        "flex items-center gap-3 xl:gap-5 select-none",
         "hover:bg-[var(--color-paper-200)]/90 transition-paper",
       )}
       title="Open settings"
     >
+      <div className="flex items-center gap-1.5 shrink-0">
+        <span className="font-semibold text-[var(--color-ink-700)]">Reeves</span>
+        {version && (
+          <span className="font-mono text-[10px] text-[var(--color-paper-400)]">v{version}</span>
+        )}
+      </div>
+
+      <Separator />
+
+      {projectName && (
+        <>
+          <div className="flex items-center gap-1.5 min-w-0">
+            <Database size={12} strokeWidth={1.75} className="text-[var(--color-paper-500)]" />
+            <span className="truncate max-w-[160px] xl:max-w-[260px]">{projectName}</span>
+          </div>
+          <Separator />
+        </>
+      )}
+
       <div className="flex items-center gap-2 min-w-0">
         <Dot state={dotState} />
         {serverReachable === false ? (
@@ -82,23 +128,23 @@ export function StatusBar({
       <Separator />
 
       <div className="flex items-center gap-1.5 min-w-0">
-        <Cpu size={12} strokeWidth={1.75} className="text-[var(--color-paper-500)]" />
-        <span className="eyebrow text-[var(--color-paper-500)]">chat</span>
-        <span className="font-mono text-[11px] truncate text-[var(--color-ink-700)]">
+        <MessageSquare size={12} strokeWidth={1.75} className="text-[var(--color-paper-500)]" />
+        <span className="hidden xl:inline eyebrow text-[var(--color-paper-500)]">chat</span>
+        <span className="font-mono text-[11px] truncate max-w-[120px] xl:max-w-[200px] text-[var(--color-ink-700)]">
           {chatModel || "—"}
         </span>
       </div>
 
-      <div className="flex items-center gap-1.5 min-w-0">
-        <Sparkles size={12} strokeWidth={1.75} className="text-[var(--color-paper-500)]" />
-        <span className="eyebrow text-[var(--color-paper-500)]">embed</span>
-        <span className="font-mono text-[11px] truncate text-[var(--color-ink-700)]">
+      <div className="hidden lg:flex items-center gap-1.5 min-w-0">
+        <Type size={12} strokeWidth={1.75} className="text-[var(--color-paper-500)]" />
+        <span className="hidden xl:inline eyebrow text-[var(--color-paper-500)]">embed</span>
+        <span className="font-mono text-[11px] truncate max-w-[120px] xl:max-w-[200px] text-[var(--color-ink-700)]">
           {embedModel || "—"}
         </span>
       </div>
 
       {latencyMs !== null && (
-        <div className="flex items-center gap-1.5">
+        <div className="hidden lg:flex items-center gap-1.5">
           <Gauge size={12} strokeWidth={1.75} className="text-[var(--color-paper-500)]" />
           <span className="font-mono text-[11px] tabular-nums">
             {latencyMs}ms
@@ -108,16 +154,6 @@ export function StatusBar({
 
       <div className="flex-1" />
 
-      {projectName && (
-        <>
-          <div className="flex items-center gap-1.5 min-w-0">
-            <Database size={12} strokeWidth={1.75} className="text-[var(--color-paper-500)]" />
-            <span className="truncate max-w-[260px]">{projectName}</span>
-          </div>
-          <Separator />
-        </>
-      )}
-
       <div className="flex items-center gap-1.5">
         <Radio
           size={12}
@@ -126,8 +162,16 @@ export function StatusBar({
             telemetryOn ? "text-[var(--color-ok-500)]" : "text-[var(--color-paper-400)]"
           }
         />
-        <span className="eyebrow">{telemetryOn ? "telemetry on" : "telemetry off"}</span>
+        <span className={cn("eyebrow", telemetryOn ? "text-[var(--color-ok-600)]" : "text-[var(--color-paper-400)]")}>
+          {telemetryOn ? "On" : "Off"}
+        </span>
       </div>
+
+      <Separator />
+
+      <span className="font-mono text-[11px] tabular-nums tracking-tight text-[var(--color-ink-700)]">
+        {clock}
+      </span>
     </button>
   );
 }

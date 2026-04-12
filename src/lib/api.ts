@@ -28,6 +28,8 @@ export interface ProjectRow {
   custom_dimensions: string | null;
   dimension_overrides: string | null;
   journal_quality: string | null;
+  search_inclusion_criteria: string | null;
+  search_exclusion_criteria: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -131,6 +133,8 @@ export interface ArticleRow {
   dedup_group_id: number | null;
   exclusion_criterion: number | null;
   created_at: string;
+  /** Set only when the user explicitly screened (included/excluded) this article. Null for PDF auto-inclusions. */
+  screened_at: string | null;
 }
 
 export interface AssemblingState {
@@ -255,6 +259,29 @@ export interface AskResult {
   citations: AskCitation[];
   model: string | null;
   embed_model: string;
+}
+
+export interface RagStatus {
+  /** Non-excluded articles that have an attached PDF. */
+  articles_with_pdf: number;
+  /** Non-excluded articles with a PDF but no chunks in the index yet. */
+  unindexed_articles: number;
+  /** Chunks that belong to articles the user has since excluded. */
+  orphaned_chunks: number;
+  /** Chunks that have been fully embedded (ready for search). */
+  embedded_chunks: number;
+}
+
+export interface BuildRagProgress {
+  done: number;
+  total: number;
+  article_title: string;
+  phase: "indexing" | "embedding" | "done";
+}
+
+export interface BuildRagResult {
+  indexed: number;
+  embedded_chunks: number;
 }
 
 export interface ExportSummary {
@@ -430,6 +457,12 @@ export const api = {
   unscreenArticle(article_id: number) {
     return invoke<void>("unscreen_article", { articleId: article_id });
   },
+  updateArticleJournal(article_id: number, journal: string | null) {
+    return invoke<void>("update_article_journal", { articleId: article_id, journal });
+  },
+  updateArticleSource(article_id: number, source_databases: string | null) {
+    return invoke<void>("update_article_source", { articleId: article_id, sourceDatabases: source_databases });
+  },
   listScreeningBatch(offset: number, limit: number) {
     return invoke<ArticleRow[]>("list_screening_batch", { args: { offset, limit } });
   },
@@ -439,9 +472,24 @@ export const api = {
   suggestCodes(article_id: number, dimension: string) {
     return invoke<SuggestResult>("suggest_codes", { args: { article_id, dimension } });
   },
-  suggestBooleanQuery(databases: string[], existingQuery: string | null) {
+  suggestStep(stepId: string, currentValue: string) {
+    return invoke<{ suggestion: string; rationale: string }>("suggest_step", {
+      args: { step_id: stepId, current_value: currentValue },
+    });
+  },
+  suggestBooleanQuery(
+    databases: string[],
+    existingQuery: string | null,
+    inclusionCriteria: string[] | null,
+    exclusionCriteria: string[] | null,
+  ) {
     return invoke<SuggestQueryResult>("suggest_boolean_query", {
-      args: { databases, existing_query: existingQuery },
+      args: {
+        databases,
+        existing_query: existingQuery,
+        inclusion_criteria: inclusionCriteria,
+        exclusion_criteria: exclusionCriteria,
+      },
     });
   },
   // ── Assessing stage ──
@@ -467,6 +515,23 @@ export const api = {
     return invoke<AskResult>("ask_corpus", {
       args: { question, top_k: top_k ?? null },
     });
+  },
+  askArticle(article_id: number, question: string) {
+    return invoke<AskResult>("ask_article", {
+      args: { article_id, question },
+    });
+  },
+  getIndexedArticleIds() {
+    return invoke<number[]>("get_indexed_article_ids");
+  },
+  purgeEmbeddings() {
+    return invoke<number>("purge_embeddings");
+  },
+  getRagStatus() {
+    return invoke<RagStatus>("get_rag_status");
+  },
+  buildRagIndex() {
+    return invoke<BuildRagResult>("build_rag_index");
   },
   generateDraft() {
     return invoke<string>("generate_draft");

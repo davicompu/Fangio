@@ -149,7 +149,7 @@ export function CriteriaPanel({ project, onChanged }: Props) {
   }
 
   return (
-    <div className="max-w-4xl">
+    <div className="pl-6 pr-4 xl:pl-12 xl:pr-8">
       <div className="mb-6 flex items-end justify-between">
         <div>
           <div className="eyebrow text-[var(--color-paper-500)]">Purification</div>
