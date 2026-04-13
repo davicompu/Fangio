@@ -866,7 +866,9 @@ impl ProjectDb {
     pub async fn clear_exclusion(&self, article_id: i64) -> Result<()> {
         let now = chrono::Utc::now().to_rfc3339();
         sqlx::query(
-            "UPDATE article SET status = 'retrieved', exclusion_criterion = NULL, exclusion_rationale = NULL, screened_at = NULL, updated_at = ? WHERE id = ?",
+            "UPDATE article SET status = 'retrieved', exclusion_criterion = NULL, \
+             exclusion_rationale = NULL, screened_at = NULL, \
+             ai_rationale = NULL, ai_confidence = NULL, updated_at = ? WHERE id = ?",
         )
         .bind(&now)
         .bind(article_id)
@@ -936,6 +938,143 @@ impl ProjectDb {
                 ai_confidence: r.get("ai_confidence"),
             })
             .collect())
+    }
+
+    /// Tab-aware paginated article list for the three-tab screening panel.
+    /// tab: "pending" | "included" | "excluded"
+    pub async fn list_articles_for_tab(
+        &self,
+        tab: &str,
+        offset: i64,
+        limit: i64,
+    ) -> Result<Vec<ArticleRow>> {
+        let sql = match tab {
+            "included" =>
+                "SELECT id, title, authors, year, journal, abstract, doi, url, source_databases, \
+                 status, dedup_group_id, exclusion_criterion, created_at, screened_at, \
+                 ai_rationale, ai_confidence \
+                 FROM article WHERE status = 'included' \
+                 ORDER BY screened_at DESC NULLS LAST, id LIMIT ? OFFSET ?",
+            "excluded" =>
+                "SELECT id, title, authors, year, journal, abstract, doi, url, source_databases, \
+                 status, dedup_group_id, exclusion_criterion, created_at, screened_at, \
+                 ai_rationale, ai_confidence \
+                 FROM article WHERE status = 'excluded' \
+                 AND COALESCE(exclusion_criterion, 0) != 1 \
+                 ORDER BY screened_at DESC NULLS LAST, id LIMIT ? OFFSET ?",
+            _ => // "pending"
+                "SELECT id, title, authors, year, journal, abstract, doi, url, source_databases, \
+                 status, dedup_group_id, exclusion_criterion, created_at, screened_at, \
+                 ai_rationale, ai_confidence \
+                 FROM article WHERE status = 'retrieved' \
+                 ORDER BY (ai_confidence IS NOT NULL) DESC, id ASC LIMIT ? OFFSET ?",
+        };
+        let rows = sqlx::query(sql)
+            .bind(limit)
+            .bind(offset)
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| ArticleRow {
+                id: r.get("id"),
+                title: r.get("title"),
+                authors: r.get("authors"),
+                year: r.get("year"),
+                journal: r.get("journal"),
+                abstract_text: r.get("abstract"),
+                doi: r.get("doi"),
+                url: r.get("url"),
+                source_databases: r.get("source_databases"),
+                status: r.get("status"),
+                dedup_group_id: r.get("dedup_group_id"),
+                exclusion_criterion: r.get("exclusion_criterion"),
+                created_at: r.get("created_at"),
+                screened_at: r.get("screened_at"),
+                ai_rationale: r.get("ai_rationale"),
+                ai_confidence: r.get("ai_confidence"),
+            })
+            .collect())
+    }
+
+    pub async fn count_articles_for_tab(&self, tab: &str) -> Result<i64> {
+        let n: i64 = match tab {
+            "included" => sqlx::query_scalar(
+                "SELECT COUNT(*) FROM article WHERE status = 'included'",
+            )
+            .fetch_one(&self.pool)
+            .await?,
+            "excluded" => sqlx::query_scalar(
+                "SELECT COUNT(*) FROM article WHERE status = 'excluded' \
+                 AND COALESCE(exclusion_criterion, 0) != 1",
+            )
+            .fetch_one(&self.pool)
+            .await?,
+            _ => sqlx::query_scalar(
+                "SELECT COUNT(*) FROM article WHERE status = 'retrieved'",
+            )
+            .fetch_one(&self.pool)
+            .await?,
+        };
+        Ok(n)
+    }
+
+    /// Record an AI screening decision on an article.
+    /// decision: "include" | "exclude" | "uncertain"
+    /// For "uncertain" the status stays 'retrieved'; ai_rationale and ai_confidence are stored.
+    pub async fn apply_ai_outcome(
+        &self,
+        article_id: i64,
+        decision: &str,
+        criterion: Option<i64>,
+        rationale: &str,
+        confidence: f64,
+    ) -> Result<()> {
+        let now = chrono::Utc::now().to_rfc3339();
+        match decision {
+            "include" => {
+                sqlx::query(
+                    "UPDATE article SET status = 'included', screened_at = ?, \
+                     ai_rationale = ?, ai_confidence = ?, updated_at = ? WHERE id = ?",
+                )
+                .bind(&now)
+                .bind(rationale)
+                .bind(confidence)
+                .bind(&now)
+                .bind(article_id)
+                .execute(&self.pool)
+                .await?;
+            }
+            "exclude" => {
+                sqlx::query(
+                    "UPDATE article SET status = 'excluded', exclusion_criterion = ?, \
+                     exclusion_rationale = ?, screened_at = ?, \
+                     ai_rationale = ?, ai_confidence = ?, updated_at = ? WHERE id = ?",
+                )
+                .bind(criterion.unwrap_or(8)) // default EC8: not relevant to domain
+                .bind(rationale)
+                .bind(&now)
+                .bind(rationale)
+                .bind(confidence)
+                .bind(&now)
+                .bind(article_id)
+                .execute(&self.pool)
+                .await?;
+            }
+            _ => {
+                // "uncertain" — store AI fields but leave status as 'retrieved'
+                sqlx::query(
+                    "UPDATE article SET ai_rationale = ?, ai_confidence = ?, updated_at = ? WHERE id = ?",
+                )
+                .bind(rationale)
+                .bind(confidence)
+                .bind(&now)
+                .bind(article_id)
+                .execute(&self.pool)
+                .await?;
+            }
+        }
+        Ok(())
     }
 
     // ── PDFs + chunks + embeddings ────────────────────────────────────────
