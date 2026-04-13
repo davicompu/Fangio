@@ -76,6 +76,10 @@ pub struct ArticleRow {
     /// Set only when the user explicitly screened the article (include or exclude).
     /// NULL for articles auto-included via PDF attachment.
     pub screened_at: Option<String>,
+    /// Rationale recorded by the AI screener (null if human-screened).
+    pub ai_rationale: Option<String>,
+    /// Confidence score 0–1 from the AI screener (null if human-screened).
+    pub ai_confidence: Option<f64>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -472,7 +476,9 @@ impl ProjectDb {
 
     pub async fn list_articles(&self) -> Result<Vec<ArticleRow>> {
         let rows = sqlx::query(
-            "SELECT id, title, authors, year, journal, abstract, doi, url, source_databases, status, dedup_group_id, exclusion_criterion, created_at, screened_at \
+            "SELECT id, title, authors, year, journal, abstract, doi, url, source_databases, \
+             status, dedup_group_id, exclusion_criterion, created_at, screened_at, \
+             ai_rationale, ai_confidence \
              FROM article ORDER BY created_at DESC",
         )
         .fetch_all(&self.pool)
@@ -494,6 +500,8 @@ impl ProjectDb {
                 exclusion_criterion: r.get("exclusion_criterion"),
                 created_at: r.get("created_at"),
                 screened_at: r.get("screened_at"),
+                ai_rationale: r.get("ai_rationale"),
+                ai_confidence: r.get("ai_confidence"),
             })
             .collect())
     }
@@ -724,7 +732,9 @@ impl ProjectDb {
         limit: i64,
     ) -> Result<Vec<ArticleRow>> {
         let rows = sqlx::query(
-            "SELECT id, title, authors, year, journal, abstract, doi, url, source_databases, status, dedup_group_id, exclusion_criterion, created_at, screened_at \
+            "SELECT id, title, authors, year, journal, abstract, doi, url, source_databases, \
+             status, dedup_group_id, exclusion_criterion, created_at, screened_at, \
+             ai_rationale, ai_confidence \
              FROM article WHERE status IN ('retrieved', 'included') ORDER BY id LIMIT ? OFFSET ?",
         )
         .bind(limit)
@@ -748,6 +758,8 @@ impl ProjectDb {
                 exclusion_criterion: r.get("exclusion_criterion"),
                 created_at: r.get("created_at"),
                 screened_at: r.get("screened_at"),
+                ai_rationale: r.get("ai_rationale"),
+                ai_confidence: r.get("ai_confidence"),
             })
             .collect())
     }
@@ -892,7 +904,9 @@ impl ProjectDb {
     ) -> Result<Vec<ArticleRow>> {
         // Surface unscreened first, then screened-and-included for review
         let rows = sqlx::query(
-            "SELECT id, title, authors, year, journal, abstract, doi, url, source_databases, status, dedup_group_id, exclusion_criterion, created_at, screened_at \
+            "SELECT id, title, authors, year, journal, abstract, doi, url, source_databases, \
+             status, dedup_group_id, exclusion_criterion, created_at, screened_at, \
+             ai_rationale, ai_confidence \
              FROM article \
              WHERE status IN ('retrieved', 'included') \
              ORDER BY (screened_at IS NOT NULL AND status = 'included'), id LIMIT ? OFFSET ?",
@@ -918,6 +932,8 @@ impl ProjectDb {
                 exclusion_criterion: r.get("exclusion_criterion"),
                 created_at: r.get("created_at"),
                 screened_at: r.get("screened_at"),
+                ai_rationale: r.get("ai_rationale"),
+                ai_confidence: r.get("ai_confidence"),
             })
             .collect())
     }
@@ -1375,7 +1391,9 @@ impl ProjectDb {
 
     pub async fn list_included_articles_full(&self) -> Result<Vec<ArticleRow>> {
         let rows = sqlx::query(
-            "SELECT id, title, authors, year, journal, abstract, doi, url, source_databases, status, dedup_group_id, exclusion_criterion, created_at, screened_at \
+            "SELECT id, title, authors, year, journal, abstract, doi, url, source_databases, \
+             status, dedup_group_id, exclusion_criterion, created_at, screened_at, \
+             ai_rationale, ai_confidence \
              FROM article WHERE status = 'included' ORDER BY id",
         )
         .fetch_all(&self.pool)
@@ -1397,13 +1415,17 @@ impl ProjectDb {
                 exclusion_criterion: r.get("exclusion_criterion"),
                 created_at: r.get("created_at"),
                 screened_at: r.get("screened_at"),
+                ai_rationale: r.get("ai_rationale"),
+                ai_confidence: r.get("ai_confidence"),
             })
             .collect())
     }
 
     pub async fn list_excluded_articles_full(&self) -> Result<Vec<ArticleRow>> {
         let rows = sqlx::query(
-            "SELECT id, title, authors, year, journal, abstract, doi, url, source_databases, status, dedup_group_id, exclusion_criterion, exclusion_rationale, created_at, screened_at \
+            "SELECT id, title, authors, year, journal, abstract, doi, url, source_databases, \
+             status, dedup_group_id, exclusion_criterion, exclusion_rationale, created_at, screened_at, \
+             ai_rationale, ai_confidence \
              FROM article WHERE status = 'excluded' ORDER BY id",
         )
         .fetch_all(&self.pool)
@@ -1425,6 +1447,8 @@ impl ProjectDb {
                 exclusion_criterion: r.get("exclusion_criterion"),
                 created_at: r.get("created_at"),
                 screened_at: r.get("screened_at"),
+                ai_rationale: r.get("ai_rationale"),
+                ai_confidence: r.get("ai_confidence"),
             })
             .collect())
     }
