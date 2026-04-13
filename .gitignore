@@ -25,3 +25,4 @@ companion/node_modules
 *.sln
 *.sw?
 /.playwright-cli
+.worktrees/
