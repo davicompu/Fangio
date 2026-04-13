@@ -34,6 +34,14 @@ pub struct SuggestQueryResult {
     pub latency_ms: u64,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ScreeningDecision {
+    pub decision: String,         // "include" | "exclude" | "uncertain"
+    pub criterion_number: Option<i64>,
+    pub rationale: String,
+    pub confidence: f64,
+}
+
 /// Generic step assistant for all 7 onboarding steps.
 /// Returns (suggestion, rationale). For text steps the suggestion is a refined
 /// replacement; for choice steps it is advisory/validation text.
@@ -444,4 +452,96 @@ fn parse_suggestions(s: &str) -> Option<Vec<Suggestion>> {
     let end = end?;
     let slice = &s[start..end];
     serde_json::from_str::<Vec<Suggestion>>(slice).ok()
+}
+
+/// Screen a single article against inclusion/exclusion criteria.
+/// Returns a ScreeningDecision with decision, optional criterion, rationale, and confidence.
+pub async fn screen_article(
+    base_url: &str,
+    model: &str,
+    title: &str,
+    abstract_text: Option<&str>,
+    inclusion_criteria: &[String],
+    exclusion_criteria_labeled: &[(i64, String)], // (criterion_number, label)
+    api_key: Option<&str>,
+) -> Result<ScreeningDecision> {
+    let inc_block = if inclusion_criteria.is_empty() {
+        "(none specified)".to_string()
+    } else {
+        inclusion_criteria
+            .iter()
+            .map(|c| format!("- {c}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    let exc_block = if exclusion_criteria_labeled.is_empty() {
+        "(none specified)".to_string()
+    } else {
+        exclusion_criteria_labeled
+            .iter()
+            .map(|(n, l)| format!("EC{n}: {l}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    let system = format!(
+        "You are a systematic literature review screener applying title and abstract screening.\n\
+         You decide whether each article should be included, excluded, or flagged as uncertain.\n\n\
+         Inclusion criteria (article must meet ALL to be included):\n{inc_block}\n\n\
+         Exclusion criteria (article is excluded if it meets ANY):\n{exc_block}\n\n\
+         Respond ONLY with a JSON object with exactly four keys:\n\
+         - \"decision\": \"include\", \"exclude\", or \"uncertain\"\n\
+         - \"criterion_number\": the integer EC number if decision is \"exclude\", otherwise null\n\
+         - \"rationale\": one sentence explaining the decision\n\
+         - \"confidence\": a number 0.0–1.0 (how confident you are)\n\
+         No prose outside the JSON."
+    );
+
+    let abstract_block = abstract_text.unwrap_or("(no abstract available)");
+    let user = format!(
+        "Title: {title}\nAbstract: {abstract_block}\n\nReturn the JSON decision."
+    );
+
+    let messages = vec![
+        ChatMessage { role: "system".into(), content: system },
+        ChatMessage { role: "user".into(), content: user },
+    ];
+
+    let result = lmstudio::chat(base_url, model, &messages, Some(0.1), api_key).await?;
+
+    parse_screening_decision(&result.content)
+        .ok_or_else(|| anyhow::anyhow!("could not parse screening decision from model output: {}", result.content))
+}
+
+fn parse_screening_decision(s: &str) -> Option<ScreeningDecision> {
+    let bytes = s.as_bytes();
+    let start = bytes.iter().position(|&b| b == b'{')?;
+    let mut depth = 0i32;
+    let mut in_str = false;
+    let mut esc = false;
+    let mut end = None;
+    for i in start..bytes.len() {
+        let c = bytes[i];
+        if esc { esc = false; continue; }
+        if c == b'\\' { esc = true; continue; }
+        if c == b'"' { in_str = !in_str; continue; }
+        if in_str { continue; }
+        if c == b'{' { depth += 1; }
+        else if c == b'}' { depth -= 1; if depth == 0 { end = Some(i + 1); break; } }
+    }
+    let end = end?;
+    let v: serde_json::Value = serde_json::from_str(&s[start..end]).ok()?;
+    let decision = v.get("decision")?.as_str()?.to_string();
+    if !["include", "exclude", "uncertain"].contains(&decision.as_str()) {
+        return None;
+    }
+    let criterion_number = if decision == "exclude" {
+        v.get("criterion_number").and_then(|x| x.as_i64())
+    } else {
+        None
+    };
+    let rationale = v.get("rationale")?.as_str()?.to_string();
+    let confidence = v.get("confidence")?.as_f64()?;
+    Some(ScreeningDecision { decision, criterion_number, rationale, confidence })
 }
