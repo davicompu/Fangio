@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Camera,
@@ -7,6 +7,7 @@ import {
   Copy,
   Cpu,
   Database,
+  Filter,
   GripVertical,
   HardDrive,
   KeyRound,
@@ -277,6 +278,27 @@ export function Settings({ open: openSetting, onClose, settings, onUpdate, lm, o
                           </option>
                         ))}
                       </Select>
+
+                      <SettingRow
+                        icon={<Filter size={14} strokeWidth={1.75} />}
+                        label="Screening confidence threshold"
+                        description="AI decisions with confidence below this value are flagged for manual review instead of auto-applied."
+                      >
+                        <input
+                          type="number"
+                          min={0.5}
+                          max={1}
+                          step={0.05}
+                          value={settings["screening.confidence_threshold"]}
+                          onChange={(e) => {
+                            const v = parseFloat(e.target.value);
+                            if (!isNaN(v) && v >= 0.5 && v <= 1) {
+                              onUpdate("screening.confidence_threshold", v);
+                            }
+                          }}
+                          className="w-20 px-2.5 py-1.5 text-[13px] font-mono rounded-[var(--radius-xs)] border border-[var(--color-paper-300)] bg-white focus:outline-none focus:ring-1 focus:ring-[var(--color-paper-400)]"
+                        />
+                      </SettingRow>
                     </motion.div>
                   )}
 
@@ -637,6 +659,33 @@ function Toggle({
         />
       </div>
     </button>
+  );
+}
+
+function SettingRow({
+  icon,
+  label,
+  description,
+  children,
+}: {
+  icon?: ReactNode;
+  label: string;
+  description?: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="flex items-start gap-3.5 p-3.5 rounded-[var(--radius-sm)] bg-[var(--color-paper-100)] border border-[var(--color-paper-200)]">
+      {icon && (
+        <div className="mt-0.5 shrink-0 text-[var(--color-paper-500)]">{icon}</div>
+      )}
+      <div className="flex-1 min-w-0">
+        <div className="text-[13px] font-medium text-[var(--color-ink-800)]">{label}</div>
+        {description && (
+          <div className="text-[12px] text-[var(--color-paper-600)] mt-0.5 leading-relaxed">{description}</div>
+        )}
+      </div>
+      <div className="shrink-0">{children}</div>
+    </div>
   );
 }
 

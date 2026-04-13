@@ -26,6 +26,8 @@ export interface AppSettings {
   "lmstudio.embed_model": string;
   "telemetry.enabled": boolean;
   "telemetry.log_reasoning": boolean;
+  /** AI screening confidence threshold 0–1; decisions below this are flagged for manual review */
+  "screening.confidence_threshold": number;
   /** Full database configuration — replaces the old per-database.*.url keys */
   "databases.config": DatabaseEntry[];
 }
@@ -37,6 +39,7 @@ const DEFAULTS: AppSettings = {
   "lmstudio.embed_model": "",
   "telemetry.enabled": true,
   "telemetry.log_reasoning": false,
+  "screening.confidence_threshold": 0.9,
   "databases.config": DEFAULT_DATABASES,
 };
 
