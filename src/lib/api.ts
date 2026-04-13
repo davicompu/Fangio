@@ -590,4 +590,15 @@ export const api = {
   closeBrowserPanel() {
     return invoke<void>("close_browser_panel");
   },
+  getCompanionStatus() {
+    return invoke<{ enabled: boolean; port: number; running: boolean; has_password: boolean }>(
+      "get_companion_status"
+    );
+  },
+  setCompanionPassword(password: string) {
+    return invoke<void>("set_companion_password", { password });
+  },
+  setCompanionEnabled(enabled: boolean, port?: number) {
+    return invoke<void>("set_companion_enabled", { enabled, port: port ?? null });
+  },
 };

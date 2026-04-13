@@ -9,12 +9,14 @@ import {
   Database,
   GripVertical,
   HardDrive,
+  KeyRound,
   Loader2,
   Lock,
   Pencil,
   Plus,
   Radio,
   ShieldCheck,
+  Smartphone,
   X,
 } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -45,6 +47,16 @@ export function Settings({ open: openSetting, onClose, settings, onUpdate, lm, o
   const [pendingEmbedModel, setPendingEmbedModel] = useState<string | null>(null);
   const [purging, setPurging] = useState(false);
 
+  // Companion state
+  const [companionEnabled, setCompanionEnabled] = useState(false);
+  const [companionPort, setCompanionPort] = useState(7370);
+  const [companionHasPassword, setCompanionHasPassword] = useState(false);
+  const [companionRunning, setCompanionRunning] = useState(false);
+  const [companionPasswordInput, setCompanionPasswordInput] = useState("");
+  const [companionPasswordSaving, setCompanionPasswordSaving] = useState(false);
+  const [companionPasswordMsg, setCompanionPasswordMsg] = useState<string | null>(null);
+  const [companionTogglingBusy, setCompanionTogglingBusy] = useState(false);
+
   useEffect(() => {
     setLocalUrl(settings["lmstudio.base_url"]);
     setLocalApiKey(settings["lmstudio.api_key"]);
@@ -53,8 +65,42 @@ export function Settings({ open: openSetting, onClose, settings, onUpdate, lm, o
   useEffect(() => {
     if (openSetting) {
       api.listBackups().then(setBackups).catch(() => {});
+      api.getCompanionStatus().then((s) => {
+        setCompanionEnabled(s.enabled);
+        setCompanionPort(s.port);
+        setCompanionHasPassword(s.has_password);
+        setCompanionRunning(s.running);
+      }).catch(() => {});
     }
   }, [openSetting]);
+
+  const handleCompanionToggle = async (enabled: boolean) => {
+    setCompanionTogglingBusy(true);
+    try {
+      await api.setCompanionEnabled(enabled, companionPort);
+      setCompanionEnabled(enabled);
+      setCompanionRunning(enabled && companionHasPassword);
+    } finally {
+      setCompanionTogglingBusy(false);
+    }
+  };
+
+  const handleSaveCompanionPassword = async () => {
+    if (!companionPasswordInput.trim()) return;
+    setCompanionPasswordSaving(true);
+    setCompanionPasswordMsg(null);
+    try {
+      await api.setCompanionPassword(companionPasswordInput);
+      setCompanionHasPassword(true);
+      setCompanionPasswordInput("");
+      setCompanionPasswordMsg("Password saved");
+      if (companionEnabled) setCompanionRunning(true);
+    } catch (e: any) {
+      setCompanionPasswordMsg(e?.toString() ?? "Failed to save");
+    } finally {
+      setCompanionPasswordSaving(false);
+    }
+  };
 
   const snapshotNow = async () => {
     setBackupBusy(true);
@@ -267,6 +313,99 @@ export function Settings({ open: openSetting, onClose, settings, onUpdate, lm, o
                 </div>
               </section>
 
+              {/* ── Companion Access ─────────────────────────────────────── */}
+              <div className="border-t-2 border-[var(--color-paper-300)] pt-8">
+                <section>
+                  <SectionHeader
+                    icon={<Smartphone size={14} strokeWidth={1.75} />}
+                    title="Companion access"
+                    description="Access Reeves from your phone or another device over Tailscale. Disabled by default — requires a password. Port changes take effect after restarting the app."
+                  />
+
+                  <div className="space-y-5 mt-5">
+                    {/* Enable toggle */}
+                    <Toggle
+                      label="Enable remote companion"
+                      description="Starts an HTTP server on the port below. Only expose this over Tailscale, not the public internet."
+                      checked={companionEnabled}
+                      onChange={handleCompanionToggle}
+                      disabled={companionTogglingBusy}
+                    />
+
+                    {/* Port */}
+                    <div className="space-y-1.5">
+                      <label className="eyebrow text-[var(--color-paper-500)]">Port</label>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="number"
+                          min={1024}
+                          max={65535}
+                          value={companionPort}
+                          onChange={(e) => setCompanionPort(Number(e.target.value))}
+                          onBlur={() => api.setCompanionEnabled(companionEnabled, companionPort).catch(() => {})}
+                          className="w-28 px-3 py-1.5 rounded-[var(--radius-xs)] border border-[var(--color-paper-300)] bg-white font-mono text-[13px] text-[var(--color-ink-800)] outline-none focus:border-[var(--color-ink-400)]"
+                        />
+                        {companionRunning ? (
+                          <span className="flex items-center gap-1.5 text-[12px] text-[var(--color-ok-500)] font-medium">
+                            <span className="w-1.5 h-1.5 rounded-full bg-[var(--color-ok-500)] inline-block" />
+                            Running
+                          </span>
+                        ) : (
+                          <span className="text-[12px] text-[var(--color-paper-400)]">
+                            {companionEnabled && !companionHasPassword ? "Set a password to start" : "Stopped"}
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-[11px] text-[var(--color-paper-400)]">
+                        Access at <span className="font-mono">http://&lt;tailscale-ip&gt;:{companionPort}</span>
+                      </p>
+                    </div>
+
+                    {/* Password */}
+                    <div className="space-y-2">
+                      <div className="flex items-center gap-1.5">
+                        <KeyRound size={12} strokeWidth={1.75} className="text-[var(--color-paper-500)]" />
+                        <label className="eyebrow text-[var(--color-paper-500)]">
+                          {companionHasPassword ? "Update password" : "Set password"}
+                        </label>
+                        {companionHasPassword && (
+                          <span className="ml-1 flex items-center gap-1 text-[11px] text-[var(--color-ok-500)]">
+                            <Lock size={10} strokeWidth={2} />
+                            Set
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="password"
+                          value={companionPasswordInput}
+                          onChange={(e) => {
+                            setCompanionPasswordInput(e.target.value);
+                            setCompanionPasswordMsg(null);
+                          }}
+                          placeholder={companionHasPassword ? "New password…" : "Choose a password…"}
+                          className="flex-1 px-3 py-1.5 rounded-[var(--radius-xs)] border border-[var(--color-paper-300)] bg-white text-[13px] outline-none focus:border-[var(--color-ink-400)]"
+                        />
+                        <button
+                          onClick={handleSaveCompanionPassword}
+                          disabled={companionPasswordSaving || !companionPasswordInput.trim()}
+                          className="px-3 py-1.5 rounded-[var(--radius-xs)] bg-[var(--color-ink-700)] text-[var(--color-paper-50)] text-[12px] font-medium disabled:opacity-40"
+                        >
+                          {companionPasswordSaving ? "Saving…" : "Save"}
+                        </button>
+                      </div>
+                      {companionPasswordMsg && (
+                        <p className={`text-[11px] ${companionPasswordMsg === "Password saved" ? "text-[var(--color-ok-500)]" : "text-[var(--color-error-500)]"}`}>
+                          {companionPasswordMsg}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                </section>
+              </div>
+
+              {/* ── Project & backups ────────────────────────────────────── */}
+              <div className="border-t-2 border-[var(--color-paper-300)] pt-8">
               {/* Project */}
               <section>
                 <SectionHeader
@@ -337,6 +476,7 @@ export function Settings({ open: openSetting, onClose, settings, onUpdate, lm, o
                   This is opt-in only and not part of the current release.
                 </p>
               </section>
+              </div>{/* end Project & backups wrapper */}
             </div>
           </motion.aside>
 
@@ -460,17 +600,20 @@ function Toggle({
   description,
   checked,
   onChange,
+  disabled,
 }: {
   label: string;
   description?: string;
   checked: boolean;
   onChange: (v: boolean) => void;
+  disabled?: boolean;
 }) {
   return (
     <button
       type="button"
-      onClick={() => onChange(!checked)}
-      className="w-full text-left flex items-start gap-4 p-3.5 rounded-[var(--radius-sm)] bg-[var(--color-paper-100)] border border-[var(--color-paper-200)] hover:border-[var(--color-paper-400)] transition-paper"
+      onClick={() => !disabled && onChange(!checked)}
+      disabled={disabled}
+      className="w-full text-left flex items-start gap-4 p-3.5 rounded-[var(--radius-sm)] bg-[var(--color-paper-100)] border border-[var(--color-paper-200)] hover:border-[var(--color-paper-400)] transition-paper disabled:opacity-50"
     >
       <div className="flex-1 min-w-0">
         <div className="text-[13px] font-medium text-[var(--color-ink-800)]">{label}</div>

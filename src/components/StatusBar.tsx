@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
-import { Database, Gauge, MessageSquare, Radio, Type, WifiOff } from "lucide-react";
+import { Database, Gauge, MessageSquare, Radio, Smartphone, Type, WifiOff } from "lucide-react";
 import { getVersion } from "@tauri-apps/api/app";
 import { cn } from "../lib/utils";
 
@@ -12,6 +12,7 @@ interface StatusBarProps {
   latencyMs: number | null;
   telemetryOn: boolean;
   projectName: string | null;
+  companionRunning: boolean;
   onOpenSettings: () => void;
 }
 
@@ -73,6 +74,7 @@ export function StatusBar({
   latencyMs,
   telemetryOn,
   projectName,
+  companionRunning,
   onOpenSettings,
 }: StatusBarProps) {
   const dotState =
@@ -153,6 +155,27 @@ export function StatusBar({
       )}
 
       <div className="flex-1" />
+
+      {companionRunning && (
+        <>
+          <div className="flex items-center gap-1.5" title="Remote companion active">
+            <span className="relative inline-flex items-center justify-center w-2 h-2">
+              <span className="absolute inset-0 rounded-full bg-[var(--color-ok-500)]" />
+              <motion.span
+                className="absolute inset-0 rounded-full bg-[var(--color-ok-500)]"
+                animate={{ scale: [1, 2.4], opacity: [0.4, 0] }}
+                transition={{ duration: 1.6, repeat: Infinity, ease: "easeOut" }}
+              />
+            </span>
+            <Smartphone
+              size={12}
+              strokeWidth={1.75}
+              className="text-[var(--color-ok-500)]"
+            />
+          </div>
+          <Separator />
+        </>
+      )}
 
       <div className="flex items-center gap-1.5">
         <Radio

@@ -13,6 +13,7 @@ mod lockfile;
 mod parsers;
 mod pdf;
 mod recent;
+pub(crate) mod server;
 mod suggest;
 mod svg;
 mod vector;
@@ -65,6 +66,7 @@ struct OpenProjectArgs {
 async fn create_project(
     args: OpenProjectArgs,
     state: State<'_, AppState>,
+    companion: State<'_, Arc<server::CompanionState>>,
 ) -> Result<ProjectRow, String> {
     let path = PathBuf::from(args.path);
     if let Some(prev) = state.current().await {
@@ -77,6 +79,7 @@ async fn create_project(
     let project = db.get_project().await.map_err(err)?;
     let article_count = db.article_count().await.unwrap_or(0);
     RecentStore::touch(&path, &project.name, RecentMeta::from_project(&project, article_count)).map_err(err)?;
+    companion.set_path(path).await;
     state.set(Arc::new(db)).await;
     Ok(project)
 }
@@ -85,6 +88,7 @@ async fn create_project(
 async fn open_project(
     args: OpenProjectArgs,
     state: State<'_, AppState>,
+    companion: State<'_, Arc<server::CompanionState>>,
 ) -> Result<ProjectRow, String> {
     let path = PathBuf::from(args.path);
     let sqlite = path.join(db::DB_FILENAME);
@@ -106,6 +110,7 @@ async fn open_project(
     let project = db.get_project().await.map_err(err)?;
     let article_count = db.article_count().await.unwrap_or(0);
     RecentStore::touch(&path, &project.name, RecentMeta::from_project(&project, article_count)).map_err(err)?;
+    companion.set_path(path).await;
     state.set(Arc::new(db)).await;
     Ok(project)
 }
@@ -119,6 +124,7 @@ fn check_project_lock(path: String) -> Option<lockfile::LockInfo> {
 async fn close_project(
     state: State<'_, AppState>,
     browser: State<'_, browser::BrowserState>,
+    companion: State<'_, Arc<server::CompanionState>>,
 ) -> Result<(), String> {
     // Close any open browser panel so it doesn't outlive the project
     {
@@ -131,6 +137,7 @@ async fn close_project(
     if let Some(db) = state.current().await {
         lockfile::release(&db.workspace);
     }
+    companion.clear_path().await;
     state.clear().await;
     Ok(())
 }
@@ -1366,14 +1373,15 @@ async fn ask_corpus(args: AskArgs, state: State<'_, AppState>) -> Result<AskResu
 
     // Build a citation block + ask the chat model
     let mut context = String::new();
+    let mut source_list = String::from("Sources used in this answer:\n");
     let mut citations = Vec::new();
     for (i, s) in scored.iter().enumerate() {
         let (id, art_id, title, ci, text) = &s.item;
         context.push_str(&format!(
-            "[{}] (article #{art_id}, chunk {ci}, score {:.2}) — {title}\n{text}\n\n",
+            "--- Source [{}]: {title} ---\n{text}\n\n",
             i + 1,
-            s.score,
         ));
+        source_list.push_str(&format!("  [{}] {title}\n", i + 1));
         citations.push(AskCitation {
             article_id: *art_id,
             article_title: title.clone(),
@@ -1381,7 +1389,7 @@ async fn ask_corpus(args: AskArgs, state: State<'_, AppState>) -> Result<AskResu
             text: text.clone(),
             score: s.score,
         });
-        let _ = id; // chunk id unused in citation payload but kept for future
+        let _ = (id, art_id, ci); // unused in citation payload but kept for future
     }
 
     let system = "You are a research assistant helping a scholar analyse their systematic literature review corpus. \
@@ -1390,12 +1398,13 @@ IMPORTANT RULES: \
 1. The researcher is asking because they know the content exists. Assume the answer is present in the excerpts and look for it carefully, even if phrasing differs from the question. \
 2. Academic papers use varied section labels — 'DISCUSSION', 'Findings', 'Results', 'Analysis', 'Implications', '5. Discussion' all mean the same thing. Do not claim a section is absent based on its label; look at the substance of the text. \
 3. PDF extraction can scramble layout: headers may appear mid-sentence, text may be out of order. Reason through the content, not the formatting. \
-4. Synthesise what the excerpts say. Cite inline with [1], [2], etc. whenever you draw on a specific excerpt. \
+4. Synthesise what the excerpts say. When citing a source always include both the number AND the article title, e.g. '[1] Smith et al.' or 'According to [2] Jones et al.' — never bare numbers alone. \
 5. Use markdown: headers for themes, bullets for lists, bold for key terms. \
-6. Only say content is absent if you have genuinely read all excerpts and found nothing relevant — never refuse to engage when substantive text is present.".to_string();
+6. Only say content is absent if you have genuinely read all excerpts and found nothing relevant — never refuse to engage when substantive text is present. \
+7. If not at least 90% confident a claim is grounded in the excerpts, say so rather than speculating.".to_string();
     let user = format!(
-        "Question: {}\n\nRelevant excerpts from the corpus:\n\n{}\n\nSynthesise an answer from the excerpts above. Use markdown. Cite as you go with [1], [2], etc.",
-        args.question, context
+        "Question: {}\n\nRelevant excerpts from the corpus:\n\n{}\n{}\nSynthesise an answer from the excerpts above. Use markdown. For every claim cite the source with its number AND title, e.g. '[1] Smith et al.'",
+        args.question, context, source_list
     );
     let chat = lmstudio::chat(
         &base_url,
@@ -1894,6 +1903,101 @@ fn close_browser_panel(
     Ok(())
 }
 
+// ── Companion commands ────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize)]
+struct CompanionStatus {
+    enabled: bool,
+    port: u16,
+    running: bool,
+    has_password: bool,
+}
+
+#[tauri::command]
+async fn get_companion_status(
+    companion: State<'_, Arc<server::CompanionState>>,
+) -> Result<CompanionStatus, String> {
+    let cfg = server::read_config();
+    let has_password = !companion.password_hash.read().await.is_empty();
+    Ok(CompanionStatus {
+        enabled: cfg.enabled,
+        port: cfg.port,
+        running: companion.is_running(),
+        has_password,
+    })
+}
+
+#[tauri::command]
+async fn set_companion_password(
+    password: String,
+    companion: State<'_, Arc<server::CompanionState>>,
+) -> Result<(), String> {
+    let hash = server::hash_password(&password);
+    companion.set_password_hash(hash.clone()).await;
+    let mut cfg = server::read_config();
+    cfg.password_hash = hash;
+    server::write_config(&cfg).map_err(err)
+}
+
+/// Walk up from the executable until we find a `companion-dist/` directory.
+/// Works in both dev (target/debug/Reeves → src-tauri/companion-dist) and
+/// production (app bundle → adjacent companion-dist).
+fn find_companion_dist() -> Option<std::path::PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let mut dir = exe.parent()?.to_path_buf();
+    loop {
+        let candidate = dir.join("companion-dist");
+        if candidate.exists() {
+            return Some(candidate);
+        }
+        match dir.parent() {
+            Some(parent) => dir = parent.to_path_buf(),
+            None => return None,
+        }
+    }
+}
+
+/// Spawn the companion Axum server on a dedicated OS thread with its own Tokio runtime.
+/// Safe to call from any context — does not require an existing Tokio runtime.
+fn spawn_companion_server(state: Arc<server::CompanionState>, port: u16) {
+    let static_dir = find_companion_dist();
+    std::thread::Builder::new()
+        .name("companion-server".into())
+        .spawn(move || {
+            let rt = tokio::runtime::Runtime::new()
+                .expect("failed to create companion tokio runtime");
+            rt.block_on(async move {
+                server::start(state, port, static_dir).await;
+            });
+        })
+        .expect("failed to spawn companion server thread");
+}
+
+#[tauri::command]
+fn set_companion_enabled(
+    enabled: bool,
+    port: Option<u16>,
+    companion: State<'_, Arc<server::CompanionState>>,
+) -> Result<(), String> {
+    let mut cfg = server::read_config();
+    cfg.enabled = enabled;
+    if let Some(p) = port {
+        cfg.port = p;
+    }
+    server::write_config(&cfg).map_err(err)?;
+    if enabled {
+        // Start the server immediately if it isn't already running
+        if !companion.is_running() {
+            companion.reset_shutdown();
+            spawn_companion_server(companion.inner().clone(), cfg.port);
+        }
+    } else {
+        // Signal the running server to shut down
+        companion.stop();
+    }
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tracing_subscriber::fmt()
@@ -1903,12 +2007,17 @@ pub fn run() {
         )
         .init();
 
+    let companion_cfg = server::read_config();
+    let companion_state = server::CompanionState::new(companion_cfg.password_hash.clone());
+    let companion_state_for_setup = companion_state.clone();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .manage(AppState::default())
         .manage(browser::BrowserState::default())
+        .manage(companion_state)
         .invoke_handler(tauri::generate_handler![
             create_project,
             open_project,
@@ -1982,8 +2091,18 @@ pub fn run() {
             save_journal,
             delete_journal,
             apply_quality_exclusions,
+            get_companion_status,
+            set_companion_password,
+            set_companion_enabled,
         ])
-        .setup(|_app| Ok(()))
+        .setup(move |_app| {
+            // Tokio runtime is available here — safe to spawn
+            let cfg = server::read_config();
+            if cfg.enabled {
+                spawn_companion_server(companion_state_for_setup.clone(), cfg.port);
+            }
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
