@@ -4,22 +4,27 @@ import {
   AlertTriangle,
   ArrowLeft,
   ArrowRight,
+  Bot,
   Check,
   ChevronDown,
   ChevronUp,
   Filter,
   Loader2,
   RotateCcw,
+  Sparkles,
 } from "lucide-react";
 import {
   api,
+  type AiScreeningResult,
   type ArticleRow,
   type ExclusionCriterionRow,
   type JournalRow,
   type ProjectRow,
+  type ScreeningTab,
 } from "../../lib/api";
 import { Card } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
+import { AiScreeningModal } from "../../components/AiScreeningModal";
 import { cn } from "../../lib/utils";
 
 interface Props {
@@ -29,6 +34,11 @@ interface Props {
 }
 
 const BATCH_SIZE = 20;
+const TABS: { id: ScreeningTab; label: string }[] = [
+  { id: "pending", label: "Pending Screening" },
+  { id: "included", label: "Included" },
+  { id: "excluded", label: "Excluded" },
+];
 
 // ABS: higher index = higher quality
 const ABS_ORDER = ["1", "2", "3", "4", "4*"];
@@ -70,38 +80,56 @@ function normalizeJournal(name: string) {
 }
 
 export function ScreeningPanel({ project, refreshKey, onChanged }: Props) {
+  const [activeTab, setActiveTab] = useState<ScreeningTab>("pending");
   const [articles, setArticles] = useState<ArticleRow[]>([]);
+  const [total, setTotal] = useState(0);
   const [criteria, setCriteria] = useState<ExclusionCriterionRow[]>([]);
   const [journals, setJournals] = useState<JournalRow[]>([]);
   const [offset, setOffset] = useState(0);
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const [loading, setLoading] = useState(true);
+  const [aiModalOpen, setAiModalOpen] = useState(false);
 
   const jq = parseJournalQuality(project.journal_quality);
 
-  const reload = async (off = offset) => {
+  const reload = async (tab = activeTab, off = offset) => {
     setLoading(true);
-    const [arts, crits, jList] = await Promise.all([
-      api.listScreeningBatch(off, BATCH_SIZE),
+    const [arts, cnt, crits, jList] = await Promise.all([
+      api.listScreeningTab(tab, off, BATCH_SIZE),
+      api.countScreeningTab(tab),
       api.listCriteria(),
       api.listJournals(),
     ]);
     setArticles(arts);
+    setTotal(cnt);
     setCriteria(crits.filter((c) => c.number > 1));
     setJournals(jList);
     setLoading(false);
   };
 
   useEffect(() => {
-    reload();
-  }, [refreshKey, offset]);
+    setOffset(0);
+    let cancelled = false;
+    setLoading(true);
+    Promise.all([
+      api.listScreeningTab(activeTab, 0, BATCH_SIZE),
+      api.countScreeningTab(activeTab),
+      api.listCriteria(),
+      api.listJournals(),
+    ]).then(([arts, cnt, crits, jList]) => {
+      if (cancelled) return;
+      setArticles(arts);
+      setTotal(cnt);
+      setCriteria(crits.filter((c) => c.number > 1));
+      setJournals(jList);
+      setLoading(false);
+    }).catch(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [refreshKey, activeTab]);
 
-  // Build a lookup map: normalised journal name → JournalRow
   const journalMap = useMemo(() => {
     const m = new Map<string, JournalRow>();
-    for (const j of journals) {
-      m.set(normalizeJournal(j.name), j);
-    }
+    for (const j of journals) m.set(normalizeJournal(j.name), j);
     return m;
   }, [journals]);
 
@@ -115,21 +143,71 @@ export function ScreeningPanel({ project, refreshKey, onChanged }: Props) {
     await reload();
   };
 
+  const handleAiComplete = (_result: AiScreeningResult) => {
+    setAiModalOpen(false);
+    onChanged();
+    reload("pending", 0);
+  };
+
+  const totalPages = Math.max(1, Math.ceil(total / BATCH_SIZE));
+  const currentPage = Math.floor(offset / BATCH_SIZE) + 1;
+
   return (
     <div className="pl-6 pr-4 xl:pl-12 xl:pr-8">
-      <div className="flex items-end justify-between mb-6">
+      {/* Header row */}
+      <div className="flex items-end justify-between mb-5">
         <div>
           <div className="eyebrow text-[var(--color-paper-500)]">Title & abstract screening</div>
           <h2 className="font-serif text-[26px] tracking-tight text-[var(--color-ink-900)] mt-1">
             Decide one at a time
           </h2>
-          <p className="text-[13px] text-[var(--color-paper-600)] mt-1.5 max-w-xl leading-relaxed">
-            For each article: keep it (and it joins the included pool), or apply an exclusion
-            criterion. Already-decided articles show their decision; click{" "}
-            <RotateCcw size={11} className="inline -mt-0.5" /> to revert.
-          </p>
         </div>
-        <div className="flex items-center gap-1">
+        {activeTab === "pending" && (
+          <button
+            type="button"
+            onClick={() => setAiModalOpen(true)}
+            className="no-drag inline-flex items-center gap-1.5 px-3 py-1.5 rounded-[var(--radius-sm)] text-[12px] font-medium text-[var(--color-accent-600)] border border-[var(--color-accent-300)] bg-[var(--color-accent-50)] hover:bg-[var(--color-accent-100)] transition-paper"
+          >
+            <Sparkles size={12} strokeWidth={2} />
+            Screen with AI
+          </button>
+        )}
+      </div>
+
+      {/* Tabs */}
+      <div className="flex items-center gap-1 mb-5 border-b border-[var(--color-paper-200)]">
+        {TABS.map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            onClick={() => { setActiveTab(t.id); setOffset(0); }}
+            className={cn(
+              "px-4 py-2 text-[13px] font-medium transition-paper -mb-px border-b-2",
+              activeTab === t.id
+                ? "border-[var(--color-ink-800)] text-[var(--color-ink-800)]"
+                : "border-transparent text-[var(--color-paper-500)] hover:text-[var(--color-ink-700)]",
+            )}
+          >
+            {t.label}
+            {!loading && t.id === activeTab && (
+              <span className="ml-1.5 text-[11px] tabular-nums text-[var(--color-paper-500)]">
+                {total}
+              </span>
+            )}
+          </button>
+        ))}
+      </div>
+
+      {/* Description + Pagination */}
+      <div className="flex items-center justify-between mb-4">
+        <p className="text-[13px] text-[var(--color-paper-600)] leading-relaxed max-w-xl">
+          {activeTab === "pending"
+            ? "Keep each article or apply an exclusion criterion. AI-flagged articles show the AI rationale."
+            : activeTab === "included"
+            ? "Articles kept after screening. Click Revert to return an article to Pending."
+            : "Articles excluded from the corpus. Click Revert to return an article to Pending."}
+        </p>
+        <div className="flex items-center gap-1 shrink-0">
           <Button
             variant="ghost"
             size="sm"
@@ -140,13 +218,13 @@ export function ScreeningPanel({ project, refreshKey, onChanged }: Props) {
             Prev
           </Button>
           <span className="px-3 text-[12px] font-semibold tabular-nums text-[var(--color-ink-700)]">
-            Batch {Math.floor(offset / BATCH_SIZE) + 1}
+            {currentPage} / {totalPages}
           </span>
           <Button
             variant="ghost"
             size="sm"
             onClick={() => setOffset(offset + BATCH_SIZE)}
-            disabled={articles.length < BATCH_SIZE}
+            disabled={offset + BATCH_SIZE >= total}
           >
             Next
             <ArrowRight size={13} strokeWidth={2} />
@@ -164,10 +242,14 @@ export function ScreeningPanel({ project, refreshKey, onChanged }: Props) {
         <div className="border border-dashed border-[var(--color-paper-300)] rounded-[var(--radius-md)] p-12 text-center">
           <Filter className="mx-auto mb-3 text-[var(--color-paper-400)]" size={24} strokeWidth={1.5} />
           <p className="text-[14px] text-[var(--color-paper-700)] font-medium mb-1">
-            No articles to screen
+            {activeTab === "pending" ? "Nothing to screen" : activeTab === "included" ? "No articles included yet" : "No articles excluded yet"}
           </p>
           <p className="text-[13px] text-[var(--color-paper-500)] max-w-md mx-auto leading-relaxed">
-            Either you haven't imported records yet, or you've screened the entire pool.
+            {activeTab === "pending"
+              ? "Import records in Stage 1 or all articles have already been screened."
+              : activeTab === "included"
+              ? "Include articles from the Pending tab to see them here."
+              : "Exclude articles from the Pending tab to see them here."}
           </p>
         </div>
       )}
@@ -194,15 +276,20 @@ export function ScreeningPanel({ project, refreshKey, onChanged }: Props) {
         ))}
       </div>
 
-      {/* Footnote — shown when at least one article in this batch has an IF badge */}
       {!loading && articles.some((a) => lookupJournal(a.journal)?.impact_factor != null) && (
         <p className="mt-6 text-[11px] text-[var(--color-paper-400)] leading-relaxed max-w-2xl">
           * <strong className="font-medium text-[var(--color-paper-500)]">IF</strong> — Impact
-          factor sourced from your journal scope list. Values reflect the data entered when the
-          journal list was imported and may not match the current year's official JCR release.
-          Use as a screening guide only.
+          factor sourced from your journal scope list. Use as a screening guide only.
         </p>
       )}
+
+      <AiScreeningModal
+        open={aiModalOpen}
+        project={project}
+        criteria={criteria}
+        onComplete={handleAiComplete}
+        onDismiss={() => setAiModalOpen(false)}
+      />
     </div>
   );
 }
@@ -336,6 +423,31 @@ function ScreeningCard({
             </div>
           )}
 
+          {/* AI rationale — shown for AI-screened and AI-uncertain articles */}
+          {article.ai_rationale && (
+            <div className="mt-2 flex items-start gap-1.5 text-[11px]">
+              <Bot size={11} strokeWidth={1.75} className="shrink-0 mt-0.5 text-[var(--color-accent-500)]" />
+              <span className={cn(
+                "leading-snug",
+                article.ai_confidence !== null && article.status === "retrieved"
+                  ? "text-[var(--color-paper-500)] italic"
+                  : "text-[var(--color-paper-500)]",
+              )}>
+                {article.ai_confidence !== null && article.status === "retrieved" && (
+                  <span className="font-medium text-[var(--color-warn-600)] not-italic mr-1">
+                    AI couldn't decide —
+                  </span>
+                )}
+                {article.ai_rationale}
+                {article.ai_confidence !== null && (
+                  <span className="ml-1 text-[var(--color-paper-400)]">
+                    ({Math.round(article.ai_confidence * 100)}% confidence)
+                  </span>
+                )}
+              </span>
+            </div>
+          )}
+
           <button
             onClick={onToggle}
             className="mt-2 text-[11px] text-[var(--color-ink-600)] hover:text-[var(--color-ink-900)] font-medium inline-flex items-center gap-1"
@@ -364,6 +476,16 @@ function ScreeningCard({
             <span className="inline-flex items-center gap-1.5 text-[12px] font-medium text-[var(--color-ok-500)]">
               <Check size={13} strokeWidth={2.25} />
               Included
+            </span>
+            <Button onClick={revert} variant="ghost" size="sm" disabled={busy}>
+              <RotateCcw size={12} strokeWidth={1.75} />
+              Revert
+            </Button>
+          </>
+        ) : article.status === "excluded" ? (
+          <>
+            <span className="inline-flex items-center gap-1.5 text-[12px] font-medium text-[var(--color-warn-600)]">
+              Excluded
             </span>
             <Button onClick={revert} variant="ghost" size="sm" disabled={busy}>
               <RotateCcw size={12} strokeWidth={1.75} />
