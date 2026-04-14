@@ -517,10 +517,49 @@ async fn delete_framework_code_def(id: i64, state: State<'_, AppState>) -> Resul
     db.delete_framework_code_def(id).await.map_err(err)
 }
 
+/// Deserializer that accepts either a JSON array of strings or null/missing → empty Vec.
+fn deserialize_string_vec<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let opt: Option<Vec<String>> = Option::deserialize(deserializer)?;
+    Ok(opt.unwrap_or_default())
+}
+
 #[derive(Debug, Deserialize)]
 struct CodingBatchArgs {
     offset: i64,
     limit: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct ScreeningTabArgs {
+    tab: String,
+    offset: i64,
+    limit: i64,
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct AiScreeningProgress {
+    done: usize,
+    total: usize,
+    article_title: String,
+    decision: String, // "include" | "exclude" | "uncertain" | "error"
+}
+
+#[derive(Debug, Serialize)]
+struct AiScreeningResult {
+    processed: usize,
+    included: usize,
+    excluded: usize,
+    uncertain: usize,
+}
+
+#[derive(Debug, Deserialize)]
+struct RunAiScreeningArgs {
+    inclusion_criteria: Vec<String>,
+    #[serde(default, deserialize_with = "deserialize_string_vec")]
+    exclusion_criteria: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -775,6 +814,18 @@ async fn delete_coding(id: i64, state: State<'_, AppState>) -> Result<(), String
     db.delete_coding(id).await.map_err(err)
 }
 
+fn parse_exclusion_criterion_str(s: &str) -> (i64, String) {
+    if let Some(rest) = s.strip_prefix("EC") {
+        if let Some(colon_pos) = rest.find(':') {
+            if let Ok(n) = rest[..colon_pos].trim().parse::<i64>() {
+                let label = rest[colon_pos + 1..].trim().to_string();
+                return (n, label);
+            }
+        }
+    }
+    (0, s.to_string())
+}
+
 #[tauri::command]
 async fn list_criteria(state: State<'_, AppState>) -> Result<Vec<ExclusionCriterionRow>, String> {
     let db = state.current().await.ok_or("no project open")?;
@@ -884,6 +935,175 @@ async fn list_screening_batch(
     db.list_articles_for_screening(args.offset, args.limit)
         .await
         .map_err(err)
+}
+
+#[tauri::command]
+async fn list_screening_tab(
+    args: ScreeningTabArgs,
+    state: State<'_, AppState>,
+) -> Result<Vec<ArticleRow>, String> {
+    let db = state.current().await.ok_or("no project open")?;
+    db.list_articles_for_tab(&args.tab, args.offset, args.limit)
+        .await
+        .map_err(err)
+}
+
+#[tauri::command]
+async fn count_screening_tab(
+    tab: String,
+    state: State<'_, AppState>,
+) -> Result<i64, String> {
+    let db = state.current().await.ok_or("no project open")?;
+    db.count_articles_for_tab(&tab).await.map_err(err)
+}
+
+#[tauri::command]
+async fn run_ai_screening(
+    args: RunAiScreeningArgs,
+    app: tauri::AppHandle<tauri::Wry>,
+    state: State<'_, AppState>,
+) -> Result<AiScreeningResult, String> {
+    let db = state.current().await.ok_or("no project open")?;
+    let settings = db.all_settings().await.map_err(err)?;
+
+    let base_url = settings
+        .get("lmstudio.base_url")
+        .and_then(|v| v.as_str())
+        .unwrap_or("http://127.0.0.1:1234/v1")
+        .to_string();
+    let api_key = settings
+        .get("lmstudio.api_key")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let model = settings
+        .get("lmstudio.chat_model")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    if model.is_empty() {
+        return Err("Pick a chat model in Settings first.".into());
+    }
+    let threshold: f64 = settings
+        .get("screening.confidence_threshold")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.90);
+
+    // Load all pending articles (status = 'retrieved')
+    let pending = db.list_articles_for_tab("pending", 0, i64::MAX).await.map_err(err)?;
+    let total = pending.len();
+    let mut included = 0usize;
+    let mut excluded = 0usize;
+    let mut uncertain = 0usize;
+
+    // Build labeled exclusion criteria list
+    let exc_labeled: Vec<(i64, String)> = if !args.exclusion_criteria.is_empty() {
+        args.exclusion_criteria
+            .iter()
+            .map(|s| parse_exclusion_criterion_str(s))
+            .collect()
+    } else {
+        // Fall back to all DB criteria when none passed
+        let criteria = db.list_criteria().await.map_err(err)?;
+        criteria
+            .iter()
+            .filter(|c| c.number > 1)
+            .map(|c| (c.number as i64, c.label.clone()))
+            .collect()
+    };
+
+    for (i, article) in pending.iter().enumerate() {
+        let _ = app.emit(
+            "screen:progress",
+            AiScreeningProgress {
+                done: i,
+                total,
+                article_title: article.title.clone(),
+                decision: "screening".into(),
+            },
+        );
+
+        let result = suggest::screen_article(
+            &base_url,
+            &model,
+            &article.title,
+            article.abstract_text.as_deref(),
+            &args.inclusion_criteria,
+            &exc_labeled,
+            api_key.as_deref(),
+        )
+        .await;
+
+        match result {
+            Ok(decision) => {
+                let applies = decision.confidence >= threshold && decision.decision != "uncertain";
+                let decision_str = decision.decision.clone();
+                if applies {
+                    db.apply_ai_outcome(
+                        article.id,
+                        &decision.decision,
+                        decision.criterion_number,
+                        &decision.rationale,
+                        decision.confidence,
+                    )
+                    .await
+                    .map_err(err)?;
+                    match decision.decision.as_str() {
+                        "include" => included += 1,
+                        "exclude" => excluded += 1,
+                        _ => uncertain += 1,
+                    }
+                } else {
+                    // Below threshold or explicit uncertain — store but don't apply
+                    db.apply_ai_outcome(
+                        article.id,
+                        "uncertain",
+                        None,
+                        &decision.rationale,
+                        decision.confidence,
+                    )
+                    .await
+                    .map_err(err)?;
+                    uncertain += 1;
+                }
+                let _ = app.emit(
+                    "screen:progress",
+                    AiScreeningProgress {
+                        done: i + 1,
+                        total,
+                        article_title: article.title.clone(),
+                        decision: if applies { decision_str } else { "uncertain".into() },
+                    },
+                );
+            }
+            Err(e) => {
+                eprintln!("AI screening error for article {}: {e}", article.id);
+                let _ = app.emit(
+                    "screen:progress",
+                    AiScreeningProgress {
+                        done: i + 1,
+                        total,
+                        article_title: article.title.clone(),
+                        decision: "error".into(),
+                    },
+                );
+            }
+        }
+    }
+
+    db.record_telemetry(
+        "screen.ai_run",
+        &serde_json::json!({
+            "total": total,
+            "included": included,
+            "excluded": excluded,
+            "uncertain": uncertain,
+            "model": model,
+        }),
+    )
+    .await
+    .ok();
+
+    Ok(AiScreeningResult { processed: total, included, excluded, uncertain })
 }
 
 #[tauri::command]
@@ -2061,6 +2281,9 @@ pub fn run() {
             update_article_journal,
             update_article_source,
             list_screening_batch,
+            list_screening_tab,
+            count_screening_tab,
+            run_ai_screening,
             get_prisma_state,
             suggest_codes,
             suggest_step,

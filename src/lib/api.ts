@@ -135,6 +135,10 @@ export interface ArticleRow {
   created_at: string;
   /** Set only when the user explicitly screened (included/excluded) this article. Null for PDF auto-inclusions. */
   screened_at: string | null;
+  /** Rationale recorded by the AI screener. Null if human-screened. */
+  ai_rationale: string | null;
+  /** Confidence score 0–1 from AI screener. Null if human-screened. */
+  ai_confidence: number | null;
 }
 
 export interface AssemblingState {
@@ -192,6 +196,22 @@ export interface ExclusionCriterionRow {
   label: string;
   rationale: string | null;
   is_deferred_quality_filter: boolean;
+}
+
+export type ScreeningTab = "pending" | "included" | "excluded";
+
+export interface AiScreeningProgress {
+  done: number;
+  total: number;
+  article_title: string;
+  decision: "include" | "exclude" | "uncertain" | "screening" | "error";
+}
+
+export interface AiScreeningResult {
+  processed: number;
+  included: number;
+  excluded: number;
+  uncertain: number;
 }
 
 export interface PrismaState {
@@ -465,6 +485,17 @@ export const api = {
   },
   listScreeningBatch(offset: number, limit: number) {
     return invoke<ArticleRow[]>("list_screening_batch", { args: { offset, limit } });
+  },
+  listScreeningTab(tab: ScreeningTab, offset: number, limit: number) {
+    return invoke<ArticleRow[]>("list_screening_tab", { args: { tab, offset, limit } });
+  },
+  countScreeningTab(tab: ScreeningTab) {
+    return invoke<number>("count_screening_tab", { tab });
+  },
+  runAiScreening(inclusionCriteria: string[], exclusionCriteria: string[]) {
+    return invoke<AiScreeningResult>("run_ai_screening", {
+      args: { inclusion_criteria: inclusionCriteria, exclusion_criteria: exclusionCriteria },
+    });
   },
   getPrismaState() {
     return invoke<PrismaState>("get_prisma_state");
