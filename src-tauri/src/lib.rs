@@ -1257,13 +1257,6 @@ struct SuggestQueryArgs {
     exclusion_criteria: Vec<String>,
 }
 
-/// Deserializes a `Vec<String>` that may arrive as `null` (treat as empty).
-fn deserialize_string_vec<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    Ok(Option::<Vec<String>>::deserialize(deserializer)?.unwrap_or_default())
-}
 
 #[tauri::command]
 async fn suggest_boolean_query(
