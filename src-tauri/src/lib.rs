@@ -1031,10 +1031,18 @@ async fn suggest_step(
 struct SuggestQueryArgs {
     databases: Vec<String>,
     existing_query: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_vec")]
     inclusion_criteria: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_vec")]
     exclusion_criteria: Vec<String>,
+}
+
+/// Deserializes a `Vec<String>` that may arrive as `null` (treat as empty).
+fn deserialize_string_vec<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<Vec<String>>::deserialize(deserializer)?.unwrap_or_default())
 }
 
 #[tauri::command]

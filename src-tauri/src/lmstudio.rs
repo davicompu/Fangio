@@ -143,19 +143,25 @@ pub async fn list_models(base_url: &str, api_key: Option<&str>) -> Result<Vec<Lm
     Ok(parsed.data)
 }
 
-/// Strip `<think>...</think>` blocks (and a few common variants) from a
-/// reasoning model's response so the displayed answer is just the conclusion.
+/// Strip reasoning traces from a model response so the displayed answer is
+/// just the conclusion. Handles `<think>`, `<thinking>`, and `<reasoning>`
+/// tag variants used by common local models (DeepSeek-R1, Qwen, etc.).
 /// Returns (cleaned, reasoning_trace).
 pub fn split_reasoning(raw: &str) -> (String, Option<String>) {
-    // Handle <think>...</think> first
-    if let Some(start) = raw.find("<think>") {
-        if let Some(end) = raw.find("</think>") {
-            if end > start {
-                let trace = raw[start + 7..end].to_string();
-                let mut cleaned = String::new();
-                cleaned.push_str(&raw[..start]);
-                cleaned.push_str(&raw[end + 8..]);
-                return (cleaned.trim().to_string(), Some(trace.trim().to_string()));
+    for (open, close) in &[
+        ("<think>", "</think>"),
+        ("<thinking>", "</thinking>"),
+        ("<reasoning>", "</reasoning>"),
+    ] {
+        if let Some(start) = raw.find(open) {
+            if let Some(end) = raw.find(close) {
+                if end > start {
+                    let trace = raw[start + open.len()..end].to_string();
+                    let mut cleaned = String::new();
+                    cleaned.push_str(&raw[..start]);
+                    cleaned.push_str(&raw[end + close.len()..]);
+                    return (cleaned.trim().to_string(), Some(trace.trim().to_string()));
+                }
             }
         }
     }

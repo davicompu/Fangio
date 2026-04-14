@@ -121,8 +121,8 @@ export function AcquisitionForm({ project, settings, onSaved, onOpenSettings }: 
       const result = await api.suggestBooleanQuery(
         Array.from(databases),
         query.trim() || null,
-        inclusions.length > 0 ? inclusions : null,
-        exclusions.length > 0 ? exclusions : null,
+        inclusions,
+        exclusions,
       );
       setSuggestResult(result);
     } catch (e: any) {
@@ -132,7 +132,7 @@ export function AcquisitionForm({ project, settings, onSaved, onOpenSettings }: 
           ? "Pick a chat model in Settings first."
           : msg.includes("Connection refused") || msg.includes("error sending request") || msg.includes("connect error")
           ? "Could not reach LM Studio — check Settings."
-          : "The model returned an unexpected response. Try again.",
+          : `Model error: ${msg}`,
       );
     }
   };

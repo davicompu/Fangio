@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { useAppState } from "./lib/useAppState";
+import cartaMark from "./assets/carta_mark.png";
 import { api } from "./lib/api";
 import { ProjectPicker } from "./views/ProjectPicker";
 import { OnboardingWizard } from "./views/onboarding/OnboardingWizard";
@@ -72,6 +73,21 @@ function App() {
 
   return (
     <div className="min-h-screen flex flex-col bg-[var(--color-paper-50)]">
+      {/* Global macOS title bar — only shown when a project is open */}
+      {project && project.onboarding_complete && (
+        <div className="drag-region fixed top-0 inset-x-0 h-10 flex items-center z-50 bg-[var(--color-paper-900)] border-b border-[var(--color-paper-800)]">
+          <div className="flex items-center gap-2 select-none pl-20">
+            <img
+              src={cartaMark}
+              alt=""
+              className="w-4 h-4 rounded-[var(--radius-xs)] opacity-90"
+            />
+            <span className="font-serif text-[13px] tracking-tight text-[var(--color-accent-400)]">Reeves</span>
+            <span className="text-[var(--color-paper-700)] text-[11px] font-light mx-0.5">/</span>
+            <span className="text-[12px] text-[var(--color-paper-500)] tracking-wide">{project.name}</span>
+          </div>
+        </div>
+      )}
       <AnimatePresence mode="wait">
         {!project && (
           <motion.div
