@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   ArrowLeft,
@@ -18,10 +18,13 @@ import {
   Tags,
   X,
 } from "lucide-react";
-import type { AiScreeningResult, ProjectRow } from "../../lib/api";
+import type { AiScreeningResult, DimensionInfo, LmModel, ProjectRow } from "../../lib/api";
+import { api } from "../../lib/api";
 import { cn } from "../../lib/utils";
 import { Button } from "../../components/ui/Button";
 import { AiScreeningModal } from "../../components/AiScreeningModal";
+import { AiCodingModal } from "../../components/AiCodingModal";
+import { useAiCoding } from "../../hooks/useAiCoding";
 import { OrganizationPanel } from "./OrganizationPanel";
 import { CodingPanel } from "./CodingPanel";
 import { CriteriaPanel } from "./CriteriaPanel";
@@ -32,6 +35,8 @@ interface Props {
   project: ProjectRow;
   onLeaveStage: () => void;
   onProjectChanged: () => Promise<void>;
+  lmModels: LmModel[];
+  defaultChatModel: string;
 }
 
 type Tab = "organization" | "coding" | "criteria" | "screening" | "prisma";
@@ -72,7 +77,7 @@ const tabInfo: Record<Tab, { headline: string; body: string; tip?: string }> = {
   },
 };
 
-export function ArrangingStage({ project, onLeaveStage, onProjectChanged }: Props) {
+export function ArrangingStage({ project, onLeaveStage, onProjectChanged, lmModels, defaultChatModel }: Props) {
   const [tab, setTab] = useState<Tab>("organization");
   const [refreshTick, setRefreshTick] = useState(0);
   const [jumpCodeFilter, setJumpCodeFilter] = useState<{ dimension: string; code: string } | null>(null);
@@ -80,6 +85,13 @@ export function ArrangingStage({ project, onLeaveStage, onProjectChanged }: Prop
   const [domainExpanded, setDomainExpanded] = useState(false);
   const [aiModalOpen, setAiModalOpen] = useState(false);
   const screening = useAiScreening();
+  const coding = useAiCoding();
+  const [aiCodingModalOpen, setAiCodingModalOpen] = useState(false);
+  const [dimensions, setDimensions] = useState<DimensionInfo[]>([]);
+
+  useEffect(() => {
+    api.listFrameworkDimensions().then(setDimensions).catch(() => {});
+  }, [project.id, refreshTick]);
 
   const onChanged = async () => {
     await onProjectChanged();
@@ -96,6 +108,18 @@ export function ArrangingStage({ project, onLeaveStage, onProjectChanged }: Prop
     await screening.cancel();
     onChanged();
     screening.reset();
+  };
+
+  const handleCodingComplete = () => {
+    setAiCodingModalOpen(false);
+    coding.reset();
+    onChanged();
+  };
+
+  const handleCancelCodingFromBanner = async () => {
+    await coding.cancel();
+    onChanged();
+    coding.reset();
   };
 
   const handleJumpToCode = (dimension: string, code: string) => {
@@ -169,7 +193,7 @@ export function ArrangingStage({ project, onLeaveStage, onProjectChanged }: Prop
               transition={{ duration: 0.25, ease: [0.2, 0.7, 0.2, 1] }}
             >
               {tab === "organization" && <OrganizationPanel project={project} refreshKey={refreshTick} onChanged={onChanged} onJumpToCode={handleJumpToCode} />}
-              {tab === "coding" && <CodingPanel project={project} refreshKey={refreshTick} onChanged={onChanged} initialCodeFilter={jumpCodeFilter} onCodeFilterConsumed={() => setJumpCodeFilter(null)} lastEditedArticleId={lastEditedArticleId} onArticleEdited={setLastEditedArticleId} />}
+              {tab === "coding" && <CodingPanel project={project} refreshKey={refreshTick} onChanged={onChanged} initialCodeFilter={jumpCodeFilter} onCodeFilterConsumed={() => setJumpCodeFilter(null)} lastEditedArticleId={lastEditedArticleId} onArticleEdited={setLastEditedArticleId} onOpenAiCodingModal={() => setAiCodingModalOpen(true)} />}
               {tab === "criteria" && <CriteriaPanel project={project} refreshKey={refreshTick} onChanged={onChanged} />}
               {tab === "screening" && <ScreeningPanel project={project} refreshKey={refreshTick} onChanged={onChanged} onOpenAiModal={() => setAiModalOpen(true)} />}
               {tab === "prisma" && <PrismaPanel refreshKey={refreshTick} />}
@@ -254,6 +278,27 @@ export function ArrangingStage({ project, onLeaveStage, onProjectChanged }: Prop
           </AnimatePresence>
         </div>
       </div>
+
+      {/* ── AI Coding Modal ── */}
+      <AnimatePresence>
+        {aiCodingModalOpen && (
+          <AiCodingModal
+            open={aiCodingModalOpen}
+            onClose={() => {
+              if (coding.step === "done" || coding.step === "error" || coding.step === "idle") {
+                handleCodingComplete();
+              } else {
+                setAiCodingModalOpen(false);
+              }
+            }}
+            coding={coding}
+            availableModels={lmModels}
+            availableDimensions={dimensions}
+            defaultChatModel={defaultChatModel}
+            onSendToBackground={() => setAiCodingModalOpen(false)}
+          />
+        )}
+      </AnimatePresence>
 
       {/* ── Persistent background screening banner ── */}
       <AnimatePresence>
@@ -351,6 +396,115 @@ export function ArrangingStage({ project, onLeaveStage, onProjectChanged }: Prop
                       <X size={13} strokeWidth={2} />
                     </button>
                   </div>
+                </div>
+              )}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* ── Persistent background coding banner ── */}
+      <AnimatePresence>
+        {(coding.step === "running" || coding.step === "done") && !aiCodingModalOpen && (
+          <motion.div
+            key="coding-banner"
+            initial={{ opacity: 0, y: 16 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 16 }}
+            transition={{ duration: 0.2 }}
+            className="fixed bottom-6 left-1/2 -translate-x-1/2 z-30 w-full max-w-lg px-4 pointer-events-none"
+            style={{ bottom: screening.step !== "idle" ? "80px" : "24px" }}
+          >
+            <div className="pointer-events-auto rounded-[var(--radius-md)] border border-[var(--color-paper-300)] bg-white shadow-[var(--shadow-paper-md)] px-4 py-3">
+              {coding.step === "running" && !coding.error && (
+                <>
+                  <div className="flex items-center gap-3 mb-2">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-1.5 mb-1">
+                        {coding.isPaused
+                          ? <Pause size={11} strokeWidth={2} className="shrink-0 text-[var(--color-warn-500)]" />
+                          : <Loader2 size={11} className="animate-spin shrink-0 text-[var(--color-accent-500)]" />
+                        }
+                        <span className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-paper-500)]">
+                          {coding.isPaused ? "Coding paused" : "Coding in background"}
+                        </span>
+                        {coding.progress && (
+                          <span className="text-[11px] text-[var(--color-paper-400)] ml-1 font-mono tabular-nums">
+                            {coding.progress.done}/{coding.progress.total}
+                          </span>
+                        )}
+                      </div>
+                      {coding.progress && (
+                        <p className="text-[12px] text-[var(--color-ink-700)] truncate font-medium leading-snug">
+                          {coding.progress.article_title}
+                        </p>
+                      )}
+                    </div>
+
+                    {/* Controls */}
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <button
+                        onClick={() => coding.isPaused ? coding.resume() : coding.pause()}
+                        className="p-1.5 rounded-[var(--radius-xs)] hover:bg-[var(--color-paper-100)] text-[var(--color-paper-600)] transition-paper"
+                        title={coding.isPaused ? "Resume" : "Pause"}
+                      >
+                        {coding.isPaused
+                          ? <Play size={12} strokeWidth={2} />
+                          : <Pause size={12} strokeWidth={2} />
+                        }
+                      </button>
+                      <button
+                        onClick={handleCancelCodingFromBanner}
+                        className="p-1.5 rounded-[var(--radius-xs)] hover:bg-[var(--color-paper-100)] text-[var(--color-paper-500)] transition-paper"
+                        title="Cancel"
+                      >
+                        <X size={12} strokeWidth={2} />
+                      </button>
+                      <button
+                        onClick={() => { setTab("coding"); setAiCodingModalOpen(true); }}
+                        className="px-2.5 py-1 rounded-[var(--radius-xs)] text-[11px] font-semibold bg-[var(--color-accent-50)] text-[var(--color-accent-700)] hover:bg-[var(--color-accent-100)] border border-[var(--color-accent-200)] transition-paper"
+                      >
+                        View
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Progress bar */}
+                  {coding.progress && coding.progress.total > 0 && (
+                    <div className="h-1 rounded-full bg-[var(--color-paper-200)] overflow-hidden">
+                      <motion.div
+                        animate={{ width: `${Math.round((coding.progress.done / coding.progress.total) * 100)}%` }}
+                        transition={{ duration: 0.3 }}
+                        className="h-full rounded-full bg-[var(--color-accent-500)]"
+                      />
+                    </div>
+                  )}
+                </>
+              )}
+
+              {coding.step === "done" && coding.result && (
+                <div className="flex items-center gap-3">
+                  <div className="flex-1">
+                    <p className="text-[12px] font-semibold text-[var(--color-ink-800)]">AI coding complete</p>
+                    <p className="text-[11px] text-[var(--color-paper-500)] mt-0.5">
+                      {coding.result.consensus} consensus applied
+                      {coding.result.disagreements > 0 && ` · ${coding.result.disagreements} need review`}
+                    </p>
+                  </div>
+                  {coding.result.disagreements > 0 && (
+                    <button
+                      onClick={() => { setTab("coding"); onChanged(); coding.reset(); }}
+                      className="px-2.5 py-1 rounded-[var(--radius-xs)] text-[11px] font-semibold bg-amber-50 text-amber-700 hover:bg-amber-100 border border-amber-200 transition-paper shrink-0"
+                    >
+                      Review
+                    </button>
+                  )}
+                  <button
+                    onClick={() => { onChanged(); coding.reset(); }}
+                    className="p-1 rounded-[var(--radius-xs)] hover:bg-[var(--color-paper-100)] text-[var(--color-paper-400)] transition-paper"
+                  >
+                    <X size={12} strokeWidth={2} />
+                  </button>
                 </div>
               )}
             </div>

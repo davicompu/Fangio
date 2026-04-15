@@ -172,7 +172,7 @@ function App() {
             exit={{ opacity: 0 }}
             transition={{ duration: 0.35 }}
           >
-            <ArrangingStage project={project} onLeaveStage={() => setRoute("hub")} onProjectChanged={refreshProject} />
+            <ArrangingStage project={project} onLeaveStage={() => setRoute("hub")} onProjectChanged={refreshProject} lmModels={lm.models} defaultChatModel={settings["lmstudio.chat_model"]} />
           </motion.div>
         )}
         {project && project.onboarding_complete && route === "assessing" && (
