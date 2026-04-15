@@ -4,100 +4,132 @@ import {
   ReactFlow,
   Background,
   Controls,
+  Handle,
+  Position,
   type Node,
   type Edge,
+  type NodeProps,
   useNodesState,
   useEdgesState,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { Loader2, Network, RefreshCw } from "lucide-react";
-import { api, type ClusterNode, type ClusterProgress } from "../../lib/api";
+import { api, type ClusterArticle, type ClusterNode, type ClusterProgress } from "../../lib/api";
 
-// Build react-flow nodes and edges from cluster data
+// ── Custom node types ─────────────────────────────────────────────────────────
+
+function RootNode({ data }: NodeProps) {
+  return (
+    <>
+      <div
+        style={{
+          background: "var(--color-ink-800)",
+          color: "white",
+          borderRadius: "var(--radius-sm)",
+          fontSize: "13px",
+          fontWeight: 700,
+          padding: "8px 20px",
+          whiteSpace: "nowrap",
+        }}
+      >
+        {data.label as string}
+      </div>
+      <Handle type="source" position={Position.Bottom} style={{ visibility: "hidden" }} />
+    </>
+  );
+}
+
+function ClusterCard({ data }: NodeProps) {
+  const articles = data.articles as ClusterArticle[];
+  return (
+    <>
+      <Handle type="target" position={Position.Top} style={{ visibility: "hidden" }} />
+      <div
+        style={{
+          background: "white",
+          border: "1.5px solid var(--color-accent-300)",
+          borderRadius: "var(--radius-sm)",
+          width: 200,
+          overflow: "hidden",
+        }}
+      >
+        {/* Cluster label */}
+        <div
+          style={{
+            background: "var(--color-accent-50)",
+            padding: "6px 10px",
+            fontSize: "11px",
+            fontWeight: 700,
+            color: "var(--color-accent-800)",
+            borderBottom: "1px solid var(--color-accent-200)",
+          }}
+        >
+          {data.label as string}
+        </div>
+        {/* Article list */}
+        <div style={{ padding: "4px 0" }}>
+          {articles.map((a) => (
+            <div
+              key={a.id}
+              style={{
+                fontSize: "10px",
+                color: "var(--color-ink-600)",
+                padding: "2px 10px",
+                whiteSpace: "nowrap",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+              }}
+              title={a.title}
+            >
+              {a.title}
+            </div>
+          ))}
+        </div>
+      </div>
+    </>
+  );
+}
+
+const NODE_TYPES = { root: RootNode, cluster: ClusterCard };
+
+// ── Layout ────────────────────────────────────────────────────────────────────
+
 function buildGraph(clusters: ClusterNode[]): { nodes: Node[]; edges: Edge[] } {
   const nodes: Node[] = [];
   const edges: Edge[] = [];
 
-  // Root node
+  const CARD_WIDTH = 200;
+  const GAP = 24;
+  const STEP = CARD_WIDTH + GAP;
+  const totalWidth = clusters.length * STEP - GAP;
+
   nodes.push({
     id: "root",
-    type: "default",
-    position: { x: 0, y: 0 },
+    type: "root",
+    position: { x: totalWidth / 2 - 60, y: 0 },
     data: { label: "Your Literature" },
-    style: {
-      background: "var(--color-ink-800)",
-      color: "white",
-      border: "none",
-      borderRadius: "var(--radius-sm)",
-      fontSize: "13px",
-      fontWeight: 600,
-      padding: "8px 16px",
-    },
   });
 
-  const clusterSpacing = Math.max(220, (clusters.reduce((m, c) => Math.max(m, c.articles.length), 0)) * 160);
-
   clusters.forEach((cluster, ci) => {
-    const clusterX = (ci - (clusters.length - 1) / 2) * clusterSpacing;
     const clusterId = `cluster-${cluster.id}`;
-
     nodes.push({
       id: clusterId,
-      type: "default",
-      position: { x: clusterX, y: 140 },
-      data: { label: cluster.label },
-      style: {
-        background: "var(--color-accent-50)",
-        border: "1px solid var(--color-accent-300)",
-        borderRadius: "var(--radius-sm)",
-        fontSize: "12px",
-        fontWeight: 600,
-        color: "var(--color-accent-800)",
-        padding: "6px 12px",
-        maxWidth: 180,
-        textAlign: "center",
-      },
+      type: "cluster",
+      position: { x: ci * STEP, y: 90 },
+      data: { label: cluster.label, articles: cluster.articles },
     });
-
     edges.push({
       id: `root-${clusterId}`,
       source: "root",
       target: clusterId,
-      style: { stroke: "var(--color-paper-300)", strokeWidth: 1.5 },
-    });
-
-    cluster.articles.forEach((article, ai) => {
-      const articleId = `article-${article.id}`;
-      const articleX = clusterX + (ai - (cluster.articles.length - 1) / 2) * 160;
-
-      nodes.push({
-        id: articleId,
-        type: "default",
-        position: { x: articleX, y: 300 },
-        data: { label: article.title.length > 50 ? article.title.slice(0, 50) + "…" : article.title },
-        style: {
-          background: "white",
-          border: "1px solid var(--color-paper-200)",
-          borderRadius: "var(--radius-xs)",
-          fontSize: "10px",
-          color: "var(--color-ink-700)",
-          padding: "4px 8px",
-          maxWidth: 150,
-          textAlign: "center",
-        },
-      });
-
-      edges.push({
-        id: `${clusterId}-${articleId}`,
-        source: clusterId,
-        target: articleId,
-        style: { stroke: "var(--color-paper-200)", strokeWidth: 1 },
-      });
+      style: { stroke: "var(--color-paper-400)", strokeWidth: 1.5 },
     });
   });
 
   return { nodes, edges };
 }
+
+// ── Component ─────────────────────────────────────────────────────────────────
 
 export function ClustersTab() {
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
@@ -176,10 +208,12 @@ export function ClustersTab() {
         edges={edges}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
+        nodeTypes={NODE_TYPES}
         fitView
-        fitViewOptions={{ padding: 0.15 }}
+        fitViewOptions={{ padding: 0.2 }}
         minZoom={0.2}
         maxZoom={2}
+        nodesDraggable
       >
         <Background color="var(--color-paper-200)" gap={20} />
         <Controls />
