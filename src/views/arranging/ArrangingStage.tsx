@@ -413,7 +413,7 @@ export function ArrangingStage({ project, onLeaveStage, onProjectChanged, lmMode
             exit={{ opacity: 0, y: 16 }}
             transition={{ duration: 0.2 }}
             className="fixed bottom-6 left-1/2 -translate-x-1/2 z-30 w-full max-w-lg px-4 pointer-events-none"
-            style={{ bottom: screening.step !== "idle" ? "80px" : "24px" }}
+            style={{ bottom: (screening.step === "running" || screening.step === "done") && !aiModalOpen ? "80px" : "24px" }}
           >
             <div className="pointer-events-auto rounded-[var(--radius-md)] border border-[var(--color-paper-300)] bg-white shadow-[var(--shadow-paper-md)] px-4 py-3">
               {coding.step === "running" && !coding.error && (
