@@ -353,7 +353,7 @@ export function AiCodingModal({
                 variant="primary"
                 size="sm"
                 onClick={handleStart}
-                disabled={selectedDims.size === 0 || (coverage !== null && coverage.ready === 0 && coverage.needs_indexing === 0)}
+                disabled={selectedDims.size === 0 || loadingCoverage || (coverage !== null && coverage.ready === 0 && coverage.needs_indexing === 0)}
               >
                 <Sparkles size={13} strokeWidth={1.75} />
                 Run in background
