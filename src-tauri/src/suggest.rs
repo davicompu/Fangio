@@ -35,6 +35,12 @@ pub struct SuggestQueryResult {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DimensionCoding {
+    pub dimension: String,
+    pub suggestions: Vec<Suggestion>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ScreeningDecision {
     pub decision: String,         // "include" | "exclude" | "uncertain"
     pub criterion_number: Option<i64>,
@@ -541,4 +547,127 @@ fn parse_screening_decision(s: &str) -> Option<ScreeningDecision> {
     let rationale = v.get("rationale")?.as_str()?.to_string();
     let confidence = v.get("confidence")?.as_f64()?;
     Some(ScreeningDecision { decision, criterion_number, rationale, confidence })
+}
+
+/// Code a single article across multiple dimensions in one LLM call.
+/// `context_text` is the concatenated first N chunks of the article's PDF.
+/// Returns one `DimensionCoding` per requested dimension (may have empty suggestions
+/// if the model skipped it).
+#[allow(clippy::too_many_arguments)]
+pub async fn code_article_for_dimensions(
+    base_url: &str,
+    model: &str,
+    framework: &str,
+    domain: &str,
+    research_questions: &[&str],
+    dimensions: &[(String, String)], // (name, description)
+    existing_codes_by_dim: &std::collections::HashMap<String, Vec<String>>,
+    title: &str,
+    authors: Option<&str>,
+    context_text: &str,
+    api_key: Option<&str>,
+) -> Result<Vec<DimensionCoding>> {
+    let rqs_block = if research_questions.is_empty() {
+        "(not specified)".to_string()
+    } else {
+        research_questions
+            .iter()
+            .enumerate()
+            .map(|(i, q)| format!("{}. {q}", i + 1))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    let dims_block = dimensions
+        .iter()
+        .map(|(name, desc)| {
+            let existing = existing_codes_by_dim.get(name.as_str())
+                .filter(|v| !v.is_empty())
+                .map(|v| v.iter().map(|c| format!("  - {c}")).collect::<Vec<_>>().join("\n"))
+                .unwrap_or_else(|| "  (none yet — propose new ones)".to_string());
+            format!("Dimension \"{name}\": {desc}\n  Existing codes:\n{existing}")
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+
+    let dim_names: Vec<&str> = dimensions.iter().map(|(n, _)| n.as_str()).collect();
+    let dim_list = dim_names.join(", ");
+
+    let context_block = if context_text.trim().is_empty() {
+        "(no PDF text available)".to_string()
+    } else {
+        // Truncate to keep the prompt manageable (~8 000 chars)
+        let truncated = if context_text.len() > 8_000 {
+            &context_text[..8_000]
+        } else {
+            context_text
+        };
+        truncated.to_string()
+    };
+
+    let system = format!(
+        "You are a meticulous research assistant helping a scholar code articles for a systematic \
+literature review. You suggest codes — you do not make decisions. The researcher always has final say.\n\n\
+Review domain: {domain}\nOrganising framework: {framework}\nResearch questions:\n{rqs_block}\n\n\
+For each dimension you will suggest 1–3 short noun-phrase codes (2–5 words each). \
+Reuse an existing code when it fits; only mark is_new=true when no existing code is appropriate.\n\n\
+Respond ONLY with a JSON object. The keys are the exact dimension names provided. \
+Each value is a JSON array of objects with keys: code (string), rationale (string, one sentence), is_new (boolean).\n\
+No prose before or after the JSON."
+    );
+
+    let user = format!(
+        "Dimensions to code: {dim_list}\n\n{dims_block}\n\n\
+Article to code:\nTitle: {title}\nAuthors: {}\n\nFull text excerpt:\n{context_block}\n\n\
+Return the JSON object now.",
+        authors.unwrap_or("(not recorded)")
+    );
+
+    let messages = vec![
+        ChatMessage { role: "system".into(), content: system },
+        ChatMessage { role: "user".into(), content: user },
+    ];
+
+    let result = lmstudio::chat(base_url, model, &messages, Some(0.2), api_key).await?;
+
+    let codings = parse_dimension_codings(&result.content, &dim_names)
+        .ok_or_else(|| anyhow::anyhow!("could not parse dimension codings from: {}", &result.content))?;
+
+    Ok(codings)
+}
+
+fn parse_dimension_codings(s: &str, dimensions: &[&str]) -> Option<Vec<DimensionCoding>> {
+    let bytes = s.as_bytes();
+    let start = bytes.iter().position(|&b| b == b'{')?;
+    let mut depth = 0i32;
+    let mut in_str = false;
+    let mut esc = false;
+    let mut end = None;
+    for i in start..bytes.len() {
+        let c = bytes[i];
+        if esc { esc = false; continue; }
+        if c == b'\\' { esc = true; continue; }
+        if c == b'"' { in_str = !in_str; continue; }
+        if in_str { continue; }
+        if c == b'{' { depth += 1; }
+        else if c == b'}' {
+            depth -= 1;
+            if depth == 0 { end = Some(i + 1); break; }
+        }
+    }
+    let end = end?;
+    let v: serde_json::Value = serde_json::from_str(&s[start..end]).ok()?;
+    let obj = v.as_object()?;
+    let mut result = Vec::new();
+    for dim in dimensions {
+        let suggestions = obj
+            .get(*dim)
+            .and_then(|arr| serde_json::from_value::<Vec<Suggestion>>(arr.clone()).ok())
+            .unwrap_or_default();
+        result.push(DimensionCoding {
+            dimension: dim.to_string(),
+            suggestions,
+        });
+    }
+    Some(result)
 }
