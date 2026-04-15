@@ -29,6 +29,7 @@ use parsers::{FormatKind, ParseResult, ParsedRecord};
 use recent::{RecentMeta, RecentProject, RecentStore};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tauri::{Emitter, Manager, State};
 use tokio::sync::RwLock;
@@ -38,6 +39,10 @@ use tokio::sync::RwLock;
 #[derive(Default)]
 struct AppState {
     current: RwLock<Option<Arc<ProjectDb>>>,
+    /// Set to true by pause_ai_screening; cleared at start of each run.
+    screening_paused: Arc<AtomicBool>,
+    /// Set to true by cancel_ai_screening; cleared at start of each run.
+    screening_cancelled: Arc<AtomicBool>,
 }
 
 impl AppState {
@@ -957,6 +962,24 @@ async fn count_screening_tab(
 }
 
 #[tauri::command]
+async fn pause_ai_screening(state: State<'_, AppState>) -> Result<(), String> {
+    state.screening_paused.store(true, Ordering::SeqCst);
+    Ok(())
+}
+
+#[tauri::command]
+async fn resume_ai_screening(state: State<'_, AppState>) -> Result<(), String> {
+    state.screening_paused.store(false, Ordering::SeqCst);
+    Ok(())
+}
+
+#[tauri::command]
+async fn cancel_ai_screening(state: State<'_, AppState>) -> Result<(), String> {
+    state.screening_cancelled.store(true, Ordering::SeqCst);
+    Ok(())
+}
+
+#[tauri::command]
 async fn run_ai_screening(
     args: RunAiScreeningArgs,
     app: tauri::AppHandle<tauri::Wry>,
@@ -987,6 +1010,12 @@ async fn run_ai_screening(
         .and_then(|v| v.as_f64())
         .unwrap_or(0.90);
 
+    // Reset pause/cancel flags from any previous run
+    state.screening_paused.store(false, Ordering::SeqCst);
+    state.screening_cancelled.store(false, Ordering::SeqCst);
+    let paused = Arc::clone(&state.screening_paused);
+    let cancelled = Arc::clone(&state.screening_cancelled);
+
     // Load project domain for relevance context
     let project = db.get_project().await.map_err(err)?;
     let domain = project.domain.unwrap_or_default();
@@ -1015,6 +1044,21 @@ async fn run_ai_screening(
     };
 
     for (i, article) in pending.iter().enumerate() {
+        // Cancel: exit loop early, return partial result
+        if cancelled.load(Ordering::SeqCst) {
+            break;
+        }
+        // Pause: spin-wait in 200 ms steps until resumed or cancelled
+        while paused.load(Ordering::SeqCst) {
+            if cancelled.load(Ordering::SeqCst) {
+                break;
+            }
+            tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+        }
+        if cancelled.load(Ordering::SeqCst) {
+            break;
+        }
+
         let _ = app.emit(
             "screen:progress",
             AiScreeningProgress {
@@ -2280,6 +2324,9 @@ pub fn run() {
             list_screening_tab,
             count_screening_tab,
             run_ai_screening,
+            pause_ai_screening,
+            resume_ai_screening,
+            cancel_ai_screening,
             get_prisma_state,
             suggest_codes,
             suggest_step,

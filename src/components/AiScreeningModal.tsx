@@ -1,24 +1,37 @@
 import { useEffect, useState } from "react";
-import { listen } from "@tauri-apps/api/event";
 import { motion, AnimatePresence } from "framer-motion";
-import { Bot, ChevronRight, Loader2, Plus, Sparkles, X } from "lucide-react";
-import { api, type AiScreeningProgress, type AiScreeningResult, type ExclusionCriterionRow, type ProjectRow } from "../lib/api";
+import { Bot, ChevronRight, Loader2, Pause, Play, Plus, Sparkles, X } from "lucide-react";
+import { type AiScreeningProgress, type AiScreeningResult, type ExclusionCriterionRow, type ProjectRow } from "../lib/api";
 import { Button } from "./ui/Button";
 import { Card } from "./ui/Card";
 import { cn } from "../lib/utils";
 
+export interface AiScreeningHook {
+  step: "idle" | "running" | "done" | "error";
+  progress: AiScreeningProgress | null;
+  result: AiScreeningResult | null;
+  error: string | null;
+  isPaused: boolean;
+  start: (exclusionCriteria: string[]) => Promise<void>;
+  pause: () => Promise<void>;
+  resume: () => Promise<void>;
+  cancel: () => Promise<void>;
+  reset: () => void;
+}
+
 interface Props {
   open: boolean;
   project: ProjectRow;
-  criteria: ExclusionCriterionRow[]; // EC list from DB (number > 1)
+  criteria: ExclusionCriterionRow[];
+  screening: AiScreeningHook;
   onComplete: (result: AiScreeningResult) => void;
   onDismiss: () => void;
+  onSendToBackground: () => void;
 }
 
-type Step = "checklist" | "extra" | "running" | "done";
+type LocalStep = "checklist" | "extra";
 
 // Standard PRISMA criteria always shown in the checklist.
-// These mirror the seeded exclusion criteria in 0002_arranging.sql (EC2–EC9).
 const STANDARD_CRITERIA = [
   { number: 2, label: "Outside search period" },
   { number: 3, label: "Below source quality threshold" },
@@ -30,47 +43,38 @@ const STANDARD_CRITERIA = [
   { number: 9, label: "Retracted article" },
 ];
 
-export function AiScreeningModal({ open, project, criteria: _criteria, onComplete, onDismiss }: Props) {
-  const [step, setStep] = useState<Step>("checklist");
-
-  // Step 1 — checklist
+export function AiScreeningModal({ open, project, criteria: _criteria, screening, onComplete, onDismiss, onSendToBackground }: Props) {
+  // Local steps only used while screening.step === "idle"
+  const [localStep, setLocalStep] = useState<LocalStep>("checklist");
   const [selectedEc, setSelectedEc] = useState<Set<number>>(new Set());
-
-  // Step 2 — extra criteria
   const [wantsExtra, setWantsExtra] = useState<boolean | null>(null);
   const [extraInput, setExtraInput] = useState("");
 
-  // Step 3 — progress
-  const [progress, setProgress] = useState<AiScreeningProgress | null>(null);
-  const [result, setResult] = useState<AiScreeningResult | null>(null);
-  const [runError, setRunError] = useState<string | null>(null);
-
   const domain = project.domain ?? null;
 
+  // Reset local state whenever modal opens and screening is idle
   useEffect(() => {
     if (!open) return;
-    setStep("checklist");
-    setSelectedEc(new Set(STANDARD_CRITERIA.map((c) => c.number)));
-    setWantsExtra(null);
-    setExtraInput("");
-    setProgress(null);
-    setResult(null);
-    setRunError(null);
-  }, [open]);
+    if (screening.step === "idle") {
+      setLocalStep("checklist");
+      setSelectedEc(new Set(STANDARD_CRITERIA.map((c) => c.number)));
+      setWantsExtra(null);
+      setExtraInput("");
+    }
+  }, [open, screening.step]);
 
-  // Escape key
+  // Escape key — only when not actively running
   useEffect(() => {
-    if (!open || step === "running") return;
+    if (!open || screening.step === "running") return;
     const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onDismiss(); };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [open, step, onDismiss]);
+  }, [open, screening.step, onDismiss]);
 
   const toggleEc = (n: number) => {
     setSelectedEc((prev) => {
       const next = new Set(prev);
-      if (next.has(n)) next.delete(n);
-      else next.add(n);
+      if (next.has(n)) next.delete(n); else next.add(n);
       return next;
     });
   };
@@ -78,43 +82,28 @@ export function AiScreeningModal({ open, project, criteria: _criteria, onComplet
   const handleExtraDecision = (yes: boolean) => {
     setWantsExtra(yes);
     if (!yes) startRun();
-    else setStep("extra");
+    else setLocalStep("extra");
   };
 
   const handleExtraSubmit = () => {
     startRun(extraInput.trim() || undefined);
   };
 
-  const startRun = async (extraCriterion?: string) => {
-    setStep("running");
-    setRunError(null);
-
+  const startRun = (extraCriterion?: string) => {
     const exclusionCriteria = STANDARD_CRITERIA
       .filter((c) => selectedEc.has(c.number))
       .map((c) => `EC${c.number}: ${c.label}`);
     if (extraCriterion) exclusionCriteria.push(extraCriterion);
-
-    let unlisten: (() => void) | null = null;
-    try {
-      unlisten = await listen<AiScreeningProgress>("screen:progress", (e) => {
-        setProgress(e.payload);
-      });
-      const res = await api.runAiScreening(exclusionCriteria);
-      setResult(res);
-      setStep("done");
-    } catch (e: any) {
-      const msg: string = e?.message ?? String(e);
-      setRunError(
-        msg.includes("chat model")
-          ? "Pick a chat model in Settings first."
-          : msg.includes("Connection refused") || msg.includes("error sending request")
-          ? "Could not reach LM Studio — check Settings."
-          : msg,
-      );
-    } finally {
-      unlisten?.();
-    }
+    screening.start(exclusionCriteria);
   };
+
+  const handlePauseResume = () => {
+    if (screening.isPaused) screening.resume();
+    else screening.pause();
+  };
+
+  // Derive which view to show
+  const showScreeningView = screening.step !== "idle";
 
   return (
     <AnimatePresence>
@@ -127,7 +116,7 @@ export function AiScreeningModal({ open, project, criteria: _criteria, onComplet
             exit={{ opacity: 0 }}
             transition={{ duration: 0.15 }}
             className="fixed inset-0 bg-[var(--color-ink-900)]/30 backdrop-blur-sm z-40"
-            onClick={step !== "running" ? onDismiss : undefined}
+            onClick={screening.step !== "running" ? onDismiss : undefined}
           />
           <motion.div
             key="modal"
@@ -148,7 +137,7 @@ export function AiScreeningModal({ open, project, criteria: _criteria, onComplet
                   <Sparkles size={15} strokeWidth={1.75} className="text-[var(--color-accent-500)]" />
                   <span className="eyebrow">Screen with AI</span>
                 </div>
-                {step !== "running" && (
+                {screening.step !== "running" && (
                   <button
                     onClick={onDismiss}
                     className="p-1.5 rounded-[var(--radius-xs)] hover:bg-[var(--color-paper-200)] transition-paper"
@@ -158,8 +147,8 @@ export function AiScreeningModal({ open, project, criteria: _criteria, onComplet
                 )}
               </div>
 
-              {/* Step: checklist */}
-              {step === "checklist" && (
+              {/* ── Idle: checklist ── */}
+              {!showScreeningView && localStep === "checklist" && (
                 <div>
                   <p className="text-[13px] text-[var(--color-paper-600)] leading-relaxed mb-4">
                     The AI will judge relevance against your domain scope, then apply the
@@ -225,7 +214,7 @@ export function AiScreeningModal({ open, project, criteria: _criteria, onComplet
                     <Button
                       variant="primary"
                       size="sm"
-                      onClick={() => setStep("extra")}
+                      onClick={() => setLocalStep("extra")}
                     >
                       Continue
                       <ChevronRight size={13} strokeWidth={2} />
@@ -234,8 +223,8 @@ export function AiScreeningModal({ open, project, criteria: _criteria, onComplet
                 </div>
               )}
 
-              {/* Step: extra criteria */}
-              {step === "extra" && wantsExtra === null && (
+              {/* ── Idle: extra criteria — ask ── */}
+              {!showScreeningView && localStep === "extra" && wantsExtra === null && (
                 <div>
                   <p className="text-[14px] text-[var(--color-ink-800)] font-medium mb-2">
                     Any additional criteria?
@@ -256,7 +245,8 @@ export function AiScreeningModal({ open, project, criteria: _criteria, onComplet
                 </div>
               )}
 
-              {step === "extra" && wantsExtra === true && (
+              {/* ── Idle: extra criteria — input ── */}
+              {!showScreeningView && localStep === "extra" && wantsExtra === true && (
                 <div>
                   <p className="text-[13px] text-[var(--color-paper-600)] leading-relaxed mb-3">
                     Describe the additional criterion in plain language.
@@ -286,21 +276,27 @@ export function AiScreeningModal({ open, project, criteria: _criteria, onComplet
                 </div>
               )}
 
-              {/* Step: running */}
-              {step === "running" && (
+              {/* ── Running ── */}
+              {screening.step === "running" && (
                 <div>
-                  {runError ? (
+                  {screening.error ? (
                     <div>
-                      <p className="text-[13px] text-[var(--color-warn-700)] mb-4">{runError}</p>
+                      <p className="text-[13px] text-[var(--color-warn-700)] mb-4">{screening.error}</p>
                       <Button variant="ghost" size="sm" onClick={onDismiss}>Dismiss</Button>
                     </div>
                   ) : (
                     <div>
                       <div className="flex items-center gap-2 mb-4 text-[13px] text-[var(--color-paper-600)]">
-                        <Loader2 size={14} className="animate-spin shrink-0" />
+                        {screening.isPaused ? (
+                          <Pause size={14} className="shrink-0 text-[var(--color-warn-500)]" />
+                        ) : (
+                          <Loader2 size={14} className="animate-spin shrink-0" />
+                        )}
                         <span className="truncate">
-                          {progress
-                            ? `Screening: ${progress.article_title}`
+                          {screening.isPaused
+                            ? "Paused"
+                            : screening.progress
+                            ? `Screening: ${screening.progress.article_title}`
                             : "Starting…"}
                         </span>
                       </div>
@@ -311,55 +307,70 @@ export function AiScreeningModal({ open, project, criteria: _criteria, onComplet
                           className="h-full rounded-full bg-[var(--color-accent-500)]"
                           initial={{ width: 0 }}
                           animate={{
-                            width: progress && progress.total > 0
-                              ? `${(progress.done / progress.total) * 100}%`
+                            width: screening.progress && screening.progress.total > 0
+                              ? `${(screening.progress.done / screening.progress.total) * 100}%`
                               : "0%",
                           }}
                           transition={{ ease: "easeOut", duration: 0.3 }}
                         />
                       </div>
 
-                      <div className="flex items-center justify-between text-[11px] text-[var(--color-paper-500)] tabular-nums">
+                      <div className="flex items-center justify-between text-[11px] text-[var(--color-paper-500)] tabular-nums mb-5">
                         <span>
-                          {progress ? `${progress.done} / ${progress.total}` : "—"}
+                          {screening.progress ? `${screening.progress.done} / ${screening.progress.total}` : "—"}
                         </span>
-                        {progress && (
+                        {screening.progress && (
                           <span className={cn(
                             "font-medium",
-                            progress.decision === "include" && "text-[var(--color-ok-600)]",
-                            progress.decision === "exclude" && "text-[var(--color-warn-600)]",
-                            progress.decision === "uncertain" && "text-[var(--color-paper-500)]",
-                            progress.decision === "error" && "text-[var(--color-error-500)]",
+                            screening.progress.decision === "include" && "text-[var(--color-ok-600)]",
+                            screening.progress.decision === "exclude" && "text-[var(--color-warn-600)]",
+                            screening.progress.decision === "uncertain" && "text-[var(--color-paper-500)]",
+                            screening.progress.decision === "error" && "text-[var(--color-error-500)]",
                           )}>
-                            {progress.decision === "include" && "Included"}
-                            {progress.decision === "exclude" && "Excluded"}
-                            {progress.decision === "uncertain" && "Flagged for review"}
-                            {progress.decision === "screening" && "Screening…"}
-                            {progress.decision === "error" && "Error — skipped"}
+                            {screening.progress.decision === "include" && "Included"}
+                            {screening.progress.decision === "exclude" && "Excluded"}
+                            {screening.progress.decision === "uncertain" && "Flagged for review"}
+                            {screening.progress.decision === "screening" && "Screening…"}
+                            {screening.progress.decision === "error" && "Error — skipped"}
                           </span>
                         )}
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        <Button
+                          variant={screening.isPaused ? "primary" : "ghost"}
+                          size="sm"
+                          onClick={handlePauseResume}
+                        >
+                          {screening.isPaused
+                            ? <><Play size={12} strokeWidth={2} /> Resume</>
+                            : <><Pause size={12} strokeWidth={2} /> Pause</>}
+                        </Button>
+                        <Button variant="ghost" size="sm" onClick={onSendToBackground}>
+                          Send to background
+                        </Button>
                       </div>
                     </div>
                   )}
                 </div>
               )}
 
-              {/* Step: done */}
-              {step === "done" && result && (
+              {/* ── Done ── */}
+              {screening.step === "done" && screening.result && (
                 <div>
                   <p className="text-[14px] font-medium text-[var(--color-ink-800)] mb-4">
                     Screening complete
                   </p>
                   <div className="grid grid-cols-3 gap-3 mb-5">
-                    <StatPill label="Included" value={result.included} color="ok" />
-                    <StatPill label="Excluded" value={result.excluded} color="warn" />
-                    <StatPill label="Needs review" value={result.uncertain} color="neutral" />
+                    <StatPill label="Included" value={screening.result.included} color="ok" />
+                    <StatPill label="Excluded" value={screening.result.excluded} color="warn" />
+                    <StatPill label="Needs review" value={screening.result.uncertain} color="neutral" />
                   </div>
                   <p className="text-[12px] text-[var(--color-paper-500)] leading-relaxed mb-4">
                     Articles flagged for review remain in Pending Screening with an AI rationale.
                     All decisions can be reverted from the article card.
                   </p>
-                  <Button variant="primary" size="sm" onClick={() => onComplete(result)}>
+                  <Button variant="primary" size="sm" onClick={() => onComplete(screening.result!)}>
                     View results
                   </Button>
                 </div>

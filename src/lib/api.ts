@@ -497,6 +497,9 @@ export const api = {
       args: { exclusion_criteria: exclusionCriteria },
     });
   },
+  pauseAiScreening() { return invoke<void>("pause_ai_screening"); },
+  resumeAiScreening() { return invoke<void>("resume_ai_screening"); },
+  cancelAiScreening() { return invoke<void>("cancel_ai_screening"); },
   getPrismaState() {
     return invoke<PrismaState>("get_prisma_state");
   },
