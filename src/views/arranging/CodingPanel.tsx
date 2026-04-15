@@ -766,7 +766,7 @@ function ArticleCodingCard({
   hasProposals: boolean;
 }) {
   const [excludeOpen, setExcludeOpen] = useState(false);
-  const [inclusionNoteExpanded, setInclusionNoteExpanded] = useState(false);
+  const [inclusionNoteOpen, setInclusionNoteOpen] = useState(false);
   const [excluding, setExcluding] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
   const [chatInput, setChatInput] = useState("");
@@ -953,48 +953,71 @@ function ArticleCodingCard({
                 </button>
               )}
             </div>
-              {/* Inclusion note — shows AI rationale or human-screen note */}
+              {/* Inclusion note — opens modal with full AI rationale or human-screen date */}
               {(article.ai_rationale || article.screened_at) && (
                 <button
-                  onClick={() => setInclusionNoteExpanded((v) => !v)}
+                  onClick={() => setInclusionNoteOpen(true)}
                   className="mt-2 text-[11px] text-[var(--color-paper-400)] hover:text-[var(--color-ink-700)] font-medium inline-flex items-center gap-1 transition-paper"
                 >
-                  {inclusionNoteExpanded ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
-                  {inclusionNoteExpanded ? "Hide inclusion note" : "Inclusion note"}
+                  <ChevronDown size={11} />
+                  Inclusion note
                 </button>
               )}
               <AnimatePresence>
-                {inclusionNoteExpanded && (article.ai_rationale || article.screened_at) && (
+                {inclusionNoteOpen && (
                   <motion.div
-                    initial={{ opacity: 0, height: 0 }}
-                    animate={{ opacity: 1, height: "auto" }}
-                    exit={{ opacity: 0, height: 0 }}
-                    className="overflow-hidden"
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    transition={{ duration: 0.12 }}
+                    className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-black/30 backdrop-blur-sm"
+                    onClick={() => setInclusionNoteOpen(false)}
                   >
-                    <div className="mt-1.5 px-2.5 py-2 rounded-[var(--radius-xs)] bg-[var(--color-paper-100)] border border-[var(--color-paper-200)]">
-                      {article.ai_rationale ? (
-                        <>
-                          <div className="flex items-center gap-1.5 mb-1">
-                            <Sparkles size={10} strokeWidth={1.75} className="text-[var(--color-accent-500)]" />
-                            <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--color-accent-600)]">
-                              AI screener
-                            </span>
-                          </div>
-                          <p className="text-[11px] text-[var(--color-paper-700)] leading-relaxed italic">
+                    <motion.div
+                      initial={{ opacity: 0, scale: 0.97, y: 6 }}
+                      animate={{ opacity: 1, scale: 1, y: 0 }}
+                      exit={{ opacity: 0, scale: 0.97, y: 6 }}
+                      transition={{ duration: 0.15 }}
+                      className="w-full max-w-md bg-white rounded-[var(--radius-lg)] border border-[var(--color-paper-300)] shadow-[var(--shadow-paper-lg)] overflow-hidden"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <div className="flex items-center gap-2 px-5 py-3.5 border-b border-[var(--color-paper-200)]">
+                        {article.ai_rationale
+                          ? <Sparkles size={14} strokeWidth={1.75} className="text-[var(--color-accent-500)]" />
+                          : <Check size={14} strokeWidth={2} className="text-[var(--color-ok-600)]" />
+                        }
+                        <span className="text-[13px] font-semibold text-[var(--color-ink-900)] flex-1">
+                          {article.ai_rationale ? "AI screener — inclusion note" : "Inclusion note"}
+                        </span>
+                        <button
+                          onClick={() => setInclusionNoteOpen(false)}
+                          className="p-1 rounded-[var(--radius-xs)] hover:bg-[var(--color-paper-200)] text-[var(--color-paper-500)] transition-paper"
+                        >
+                          <X size={13} strokeWidth={2} />
+                        </button>
+                      </div>
+                      <div className="px-5 py-4">
+                        {article.ai_rationale ? (
+                          <p className="text-[13px] text-[var(--color-ink-800)] leading-relaxed">
                             {article.ai_rationale}
+                            {article.ai_confidence !== null && (
+                              <span className="ml-2 text-[11px] text-[var(--color-paper-400)] not-italic font-mono">
+                                ({Math.round(article.ai_confidence * 100)}% confidence)
+                              </span>
+                            )}
                           </p>
-                        </>
-                      ) : (
-                        <p className="text-[11px] text-[var(--color-paper-500)] italic">
-                          Included manually
-                          {article.screened_at && (
-                            <span className="ml-1 not-italic font-mono text-[10px]">
-                              · {new Date(article.screened_at).toLocaleDateString()}
-                            </span>
-                          )}
-                        </p>
-                      )}
-                    </div>
+                        ) : (
+                          <p className="text-[13px] text-[var(--color-paper-600)]">
+                            Included manually
+                            {article.screened_at && (
+                              <span className="ml-1.5 font-mono text-[12px] text-[var(--color-paper-400)]">
+                                · {new Date(article.screened_at).toLocaleDateString()}
+                              </span>
+                            )}
+                          </p>
+                        )}
+                      </div>
+                    </motion.div>
                   </motion.div>
                 )}
               </AnimatePresence>
