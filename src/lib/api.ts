@@ -280,6 +280,39 @@ export interface AiCodingResult {
   indexed: number;
 }
 
+export interface ClusterArticle {
+  id: number;
+  title: string;
+}
+
+export interface ClusterNode {
+  id: number;
+  label: string;
+  articles: ClusterArticle[];
+}
+
+export interface ClusterProgress {
+  phase: "embedding" | "clustering" | "labelling" | "done";
+  done: number;
+  total: number;
+}
+
+export interface GlossaryTerm {
+  id: number;
+  term: string;
+  definition: string;
+  /** JSON string like "[1,3,7]" */
+  article_ids: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface GlossaryProgress {
+  done: number;
+  total: number;
+  article_title: string;
+}
+
 export interface PdfRow {
   id: number;
   filename: string;
@@ -543,6 +576,10 @@ export const api = {
   pauseAiCoding() { return invoke<void>("pause_ai_coding"); },
   resumeAiCoding() { return invoke<void>("resume_ai_coding"); },
   cancelAiCoding() { return invoke<void>("cancel_ai_coding"); },
+  clusterCorpus() { return invoke<ClusterNode[]>("cluster_corpus"); },
+  extractGlossary() { return invoke<number>("extract_glossary"); },
+  listGlossaryTerms() { return invoke<GlossaryTerm[]>("list_glossary_terms"); },
+  deleteGlossaryTerm(id: number) { return invoke<void>("delete_glossary_term", { id }); },
   getAiCodingCoverage() {
     return invoke<AiCodingCoverage>("get_ai_coding_coverage");
   },
