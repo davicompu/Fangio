@@ -957,9 +957,8 @@ function ArticleCodingCard({
               {(article.ai_rationale || article.screened_at) && (
                 <button
                   onClick={() => setInclusionNoteOpen(true)}
-                  className="mt-2 text-[11px] text-[var(--color-paper-400)] hover:text-[var(--color-ink-700)] font-medium inline-flex items-center gap-1 transition-paper"
+                  className="mt-2 text-[11px] text-[var(--color-paper-400)] hover:text-[var(--color-ink-700)] font-medium transition-paper"
                 >
-                  <ChevronDown size={11} />
                   Inclusion note
                 </button>
               )}
