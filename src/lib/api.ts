@@ -243,6 +243,43 @@ export interface SuggestQueryResult {
   latency_ms: number;
 }
 
+export interface AiCodingProposal {
+  id: number;
+  article_id: number;
+  dimension: string;
+  code: string;
+  rationale: string | null;
+  /** 1 or 2 */
+  rater: number;
+  model_name: string | null;
+  run_id: string;
+  created_at: string;
+}
+
+export interface AiCodingCoverage {
+  ready: number;
+  needs_indexing: number;
+  no_pdf: number;
+}
+
+export interface AiCodingProgress {
+  done: number;
+  total: number;
+  article_title: string;
+  phase: "indexing" | "coding-rater1" | "coding-rater2" | "resolving";
+  skipped_no_pdf: number;
+  consensus: number;
+  disagreements: number;
+}
+
+export interface AiCodingResult {
+  processed: number;
+  consensus: number;
+  disagreements: number;
+  skipped_no_pdf: number;
+  indexed: number;
+}
+
 export interface PdfRow {
   id: number;
   filename: string;
@@ -500,6 +537,30 @@ export const api = {
   pauseAiScreening() { return invoke<void>("pause_ai_screening"); },
   resumeAiScreening() { return invoke<void>("resume_ai_screening"); },
   cancelAiScreening() { return invoke<void>("cancel_ai_screening"); },
+  runAiCoding(args: { rater1_model: string; rater2_model: string | null; dimensions: string[]; run_id: string }) {
+    return invoke<AiCodingResult>("run_ai_coding", { args });
+  },
+  pauseAiCoding() { return invoke<void>("pause_ai_coding"); },
+  resumeAiCoding() { return invoke<void>("resume_ai_coding"); },
+  cancelAiCoding() { return invoke<void>("cancel_ai_coding"); },
+  getAiCodingCoverage() {
+    return invoke<AiCodingCoverage>("get_ai_coding_coverage");
+  },
+  listAiCodingProposals(articleId: number) {
+    return invoke<AiCodingProposal[]>("list_ai_coding_proposals", { articleId });
+  },
+  listAiCodingProposalsForArticles(articleIds: number[]) {
+    return invoke<AiCodingProposal[]>("list_ai_coding_proposals_for_articles", { articleIds });
+  },
+  acceptAiCodingProposal(proposalId: number) {
+    return invoke<void>("accept_ai_coding_proposal", { proposalId });
+  },
+  rejectAiCodingProposal(proposalId: number) {
+    return invoke<void>("reject_ai_coding_proposal", { proposalId });
+  },
+  rejectAllAiCodingProposalsForArticle(articleId: number) {
+    return invoke<void>("reject_all_ai_coding_proposals_for_article", { articleId });
+  },
   getPrismaState() {
     return invoke<PrismaState>("get_prisma_state");
   },
