@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { motion, AnimatePresence } from "framer-motion";
-import { Bot, Check, ChevronRight, Loader2, Plus, Sparkles, X } from "lucide-react";
+import { Bot, ChevronRight, Loader2, Plus, Sparkles, X } from "lucide-react";
 import { api, type AiScreeningProgress, type AiScreeningResult, type ExclusionCriterionRow, type ProjectRow } from "../lib/api";
 import { Button } from "./ui/Button";
 import { Card } from "./ui/Card";

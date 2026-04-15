@@ -66,7 +66,6 @@ export function CodingPanel({ project, refreshKey, onChanged, initialCodeFilter,
   const [dimensions, setDimensions] = useState<DimensionInfo[]>([]);
   const [codeDefs, setCodeDefs] = useState<FrameworkCodeDefinition[]>([]);
   const [articles, setArticles] = useState<ArticleRow[]>([]);
-  const [excludedArticles, setExcludedArticles] = useState<ArticleRow[]>([]);
   const [criteria, setCriteria] = useState<import("../../lib/api").ExclusionCriterionRow[]>([]);
   const [unreviewedCount, setUnreviewedCount] = useState(0);
   const [codings, setCodings] = useState<CodingRow[]>([]);
@@ -79,7 +78,6 @@ export function CodingPanel({ project, refreshKey, onChanged, initialCodeFilter,
 
   // Multi-select filters
   const [activeFilters, setActiveFilters] = useState<Set<ToggleFilter>>(new Set());
-  const [showExcluded, setShowExcluded] = useState(false);
   // Code filter: Set of "dimension::code" strings, OR logic across selected codes
   const [codeFilters, setCodeFilters] = useState<Set<string>>(new Set());
 
@@ -107,7 +105,6 @@ export function CodingPanel({ project, refreshKey, onChanged, initialCodeFilter,
     setCodings(batch.codings);
     setPdfMap(batch.pdf_map);
     setIndexedIds(new Set(idxIds));
-    setExcludedArticles(allArticles.filter((a) => a.status === "excluded"));
     setUnreviewedCount(allArticles.filter((a) => a.status === "retrieved").length);
     setCriteria(crits);
     setLoading(false);
@@ -138,7 +135,6 @@ export function CodingPanel({ project, refreshKey, onChanged, initialCodeFilter,
     const key = `${initialCodeFilter.dimension}::${initialCodeFilter.code}`;
     setCodeFilters(new Set([key]));
     setActiveFilters(new Set());
-    setShowExcluded(false);
     setCardIndex(0);
     onCodeFilterConsumed?.();
   }, [initialCodeFilter]);
@@ -154,7 +150,6 @@ export function CodingPanel({ project, refreshKey, onChanged, initialCodeFilter,
   }, [codings]);
 
   const filtered = useMemo(() => {
-    if (showExcluded) return [];
     let result = articles;
     if (activeFilters.has("coded"))    result = result.filter((a) => codedIds.has(a.id));
     if (activeFilters.has("uncoded"))  result = result.filter((a) => !codedIds.has(a.id));
@@ -169,10 +164,9 @@ export function CodingPanel({ project, refreshKey, onChanged, initialCodeFilter,
       });
     }
     return result;
-  }, [articles, codedIds, pdfMap, activeFilters, showExcluded, codeFilters, articleCodeSet]);
+  }, [articles, codedIds, pdfMap, activeFilters, codeFilters, articleCodeSet]);
 
   const toggleFilter = (key: ToggleFilter) => {
-    setShowExcluded(false);
     setActiveFilters((prev) => {
       const next = new Set(prev);
       if (next.has(key)) { next.delete(key); }
@@ -194,14 +188,13 @@ export function CodingPanel({ project, refreshKey, onChanged, initialCodeFilter,
   const clearAllFilters = () => {
     setActiveFilters(new Set());
     setCodeFilters(new Set());
-    setShowExcluded(false);
     setCardIndex(0);
   };
 
   useEffect(() => {
     setCardIndex((i) => Math.min(i, Math.max(0, filtered.length - 1)));
     setAbstractExpanded(false);
-  }, [activeFilters, showExcluded, codeFilters, filtered.length]);
+  }, [activeFilters, codeFilters, filtered.length]);
 
   // Keep a ref to current article so the drop handler (closed over at mount) can read it
   const currentArticleRef = useRef<ArticleRow | null>(null);
@@ -455,7 +448,7 @@ export function CodingPanel({ project, refreshKey, onChanged, initialCodeFilter,
             onClick={clearAllFilters}
             className={cn(
               "px-3 py-1.5 rounded-full text-[12px] font-medium transition-paper",
-              activeFilters.size === 0 && !showExcluded && codeFilters.size === 0
+              activeFilters.size === 0 && codeFilters.size === 0
                 ? "bg-[var(--color-ink-800)] text-white"
                 : "text-[var(--color-paper-600)] hover:bg-[var(--color-paper-200)]"
             )}
@@ -485,20 +478,6 @@ export function CodingPanel({ project, refreshKey, onChanged, initialCodeFilter,
             </button>
           ))}
 
-          <span className="mx-1 text-[var(--color-paper-300)]">|</span>
-          <button
-            onClick={() => { setShowExcluded((v) => !v); setActiveFilters(new Set()); setCodeFilters(new Set()); setCardIndex(0); }}
-            className={cn(
-              "px-3 py-1.5 rounded-full text-[12px] font-medium transition-paper",
-              showExcluded
-                ? "bg-[var(--color-error-500)] text-white"
-                : "text-[var(--color-error-500)] hover:bg-[var(--color-error-500)]/10"
-            )}
-          >
-            Excluded
-            <span className="ml-1.5 tabular-nums opacity-75">{excludedArticles.length}</span>
-          </button>
-
           {/* Clear active filters badge */}
           {(activeFilters.size > 0 || codeFilters.size > 0) && (
             <button
@@ -511,7 +490,7 @@ export function CodingPanel({ project, refreshKey, onChanged, initialCodeFilter,
         </div>
 
         {/* Row 2: code filters — only shown when codings exist */}
-        {codings.length > 0 && !showExcluded && (
+        {codings.length > 0 && (
           <div className="flex items-start gap-2 flex-wrap">
             <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--color-paper-400)] mt-1.5 shrink-0">
               By code:
@@ -572,7 +551,7 @@ export function CodingPanel({ project, refreshKey, onChanged, initialCodeFilter,
         </div>
       )}
 
-      {!loading && filtered.length === 0 && !showExcluded && (
+      {!loading && filtered.length === 0 && (
         <div className="border border-dashed border-[var(--color-paper-300)] rounded-[var(--radius-md)] p-12 text-center">
           <p className="text-[14px] text-[var(--color-paper-700)] font-medium mb-1">
             {codeFilters.size > 0
@@ -585,65 +564,13 @@ export function CodingPanel({ project, refreshKey, onChanged, initialCodeFilter,
           </p>
           <p className="text-[13px] text-[var(--color-paper-500)] max-w-md mx-auto leading-relaxed">
             {activeFilters.size === 0 && codeFilters.size === 0
-              ? "Import records in Stage 1 first, or check the Library tab."
+              ? "Screen your articles first — only included articles appear here."
               : "Clear the filters to see all articles."}
           </p>
           {(activeFilters.size > 0 || codeFilters.size > 0) && (
             <button onClick={clearAllFilters} className="mt-3 text-[12px] text-[var(--color-ink-600)] underline underline-offset-2 hover:text-[var(--color-ink-900)]">
               Clear filters
             </button>
-          )}
-        </div>
-      )}
-
-      {/* ── Excluded articles list ─────────────────────────────────────── */}
-      {!loading && showExcluded && (
-        <div className="space-y-2">
-          {excludedArticles.length === 0 ? (
-            <div className="border border-dashed border-[var(--color-paper-300)] rounded-[var(--radius-md)] p-12 text-center">
-              <Ban size={24} strokeWidth={1.5} className="text-[var(--color-paper-300)] mx-auto mb-3" />
-              <p className="text-[14px] text-[var(--color-paper-700)] font-medium mb-1">No excluded articles</p>
-              <p className="text-[13px] text-[var(--color-paper-500)] max-w-md mx-auto leading-relaxed">
-                Articles you exclude during screening will appear here.
-              </p>
-            </div>
-          ) : (
-            excludedArticles.map((a) => {
-              const isQualityExclusion = a.exclusion_criterion === 0;
-              const criterion = isQualityExclusion
-                ? null
-                : criteria.find((c) => c.number === a.exclusion_criterion);
-              return (
-                <Card key={a.id} className="p-4 border-[var(--color-error-500)]/20 bg-[var(--color-error-500)]/3">
-                  <div className="flex items-start gap-3">
-                    <div className="font-mono text-[10px] text-[var(--color-paper-400)] tabular-nums w-8 text-right shrink-0 mt-0.5">
-                      #{a.id}
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <h3 className="font-serif text-[15px] leading-snug text-[var(--color-ink-800)]">
-                        {a.title}
-                      </h3>
-                      <div className="mt-1 flex items-baseline gap-3 text-[12px] text-[var(--color-paper-500)]">
-                        {a.authors && <span className="line-clamp-1">{a.authors}</span>}
-                        {a.year && <span className="font-mono tabular-nums">{a.year}</span>}
-                        {a.journal && <span className="italic">{a.journal}</span>}
-                      </div>
-                    </div>
-                    {isQualityExclusion ? (
-                      <div className="shrink-0 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium bg-[var(--color-warn-500)]/10 text-[var(--color-warn-600)] border border-[var(--color-warn-500)]/20">
-                        <Ban size={10} strokeWidth={2} />
-                        Journal quality
-                      </div>
-                    ) : criterion ? (
-                      <div className="shrink-0 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium bg-[var(--color-error-500)]/10 text-[var(--color-error-500)] border border-[var(--color-error-500)]/20">
-                        <Ban size={10} strokeWidth={2} />
-                        #{criterion.number} {criterion.label}
-                      </div>
-                    ) : null}
-                  </div>
-                </Card>
-              );
-            })
           )}
         </div>
       )}

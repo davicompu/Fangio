@@ -735,7 +735,7 @@ impl ProjectDb {
             "SELECT id, title, authors, year, journal, abstract, doi, url, source_databases, \
              status, dedup_group_id, exclusion_criterion, created_at, screened_at, \
              ai_rationale, ai_confidence \
-             FROM article WHERE status IN ('retrieved', 'included') ORDER BY id LIMIT ? OFFSET ?",
+             FROM article WHERE status = 'included' ORDER BY id LIMIT ? OFFSET ?",
         )
         .bind(limit)
         .bind(offset)
