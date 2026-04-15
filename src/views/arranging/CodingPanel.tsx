@@ -461,19 +461,14 @@ export function CodingPanel({ project, refreshKey, onChanged, initialCodeFilter,
       )}
 
       {/* ── Proposal review banner ── */}
-      {(() => {
-        const articleIdsWithProposals = new Set(proposals.map((p) => p.article_id));
-        const count = articleIdsWithProposals.size;
-        if (count === 0) return null;
-        return (
-          <div className="mb-4 flex items-center gap-2.5 px-4 py-2.5 rounded-[var(--radius-sm)] bg-amber-50 border border-amber-200 text-amber-800">
-            <AlertTriangle size={13} strokeWidth={2} className="shrink-0" />
-            <p className="text-[12px] font-medium">
-              {count} article{count !== 1 ? "s have" : " has"} AI coding suggestions awaiting review
-            </p>
-          </div>
-        );
-      })()}
+      {articleIdsWithProposals.size > 0 && (
+        <div className="mb-4 flex items-center gap-2.5 px-4 py-2.5 rounded-[var(--radius-sm)] bg-amber-50 border border-amber-200 text-amber-800">
+          <AlertTriangle size={13} strokeWidth={2} className="shrink-0" />
+          <p className="text-[12px] font-medium">
+            {articleIdsWithProposals.size} article{articleIdsWithProposals.size !== 1 ? "s have" : " has"} AI coding suggestions awaiting review
+          </p>
+        </div>
+      )}
 
       {/* ── Filters ────────────────────────────────────────────────────── */}
       <div className="mb-5 space-y-2">
