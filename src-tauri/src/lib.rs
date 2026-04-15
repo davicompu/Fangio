@@ -2305,6 +2305,7 @@ async fn cluster_corpus(app: tauri::AppHandle<tauri::Wry>, state: State<'_, AppS
         }
     }
 
+    let _ = app.emit("clusters:progress", ClusterProgress { phase: "clustering".into(), done: n, total: n });
     let _ = app.emit("clusters:progress", ClusterProgress { phase: "labelling".into(), done: 0, total: k });
 
     // Build cluster groups

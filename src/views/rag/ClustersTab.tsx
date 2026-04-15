@@ -160,6 +160,8 @@ export function ClustersTab() {
           {progress
             ? progress.phase === "labelling"
               ? `Labelling cluster ${progress.done + 1} of ${progress.total}…`
+              : progress.phase === "clustering"
+              ? "Running K-means…"
               : `${progress.phase}…`
             : "Starting…"}
         </p>
