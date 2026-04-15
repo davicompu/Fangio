@@ -29,6 +29,7 @@ import { writeTextFile } from "@tauri-apps/plugin-fs";
 import { listen } from "@tauri-apps/api/event";
 import {
   api,
+  type AiCodingProposal,
   type AskResult,
   type ArticleRow,
   type CodingRow,
@@ -50,6 +51,7 @@ interface Props {
   onCodeFilterConsumed?: () => void;
   lastEditedArticleId?: number | null;
   onArticleEdited?: (id: number) => void;
+  onOpenAiCodingModal?: () => void;
 }
 
 type ToggleFilter = "uncoded" | "coded" | "with-pdf" | "no-pdf";
@@ -60,7 +62,7 @@ const OPPOSITES: Record<ToggleFilter, ToggleFilter> = {
 
 const LOAD_LIMIT = 9999;
 
-export function CodingPanel({ project, refreshKey, onChanged, initialCodeFilter, onCodeFilterConsumed, lastEditedArticleId, onArticleEdited }: Props) {
+export function CodingPanel({ project, refreshKey, onChanged, initialCodeFilter, onCodeFilterConsumed, lastEditedArticleId, onArticleEdited, onOpenAiCodingModal }: Props) {
   const isCustom = project.framework === "Custom";
 
   const [dimensions, setDimensions] = useState<DimensionInfo[]>([]);
@@ -72,6 +74,7 @@ export function CodingPanel({ project, refreshKey, onChanged, initialCodeFilter,
   const [pdfMap, setPdfMap] = useState<Record<string, string>>({});
   const [indexedIds, setIndexedIds] = useState<Set<number>>(new Set());
   const [loading, setLoading] = useState(true);
+  const [proposals, setProposals] = useState<AiCodingProposal[]>([]);
   const [scanning, setScanning] = useState(false);
   const [scanMsg, setScanMsg] = useState<string | null>(null);
   const [showNamingHint, setShowNamingHint] = useState(false);
@@ -107,6 +110,12 @@ export function CodingPanel({ project, refreshKey, onChanged, initialCodeFilter,
     setIndexedIds(new Set(idxIds));
     setUnreviewedCount(allArticles.filter((a) => a.status === "retrieved").length);
     setCriteria(crits);
+    // Load proposals for all articles in this batch
+    const ids = batch.articles.map((a) => a.id);
+    const props = ids.length > 0
+      ? await api.listAiCodingProposalsForArticles(ids)
+      : [];
+    setProposals(props);
     setLoading(false);
   }, []);
 
@@ -128,6 +137,12 @@ export function CodingPanel({ project, refreshKey, onChanged, initialCodeFilter,
     for (const c of codings) s.add(c.article_id);
     return s;
   }, [codings]);
+
+  const articleIdsWithProposals = useMemo(() => {
+    const s = new Set<number>();
+    for (const p of proposals) s.add(p.article_id);
+    return s;
+  }, [proposals]);
 
   // Consume jump-to-code from OrganizationPanel
   useEffect(() => {
@@ -368,6 +383,12 @@ export function CodingPanel({ project, refreshKey, onChanged, initialCodeFilter,
 
         <div className="flex flex-col items-end gap-1.5">
           <div className="flex items-center gap-2">
+            {onOpenAiCodingModal && (
+              <Button variant="ghost" size="sm" onClick={onOpenAiCodingModal}>
+                <Sparkles size={13} strokeWidth={1.75} className="text-[var(--color-accent-500)]" />
+                Code with AI
+              </Button>
+            )}
             <button
               onClick={() => setShowNamingHint((v) => !v)}
               className="p-1 text-[var(--color-paper-400)] hover:text-[var(--color-ink-600)] transition-paper"
@@ -438,6 +459,21 @@ export function CodingPanel({ project, refreshKey, onChanged, initialCodeFilter,
           </span>
         </div>
       )}
+
+      {/* ── Proposal review banner ── */}
+      {(() => {
+        const articleIdsWithProposals = new Set(proposals.map((p) => p.article_id));
+        const count = articleIdsWithProposals.size;
+        if (count === 0) return null;
+        return (
+          <div className="mb-4 flex items-center gap-2.5 px-4 py-2.5 rounded-[var(--radius-sm)] bg-amber-50 border border-amber-200 text-amber-800">
+            <AlertTriangle size={13} strokeWidth={2} className="shrink-0" />
+            <p className="text-[12px] font-medium">
+              {count} article{count !== 1 ? "s have" : " has"} AI coding suggestions awaiting review
+            </p>
+          </div>
+        );
+      })()}
 
       {/* ── Filters ────────────────────────────────────────────────────── */}
       <div className="mb-5 space-y-2">
@@ -674,6 +710,8 @@ export function CodingPanel({ project, refreshKey, onChanged, initialCodeFilter,
                   // stay on same index — the excluded article drops out of the list,
                   // so the next article slides into this position automatically
                 }}
+                proposals={proposals.filter((p) => p.article_id === currentArticle.id)}
+                hasProposals={articleIdsWithProposals.has(currentArticle.id)}
               />
             </motion.div>
           </AnimatePresence>
@@ -706,6 +744,8 @@ function ArticleCodingCard({
   onReplacePdf,
   onChanged,
   onExcluded,
+  proposals,
+  hasProposals,
 }: {
   index: number;
   total: number;
@@ -727,6 +767,8 @@ function ArticleCodingCard({
   onReplacePdf: () => void;
   onChanged: () => Promise<void>;
   onExcluded: () => Promise<void>;
+  proposals: AiCodingProposal[];
+  hasProposals: boolean;
 }) {
   const [excludeOpen, setExcludeOpen] = useState(false);
   const [excluding, setExcluding] = useState(false);
@@ -842,7 +884,8 @@ function ArticleCodingCard({
     <Card
       className={cn(
         "relative overflow-hidden transition-paper w-full",
-        coded && "ring-1 ring-[var(--color-ok-300)]",
+        coded && !hasProposals && "ring-1 ring-[var(--color-ok-300)]",
+        hasProposals && "ring-1 ring-amber-300",
         isDragOver && "ring-2 ring-[var(--color-ink-500)]",
       )}
       onDragOver={handleDragOver}
@@ -1106,6 +1149,7 @@ function ArticleCodingCard({
             starterCodes={codeDefs.filter((d) => d.dimension === dim.name)}
             codings={codings.filter((c) => c.dimension === dim.name)}
             onChanged={onChanged}
+            proposals={proposals.filter((p) => p.dimension === dim.name)}
           />
         ))}
       </div>
@@ -1159,14 +1203,19 @@ function DimensionRow({
   starterCodes,
   codings,
   onChanged,
+  proposals,
 }: {
   article: ArticleRow;
   dimension: DimensionInfo;
   starterCodes: FrameworkCodeDefinition[];
   codings: CodingRow[];
   onChanged: () => Promise<void>;
+  proposals: AiCodingProposal[];
 }) {
   const [adding, setAdding] = useState(false);
+  const [proposalReviewOpen, setProposalReviewOpen] = useState(false);
+  const [acceptingId, setAcceptingId] = useState<number | null>(null);
+  const [rejectingId, setRejectingId] = useState<number | null>(null);
   const [newCode, setNewCode] = useState("");
   const [suggesting, setSuggesting] = useState(false);
   const [suggestions, setSuggestions] = useState<Suggestion[] | null>(null);
@@ -1220,6 +1269,16 @@ function DimensionRow({
           <span className="text-[12px] font-semibold tracking-tight text-[var(--color-ink-800)]">
             {dimension.name}
           </span>
+          {proposals.length > 0 && (
+            <button
+              onClick={() => setProposalReviewOpen((v) => !v)}
+              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-semibold bg-amber-100 border border-amber-300 text-amber-700 hover:bg-amber-200 transition-paper"
+              title="AI coding suggestions awaiting review"
+            >
+              <AlertTriangle size={9} strokeWidth={2.5} />
+              {proposals.length}
+            </button>
+          )}
           <button
             onClick={() => setAdding(true)}
             className="p-1 rounded-[var(--radius-xs)] hover:bg-[var(--color-paper-200)] text-[var(--color-paper-500)] hover:text-[var(--color-ink-800)] transition-paper"
@@ -1335,6 +1394,95 @@ function DimensionRow({
         {suggestError && (
           <p className="mt-2 text-[11px] text-[var(--color-error-500)]">{suggestError}</p>
         )}
+
+        {/* Proposal review panel */}
+        <AnimatePresence>
+          {proposalReviewOpen && proposals.length > 0 && (
+            <motion.div
+              initial={{ opacity: 0, y: 4 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -4 }}
+              className="mt-2.5 rounded-[var(--radius-sm)] border border-amber-200 bg-amber-50 overflow-hidden"
+            >
+              <div className="flex items-center gap-1.5 px-3 py-2 border-b border-amber-200">
+                <AlertTriangle size={11} strokeWidth={2} className="text-amber-600" />
+                <span className="text-[11px] font-semibold text-amber-800 uppercase tracking-wider">
+                  AI suggestions to review
+                </span>
+                <button
+                  onClick={() => setProposalReviewOpen(false)}
+                  className="ml-auto p-0.5 hover:bg-amber-100 rounded-sm"
+                >
+                  <X size={11} className="text-amber-600" />
+                </button>
+              </div>
+
+              {/* Group by rater */}
+              {[1, 2].map((rater) => {
+                const raterProposals = proposals.filter((p) => p.rater === rater);
+                if (raterProposals.length === 0) return null;
+                return (
+                  <div key={rater} className="px-3 py-2.5 border-b border-amber-100 last:border-b-0">
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-amber-600 mb-1.5">
+                      Rater {rater}
+                      {raterProposals[0].model_name && (
+                        <span className="ml-1 font-mono font-normal normal-case tracking-normal text-amber-500">
+                          · {raterProposals[0].model_name}
+                        </span>
+                      )}
+                    </p>
+                    <div className="space-y-1.5">
+                      {raterProposals.map((p) => (
+                        <div key={p.id} className="flex items-start gap-2 rounded-[var(--radius-xs)] bg-white/60 border border-amber-100 px-2.5 py-1.5">
+                          <div className="flex-1 min-w-0">
+                            <span className="text-[12px] font-medium text-[var(--color-ink-900)]">{p.code}</span>
+                            {p.rationale && (
+                              <p className="text-[11px] text-[var(--color-paper-600)] italic leading-snug mt-0.5">
+                                {p.rationale}
+                              </p>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-1 shrink-0">
+                            <button
+                              onClick={async () => {
+                                setAcceptingId(p.id);
+                                try {
+                                  await api.acceptAiCodingProposal(p.id);
+                                  await onChanged();
+                                } finally {
+                                  setAcceptingId(null);
+                                }
+                              }}
+                              disabled={acceptingId === p.id || rejectingId === p.id}
+                              className="px-2 py-0.5 text-[10px] font-semibold rounded-full bg-[var(--color-ok-100)] border border-[var(--color-ok-300)] text-[var(--color-ok-700)] hover:bg-[var(--color-ok-200)] disabled:opacity-40 transition-paper"
+                            >
+                              {acceptingId === p.id ? <Loader2 size={9} className="animate-spin" /> : "Accept"}
+                            </button>
+                            <button
+                              onClick={async () => {
+                                setRejectingId(p.id);
+                                try {
+                                  await api.rejectAiCodingProposal(p.id);
+                                  await onChanged();
+                                } finally {
+                                  setRejectingId(null);
+                                }
+                              }}
+                              disabled={acceptingId === p.id || rejectingId === p.id}
+                              className="px-2 py-0.5 text-[10px] font-semibold rounded-full bg-white border border-[var(--color-paper-300)] text-[var(--color-paper-600)] hover:bg-[var(--color-paper-100)] disabled:opacity-40 transition-paper"
+                            >
+                              {rejectingId === p.id ? <Loader2 size={9} className="animate-spin" /> : "Reject"}
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
 
     </div>
