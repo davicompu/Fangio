@@ -1000,7 +1000,7 @@ async fn run_ai_screening(
     let model = settings
         .get("lmstudio.chat_model")
         .and_then(|v| v.as_str())
-        .unwrap_or("")
+        .unwrap_or("google/gemma-4-e2b")
         .to_string();
     if model.is_empty() {
         return Err("Pick a chat model in Settings first.".into());
@@ -1185,7 +1185,7 @@ async fn suggest_codes(
     let model = settings
         .get("lmstudio.chat_model")
         .and_then(|v| v.as_str())
-        .unwrap_or("")
+        .unwrap_or("google/gemma-4-e2b")
         .to_string();
     if model.is_empty() {
         return Err("Pick a chat model in Settings first.".into());
@@ -1273,7 +1273,7 @@ async fn suggest_step(
     let model = settings
         .get("lmstudio.chat_model")
         .and_then(|v| v.as_str())
-        .unwrap_or("")
+        .unwrap_or("google/gemma-4-e2b")
         .to_string();
     if model.is_empty() {
         return Err("Pick a chat model in Settings first.".into());
@@ -1325,7 +1325,7 @@ async fn suggest_boolean_query(
     let model = settings
         .get("lmstudio.chat_model")
         .and_then(|v| v.as_str())
-        .unwrap_or("")
+        .unwrap_or("google/gemma-4-e2b")
         .to_string();
     if model.is_empty() {
         return Err("Pick a chat model in Settings first.".into());
@@ -1600,7 +1600,7 @@ async fn ask_corpus(args: AskArgs, state: State<'_, AppState>) -> Result<AskResu
     let chat_model = settings
         .get("lmstudio.chat_model")
         .and_then(|v| v.as_str())
-        .unwrap_or("")
+        .unwrap_or("google/gemma-4-e2b")
         .to_string();
     let embed_model = settings
         .get("lmstudio.embed_model")
@@ -1735,7 +1735,7 @@ async fn ask_article(args: AskArticleArgs, state: State<'_, AppState>) -> Result
     let chat_model = settings
         .get("lmstudio.chat_model")
         .and_then(|v| v.as_str())
-        .unwrap_or("")
+        .unwrap_or("google/gemma-4-e2b")
         .to_string();
     let embed_model = settings
         .get("lmstudio.embed_model")

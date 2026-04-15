@@ -383,7 +383,7 @@ async fn ask_corpus(
     let chat_model = settings
         .get("lmstudio.chat_model")
         .and_then(|v| v.as_str())
-        .unwrap_or("")
+        .unwrap_or("google/gemma-4-e2b")
         .to_string();
     let embed_model = settings
         .get("lmstudio.embed_model")
@@ -591,7 +591,7 @@ async fn ask_article_handler(
     let chat_model = settings
         .get("lmstudio.chat_model")
         .and_then(|v| v.as_str())
-        .unwrap_or("")
+        .unwrap_or("google/gemma-4-e2b")
         .to_string();
     let embed_model = settings
         .get("lmstudio.embed_model")
