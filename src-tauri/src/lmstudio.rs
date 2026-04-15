@@ -1,8 +1,4 @@
-//! Localhost-only client for LM Studio (and any OpenAI-compatible local server).
-//!
-//! Network policy: this client refuses to connect to anything that isn't a
-//! loopback host. Connector-based external API access lives elsewhere and
-//! is gated behind an explicit allowlist.
+//! Client for LM Studio and any OpenAI-compatible inference server (local or remote).
 
 use anyhow::{anyhow, Result};
 use reqwest::Client;
@@ -98,22 +94,14 @@ pub struct EmbedResponse {
     pub model: Option<String>,
 }
 
-fn ensure_loopback(base_url: &str) -> Result<Url> {
-    let url = Url::parse(base_url).map_err(|e| anyhow!("invalid base url: {e}"))?;
-    let host = url.host_str().unwrap_or("");
-    let is_loopback = matches!(host, "127.0.0.1" | "localhost" | "::1");
-    if !is_loopback {
-        return Err(anyhow!(
-            "refusing non-loopback host '{host}': local inference only"
-        ));
-    }
-    Ok(url)
+fn parse_url(base_url: &str) -> Result<Url> {
+    Url::parse(base_url).map_err(|e| anyhow!("invalid base url: {e}"))
 }
 
 fn http_client() -> Result<Client> {
     Ok(Client::builder()
-        .connect_timeout(Duration::from_secs(3))
-        .timeout(Duration::from_secs(180))
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(300))
         .build()?)
 }
 
@@ -128,7 +116,7 @@ fn apply_auth(
 }
 
 pub async fn list_models(base_url: &str, api_key: Option<&str>) -> Result<Vec<LmModel>> {
-    let mut url = ensure_loopback(base_url)?;
+    let mut url = parse_url(base_url)?;
     // OpenAI-compat: /v1/models
     if !url.path().ends_with("/models") {
         let path = url.path().trim_end_matches('/').to_string() + "/models";
@@ -175,7 +163,7 @@ pub async fn chat(
     temperature: Option<f32>,
     api_key: Option<&str>,
 ) -> Result<ChatResult> {
-    let mut url = ensure_loopback(base_url)?;
+    let mut url = parse_url(base_url)?;
     if !url.path().ends_with("/chat/completions") {
         let path = url.path().trim_end_matches('/').to_string() + "/chat/completions";
         url.set_path(&path);
@@ -213,7 +201,7 @@ pub async fn chat(
 }
 
 pub async fn embed(base_url: &str, model: &str, inputs: &[&str], api_key: Option<&str>) -> Result<Vec<Vec<f32>>> {
-    let mut url = ensure_loopback(base_url)?;
+    let mut url = parse_url(base_url)?;
     if !url.path().ends_with("/embeddings") {
         let path = url.path().trim_end_matches('/').to_string() + "/embeddings";
         url.set_path(&path);

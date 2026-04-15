@@ -207,7 +207,7 @@ export function Settings({ open: openSetting, onClose, settings, onUpdate, lm, o
                 <SectionHeader
                   icon={<Cpu size={14} strokeWidth={1.75} />}
                   title="Local inference"
-                  description="Reeves talks to a local OpenAI-compatible server (LM Studio, Ollama, llama.cpp). Nothing about your research leaves this machine."
+                  description="Reeves talks to any OpenAI-compatible inference server — local (LM Studio, Ollama, llama.cpp) or a remote host."
                 />
 
                 <div className="space-y-4 mt-5">
@@ -217,7 +217,7 @@ export function Settings({ open: openSetting, onClose, settings, onUpdate, lm, o
                     mono
                     onChange={(e) => setLocalUrl(e.target.value)}
                     placeholder="http://127.0.0.1:1234/v1"
-                    hint="Loopback only — Reeves refuses any non-localhost host."
+                    hint="Any OpenAI-compatible server — local (LM Studio, Ollama) or remote."
                   />
 
                   <TextField
