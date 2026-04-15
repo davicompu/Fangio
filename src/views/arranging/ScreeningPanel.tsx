@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { motion, AnimatePresence } from "framer-motion";
+import { AnimatePresence, motion } from "framer-motion";
 import {
   AlertTriangle,
   ArrowLeft,
@@ -10,11 +10,8 @@ import {
   ChevronUp,
   Filter,
   Loader2,
-  Pause,
-  Play,
   RotateCcw,
   Sparkles,
-  X,
 } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -29,13 +26,14 @@ import {
 } from "../../lib/api";
 import { Card } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
-import { AiScreeningModal, type AiScreeningHook } from "../../components/AiScreeningModal";
+import { type AiScreeningHook } from "../../components/AiScreeningModal";
 import { cn } from "../../lib/utils";
 
 interface Props {
   project: ProjectRow;
   refreshKey: number;
   onChanged: () => void;
+  onOpenAiModal: () => void;
 }
 
 const BATCH_SIZE = 20;
@@ -84,7 +82,7 @@ function normalizeJournal(name: string) {
     .trim();
 }
 
-function useAiScreening(): AiScreeningHook {
+export function useAiScreening(): AiScreeningHook {
   const [step, setStep] = useState<AiScreeningHook["step"]>("idle");
   const [progress, setProgress] = useState<AiScreeningProgress | null>(null);
   const [result, setResult] = useState<AiScreeningResult | null>(null);
@@ -148,7 +146,7 @@ function useAiScreening(): AiScreeningHook {
   return { step, progress, result, error, isPaused, start, pause, resume, cancel, reset };
 }
 
-export function ScreeningPanel({ project, refreshKey, onChanged }: Props) {
+export function ScreeningPanel({ project, refreshKey, onChanged, onOpenAiModal }: Props) {
   const [activeTab, setActiveTab] = useState<ScreeningTab>("pending");
   const [articles, setArticles] = useState<ArticleRow[]>([]);
   const [total, setTotal] = useState(0);
@@ -157,8 +155,6 @@ export function ScreeningPanel({ project, refreshKey, onChanged }: Props) {
   const [offset, setOffset] = useState(0);
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const [loading, setLoading] = useState(true);
-  const [aiModalOpen, setAiModalOpen] = useState(false);
-  const screening = useAiScreening();
 
   const jq = parseJournalQuality(project.journal_quality);
 
@@ -213,30 +209,6 @@ export function ScreeningPanel({ project, refreshKey, onChanged }: Props) {
     await reload();
   };
 
-  const handleAiComplete = (_result: AiScreeningResult) => {
-    setAiModalOpen(false);
-    screening.reset();
-    onChanged();
-    reload("pending", 0);
-  };
-
-  const handleSendToBackground = () => {
-    setAiModalOpen(false);
-  };
-
-  const handleViewFromBanner = () => {
-    setAiModalOpen(true);
-  };
-
-  const handleCancelFromBanner = async () => {
-    await screening.cancel();
-    // result will arrive (partial) and step will become "done", or error
-    // We can just reset directly since user explicitly cancelled
-    onChanged();
-    reload("pending", 0);
-    screening.reset();
-  };
-
   const totalPages = Math.max(1, Math.ceil(total / BATCH_SIZE));
   const currentPage = Math.floor(offset / BATCH_SIZE) + 1;
 
@@ -253,7 +225,7 @@ export function ScreeningPanel({ project, refreshKey, onChanged }: Props) {
         {activeTab === "pending" && (
           <button
             type="button"
-            onClick={() => setAiModalOpen(true)}
+            onClick={onOpenAiModal}
             className="no-drag inline-flex items-center gap-1.5 px-3 py-1.5 rounded-[var(--radius-sm)] text-[12px] font-medium text-[var(--color-accent-600)] border border-[var(--color-accent-300)] bg-[var(--color-accent-50)] hover:bg-[var(--color-accent-100)] transition-paper"
           >
             <Sparkles size={12} strokeWidth={2} />
@@ -371,118 +343,6 @@ export function ScreeningPanel({ project, refreshKey, onChanged }: Props) {
         </p>
       )}
 
-      {/* Background screening banner — shown when modal is closed but screening is active */}
-      <AnimatePresence>
-        {(screening.step === "running" || screening.step === "done") && !aiModalOpen && (
-          <motion.div
-            key="screening-banner"
-            initial={{ opacity: 0, y: 8 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: 8 }}
-            transition={{ duration: 0.2 }}
-            className="fixed bottom-6 left-1/2 -translate-x-1/2 z-30 w-full max-w-lg px-4 pointer-events-none"
-          >
-            <div className="pointer-events-auto rounded-[var(--radius-md)] border border-[var(--color-paper-300)] bg-white shadow-[var(--shadow-paper-md)] px-4 py-3">
-              {screening.step === "running" && !screening.error && (
-                <>
-                  <div className="flex items-center gap-3 mb-2">
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-1.5 mb-1">
-                        {screening.isPaused
-                          ? <Pause size={11} strokeWidth={2} className="shrink-0 text-[var(--color-warn-500)]" />
-                          : <Loader2 size={11} className="animate-spin shrink-0 text-[var(--color-accent-500)]" />}
-                        <span className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-paper-500)]">
-                          {screening.isPaused ? "Screening paused" : "Screening in background"}
-                        </span>
-                      </div>
-                      <p className="text-[12px] text-[var(--color-ink-700)] truncate">
-                        {screening.progress
-                          ? `${screening.progress.done} / ${screening.progress.total} — ${screening.progress.article_title}`
-                          : "Starting…"}
-                      </p>
-                    </div>
-                    <div className="flex items-center gap-1 shrink-0">
-                      <button
-                        onClick={screening.isPaused ? screening.resume : screening.pause}
-                        className="p-1.5 rounded-[var(--radius-xs)] hover:bg-[var(--color-paper-100)] transition-paper"
-                        title={screening.isPaused ? "Resume" : "Pause"}
-                      >
-                        {screening.isPaused
-                          ? <Play size={13} strokeWidth={2} />
-                          : <Pause size={13} strokeWidth={2} />}
-                      </button>
-                      <button
-                        onClick={handleCancelFromBanner}
-                        className="p-1.5 rounded-[var(--radius-xs)] hover:bg-[var(--color-paper-100)] transition-paper text-[var(--color-paper-500)] hover:text-[var(--color-error-500)]"
-                        title="Cancel screening"
-                      >
-                        <X size={13} strokeWidth={2} />
-                      </button>
-                      <Button variant="ghost" size="sm" onClick={handleViewFromBanner}>
-                        View
-                      </Button>
-                    </div>
-                  </div>
-                  {screening.progress && screening.progress.total > 0 && (
-                    <div className="w-full h-1 rounded-full bg-[var(--color-paper-200)] overflow-hidden">
-                      <motion.div
-                        className="h-full rounded-full bg-[var(--color-accent-500)]"
-                        animate={{ width: `${(screening.progress.done / screening.progress.total) * 100}%` }}
-                        transition={{ ease: "easeOut", duration: 0.3 }}
-                      />
-                    </div>
-                  )}
-                </>
-              )}
-
-              {screening.step === "running" && screening.error && (
-                <div className="flex items-center justify-between gap-3">
-                  <p className="text-[12px] text-[var(--color-warn-700)] truncate">{screening.error}</p>
-                  <button
-                    onClick={screening.reset}
-                    className="p-1.5 rounded-[var(--radius-xs)] hover:bg-[var(--color-paper-100)] transition-paper shrink-0"
-                  >
-                    <X size={13} strokeWidth={2} />
-                  </button>
-                </div>
-              )}
-
-              {screening.step === "done" && screening.result && (
-                <div className="flex items-center justify-between gap-3">
-                  <div className="flex items-center gap-3 text-[12px]">
-                    <span className="text-[var(--color-ink-800)] font-medium">Screening complete</span>
-                    <span className="text-[var(--color-ok-600)]">{screening.result.included} included</span>
-                    <span className="text-[var(--color-warn-600)]">{screening.result.excluded} excluded</span>
-                    <span className="text-[var(--color-paper-500)]">{screening.result.uncertain} review</span>
-                  </div>
-                  <div className="flex items-center gap-1 shrink-0">
-                    <Button variant="primary" size="sm" onClick={handleViewFromBanner}>
-                      View results
-                    </Button>
-                    <button
-                      onClick={() => { onChanged(); reload("pending", 0); screening.reset(); }}
-                      className="p-1.5 rounded-[var(--radius-xs)] hover:bg-[var(--color-paper-100)] transition-paper text-[var(--color-paper-500)]"
-                      title="Dismiss"
-                    >
-                      <X size={13} strokeWidth={2} />
-                    </button>
-                  </div>
-                </div>
-              )}
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      <AiScreeningModal
-        open={aiModalOpen}
-        project={project}
-        criteria={criteria}
-        screening={screening}
-        onComplete={handleAiComplete}
-        onDismiss={() => setAiModalOpen(false)}
-        onSendToBackground={handleSendToBackground}
-      />
     </div>
   );
 }
