@@ -1202,6 +1202,19 @@ async fn run_ai_coding(
     let mut skipped_no_pdf = 0usize;
     let mut indexed = 0usize;
 
+    // Fetch the PDF index once before the loop — calling this inside the loop
+    // would execute an identical DB query for every article (N+1 pattern).
+    let articles_with_pdf = db.included_articles_with_pdf().await.map_err(err)?;
+
+    // Load existing codes per dimension once — same result for every article
+    // (distinct codes are corpus-wide, not per-article), so this is safe to hoist.
+    let mut existing_by_dim: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+    for (dim_name, _) in &dims_to_code {
+        let codes = db.distinct_codes_for_dimension(dim_name).await.map_err(err)?;
+        existing_by_dim.insert(dim_name.clone(), codes);
+    }
+
     for (i, article) in articles.iter().enumerate() {
         // Cancel check
         if cancelled.load(Ordering::SeqCst) {
@@ -1219,7 +1232,6 @@ async fn run_ai_coding(
         }
 
         // Check if this article has a PDF linked
-        let articles_with_pdf = db.included_articles_with_pdf().await.map_err(err)?;
         let pdf_info = articles_with_pdf.iter().find(|(_, aid, _, _)| *aid == article.id);
 
         if pdf_info.is_none() {
@@ -1308,13 +1320,6 @@ async fn run_ai_coding(
         // Get first 8 chunks as context text for coding
         let chunks = db.list_chunks_for_article(article.id, 8).await.map_err(err)?;
         let context_text: String = chunks.iter().map(|c| c.text.as_str()).collect::<Vec<_>>().join("\n\n");
-
-        // Load existing codes per dimension for this article's corpus
-        let mut existing_by_dim: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
-        for (dim_name, _) in &dims_to_code {
-            let codes = db.distinct_codes_for_dimension(dim_name).await.map_err(err)?;
-            existing_by_dim.insert(dim_name.clone(), codes);
-        }
 
         // Rater 1
         let _ = app.emit(
