@@ -1517,7 +1517,7 @@ async fn embed_pdf(pdf_id: i64, state: State<'_, AppState>) -> Result<EmbedResul
     let model = settings
         .get("lmstudio.embed_model")
         .and_then(|v| v.as_str())
-        .unwrap_or("")
+        .unwrap_or("text-embedding-embeddinggemma-300m-qat")
         .to_string();
     if model.is_empty() {
         return Err("Pick an embedding model in Settings first.".into());
@@ -1605,7 +1605,7 @@ async fn ask_corpus(args: AskArgs, state: State<'_, AppState>) -> Result<AskResu
     let embed_model = settings
         .get("lmstudio.embed_model")
         .and_then(|v| v.as_str())
-        .unwrap_or("")
+        .unwrap_or("text-embedding-embeddinggemma-300m-qat")
         .to_string();
     if chat_model.is_empty() || embed_model.is_empty() {
         return Err("Set both a chat model and an embedding model in Settings.".into());
@@ -1740,7 +1740,7 @@ async fn ask_article(args: AskArticleArgs, state: State<'_, AppState>) -> Result
     let embed_model = settings
         .get("lmstudio.embed_model")
         .and_then(|v| v.as_str())
-        .unwrap_or("")
+        .unwrap_or("text-embedding-embeddinggemma-300m-qat")
         .to_string();
     if chat_model.is_empty() || embed_model.is_empty() {
         return Err("Set both a chat model and an embedding model in Settings.".into());
@@ -1874,7 +1874,7 @@ async fn build_rag_index(
     let embed_model = settings
         .get("lmstudio.embed_model")
         .and_then(|v| v.as_str())
-        .unwrap_or("")
+        .unwrap_or("text-embedding-embeddinggemma-300m-qat")
         .to_string();
     if embed_model.is_empty() {
         return Err("Pick an embedding model in Settings → AI models first.".into());

@@ -388,7 +388,7 @@ async fn ask_corpus(
     let embed_model = settings
         .get("lmstudio.embed_model")
         .and_then(|v| v.as_str())
-        .unwrap_or("")
+        .unwrap_or("text-embedding-embeddinggemma-300m-qat")
         .to_string();
 
     if chat_model.is_empty() || embed_model.is_empty() {
@@ -596,7 +596,7 @@ async fn ask_article_handler(
     let embed_model = settings
         .get("lmstudio.embed_model")
         .and_then(|v| v.as_str())
-        .unwrap_or("")
+        .unwrap_or("text-embedding-embeddinggemma-300m-qat")
         .to_string();
 
     if chat_model.is_empty() || embed_model.is_empty() {

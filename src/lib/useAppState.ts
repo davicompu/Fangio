@@ -36,7 +36,7 @@ const DEFAULTS: AppSettings = {
   "lmstudio.base_url": "http://127.0.0.1:1234/v1",
   "lmstudio.api_key": "",
   "lmstudio.chat_model": "",
-  "lmstudio.embed_model": "",
+  "lmstudio.embed_model": "text-embedding-embeddinggemma-300m-qat",
   "telemetry.enabled": true,
   "telemetry.log_reasoning": false,
   "screening.confidence_threshold": 0.9,

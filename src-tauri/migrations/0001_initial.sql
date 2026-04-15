@@ -157,7 +157,7 @@ CREATE TABLE settings (
 INSERT INTO settings (key, value, updated_at) VALUES
     ('lmstudio.base_url',     '"http://127.0.0.1:1234/v1"', datetime('now')),
     ('lmstudio.chat_model',   '""',                          datetime('now')),
-    ('lmstudio.embed_model',  '""',                          datetime('now')),
+    ('lmstudio.embed_model',  '"text-embedding-embeddinggemma-300m-qat"', datetime('now')),
     ('telemetry.enabled',     'true',                        datetime('now')),
     ('telemetry.log_reasoning','false',                      datetime('now'));
 
