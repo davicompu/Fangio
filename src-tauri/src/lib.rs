@@ -557,7 +557,6 @@ struct AiScreeningResult {
 
 #[derive(Debug, Deserialize)]
 struct RunAiScreeningArgs {
-    inclusion_criteria: Vec<String>,
     #[serde(default, deserialize_with = "deserialize_string_vec")]
     exclusion_criteria: Vec<String>,
 }
@@ -988,6 +987,10 @@ async fn run_ai_screening(
         .and_then(|v| v.as_f64())
         .unwrap_or(0.90);
 
+    // Load project domain for relevance context
+    let project = db.get_project().await.map_err(err)?;
+    let domain = project.domain.unwrap_or_default();
+
     // Load all pending articles (status = 'retrieved')
     let pending = db.list_articles_for_tab("pending", 0, i64::MAX).await.map_err(err)?;
     let total = pending.len();
@@ -1027,7 +1030,7 @@ async fn run_ai_screening(
             &model,
             &article.title,
             article.abstract_text.as_deref(),
-            &args.inclusion_criteria,
+            &domain,
             &exc_labeled,
             api_key.as_deref(),
         )

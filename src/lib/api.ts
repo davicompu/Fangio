@@ -492,9 +492,9 @@ export const api = {
   countScreeningTab(tab: ScreeningTab) {
     return invoke<number>("count_screening_tab", { tab });
   },
-  runAiScreening(inclusionCriteria: string[], exclusionCriteria: string[]) {
+  runAiScreening(exclusionCriteria: string[]) {
     return invoke<AiScreeningResult>("run_ai_screening", {
-      args: { inclusion_criteria: inclusionCriteria, exclusion_criteria: exclusionCriteria },
+      args: { exclusion_criteria: exclusionCriteria },
     });
   },
   getPrismaState() {

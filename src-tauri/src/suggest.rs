@@ -454,25 +454,21 @@ fn parse_suggestions(s: &str) -> Option<Vec<Suggestion>> {
     serde_json::from_str::<Vec<Suggestion>>(slice).ok()
 }
 
-/// Screen a single article against inclusion/exclusion criteria.
+/// Screen a single article against the review's domain scope and exclusion criteria.
 /// Returns a ScreeningDecision with decision, optional criterion, rationale, and confidence.
 pub async fn screen_article(
     base_url: &str,
     model: &str,
     title: &str,
     abstract_text: Option<&str>,
-    inclusion_criteria: &[String],
+    domain: &str,
     exclusion_criteria_labeled: &[(i64, String)], // (criterion_number, label)
     api_key: Option<&str>,
 ) -> Result<ScreeningDecision> {
-    let inc_block = if inclusion_criteria.is_empty() {
-        "(none specified)".to_string()
+    let domain_block = if domain.trim().is_empty() {
+        "(not specified)".to_string()
     } else {
-        inclusion_criteria
-            .iter()
-            .map(|c| format!("- {c}"))
-            .collect::<Vec<_>>()
-            .join("\n")
+        domain.to_string()
     };
 
     let exc_block = if exclusion_criteria_labeled.is_empty() {
@@ -488,10 +484,11 @@ pub async fn screen_article(
     let system = format!(
         "You are a systematic literature review screener applying title and abstract screening.\n\
          You decide whether each article should be included, excluded, or flagged as uncertain.\n\n\
-         Inclusion criteria (article must meet ALL to be included):\n{inc_block}\n\n\
-         Exclusion criteria (article is excluded if it meets ANY):\n{exc_block}\n\n\
+         Domain scope of this review:\n{domain_block}\n\n\
+         Exclusion criteria (exclude the article if it meets ANY of these):\n{exc_block}\n\n\
          Respond ONLY with a JSON object with exactly four keys:\n\
-         - \"decision\": \"include\", \"exclude\", or \"uncertain\"\n\
+         - \"decision\": \"include\" if the article is relevant to the domain scope and passes all exclusion criteria, \
+         \"exclude\" if it meets any exclusion criterion, or \"uncertain\" if relevance is unclear\n\
          - \"criterion_number\": the integer EC number if decision is \"exclude\", otherwise null\n\
          - \"rationale\": one sentence explaining the decision\n\
          - \"confidence\": a number 0.0–1.0 (how confident you are)\n\

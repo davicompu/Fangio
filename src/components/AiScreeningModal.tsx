@@ -35,7 +35,6 @@ export function AiScreeningModal({ open, project, criteria: _criteria, onComplet
 
   // Step 1 — checklist
   const [selectedEc, setSelectedEc] = useState<Set<number>>(new Set());
-  const [inclusions, setInclusions] = useState<string[]>([]);
 
   // Step 2 — extra criteria
   const [wantsExtra, setWantsExtra] = useState<boolean | null>(null);
@@ -46,15 +45,12 @@ export function AiScreeningModal({ open, project, criteria: _criteria, onComplet
   const [result, setResult] = useState<AiScreeningResult | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
 
-  // Pre-populate checklist from project Stage 1 criteria
+  const domain = project.domain ?? null;
+
   useEffect(() => {
     if (!open) return;
     setStep("checklist");
     setSelectedEc(new Set(STANDARD_CRITERIA.map((c) => c.number)));
-    const inc: string[] = project.search_inclusion_criteria
-      ? (JSON.parse(project.search_inclusion_criteria) as string[])
-      : [];
-    setInclusions(inc);
     setWantsExtra(null);
     setExtraInput("");
     setProgress(null);
@@ -103,7 +99,7 @@ export function AiScreeningModal({ open, project, criteria: _criteria, onComplet
       unlisten = await listen<AiScreeningProgress>("screen:progress", (e) => {
         setProgress(e.payload);
       });
-      const res = await api.runAiScreening(inclusions, exclusionCriteria);
+      const res = await api.runAiScreening(exclusionCriteria);
       setResult(res);
       setStep("done");
     } catch (e: any) {
@@ -166,28 +162,22 @@ export function AiScreeningModal({ open, project, criteria: _criteria, onComplet
               {step === "checklist" && (
                 <div>
                   <p className="text-[13px] text-[var(--color-paper-600)] leading-relaxed mb-4">
-                    Select the exclusion criteria the AI should apply. Pre-selected from your
-                    project configuration.
+                    The AI will judge relevance against your domain scope, then apply the
+                    exclusion criteria below.
                   </p>
 
-                  {inclusions.length > 0 && (
-                    <div className="mb-4">
-                      <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-paper-500)] mb-2">
-                        Inclusion criteria (from Stage 1)
+                  <div className="mb-4 px-3 py-2.5 rounded-[var(--radius-sm)] bg-[var(--color-paper-100)] border border-[var(--color-paper-200)]">
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-paper-500)] mb-1">
+                      Domain scope
+                    </p>
+                    {domain ? (
+                      <p className="text-[12px] text-[var(--color-ink-700)] leading-relaxed">{domain}</p>
+                    ) : (
+                      <p className="text-[12px] text-[var(--color-paper-400)] italic">
+                        Not set — add a domain scope in project settings for better results.
                       </p>
-                      <ul className="space-y-1">
-                        {inclusions.map((inc, i) => (
-                          <li
-                            key={i}
-                            className="flex items-center gap-2 text-[12px] text-[var(--color-ink-700)]"
-                          >
-                            <Check size={11} strokeWidth={2.5} className="text-[var(--color-ok-500)] shrink-0" />
-                            {inc}
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
+                    )}
+                  </div>
 
                   <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-paper-500)] mb-2">
                     Exclusion criteria
