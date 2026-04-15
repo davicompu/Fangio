@@ -766,6 +766,7 @@ function ArticleCodingCard({
   hasProposals: boolean;
 }) {
   const [excludeOpen, setExcludeOpen] = useState(false);
+  const [inclusionNoteExpanded, setInclusionNoteExpanded] = useState(false);
   const [excluding, setExcluding] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
   const [chatInput, setChatInput] = useState("");
@@ -952,6 +953,51 @@ function ArticleCodingCard({
                 </button>
               )}
             </div>
+              {/* Inclusion note — shows AI rationale or human-screen note */}
+              {(article.ai_rationale || article.screened_at) && (
+                <button
+                  onClick={() => setInclusionNoteExpanded((v) => !v)}
+                  className="mt-2 text-[11px] text-[var(--color-paper-400)] hover:text-[var(--color-ink-700)] font-medium inline-flex items-center gap-1 transition-paper"
+                >
+                  {inclusionNoteExpanded ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
+                  {inclusionNoteExpanded ? "Hide inclusion note" : "Inclusion note"}
+                </button>
+              )}
+              <AnimatePresence>
+                {inclusionNoteExpanded && (article.ai_rationale || article.screened_at) && (
+                  <motion.div
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: "auto" }}
+                    exit={{ opacity: 0, height: 0 }}
+                    className="overflow-hidden"
+                  >
+                    <div className="mt-1.5 px-2.5 py-2 rounded-[var(--radius-xs)] bg-[var(--color-paper-100)] border border-[var(--color-paper-200)]">
+                      {article.ai_rationale ? (
+                        <>
+                          <div className="flex items-center gap-1.5 mb-1">
+                            <Sparkles size={10} strokeWidth={1.75} className="text-[var(--color-accent-500)]" />
+                            <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--color-accent-600)]">
+                              AI screener
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-[var(--color-paper-700)] leading-relaxed italic">
+                            {article.ai_rationale}
+                          </p>
+                        </>
+                      ) : (
+                        <p className="text-[11px] text-[var(--color-paper-500)] italic">
+                          Included manually
+                          {article.screened_at && (
+                            <span className="ml-1 not-italic font-mono text-[10px]">
+                              · {new Date(article.screened_at).toLocaleDateString()}
+                            </span>
+                          )}
+                        </p>
+                      )}
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
             {/* Abstract toggle */}
             {article.abstract_text && (
               <button
