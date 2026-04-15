@@ -144,6 +144,17 @@ pub struct AiCodingCoverage {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct GlossaryTerm {
+    pub id: i64,
+    pub term: String,
+    pub definition: String,
+    /// JSON array string of article IDs, e.g. "[1,3,7]"
+    pub article_ids: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ExclusionCriterionRow {
     pub id: i64,
     pub number: i64,
@@ -2066,5 +2077,131 @@ impl ProjectDb {
             chunk_index: r.get("chunk_index"),
             text: r.get("text"),
         }).collect())
+    }
+
+    // ── Glossary ──────────────────────────────────────────────────────────────
+
+    /// Return all glossary terms sorted alphabetically.
+    pub async fn list_glossary_terms(&self) -> Result<Vec<GlossaryTerm>> {
+        let rows = sqlx::query(
+            "SELECT id, term, definition, article_ids, created_at, updated_at \
+             FROM glossary_term ORDER BY lower(term)",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| GlossaryTerm {
+                id: r.get("id"),
+                term: r.get("term"),
+                definition: r.get("definition"),
+                article_ids: r.get("article_ids"),
+                created_at: r.get("created_at"),
+                updated_at: r.get("updated_at"),
+            })
+            .collect())
+    }
+
+    /// Insert or merge a term. If a term with the same text (case-insensitive)
+    /// already exists, the new article_id is merged into its article_ids list
+    /// and the definition is updated. Returns the row id.
+    pub async fn upsert_glossary_term(
+        &self,
+        term: &str,
+        definition: &str,
+        article_id: i64,
+    ) -> Result<i64> {
+        // Check for existing term (case-insensitive)
+        let existing: Option<(i64, String)> = sqlx::query(
+            "SELECT id, article_ids FROM glossary_term WHERE lower(term) = lower(?)",
+        )
+        .bind(term)
+        .fetch_optional(&self.pool)
+        .await?
+        .map(|r| (r.get("id"), r.get("article_ids")));
+
+        if let Some((id, ids_json)) = existing {
+            // Merge article_id into the existing JSON array
+            let mut ids: Vec<i64> = serde_json::from_str(&ids_json).unwrap_or_default();
+            if !ids.contains(&article_id) {
+                ids.push(article_id);
+            }
+            let new_json = serde_json::to_string(&ids).unwrap_or_else(|_| ids_json);
+            sqlx::query(
+                "UPDATE glossary_term SET definition = ?, article_ids = ?, updated_at = datetime('now') \
+                 WHERE id = ?",
+            )
+            .bind(definition)
+            .bind(&new_json)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+            Ok(id)
+        } else {
+            let ids_json = serde_json::to_string(&[article_id]).unwrap_or_else(|_| "[]".into());
+            let id = sqlx::query(
+                "INSERT INTO glossary_term (term, definition, article_ids, created_at, updated_at) \
+                 VALUES (?, ?, ?, datetime('now'), datetime('now'))",
+            )
+            .bind(term)
+            .bind(definition)
+            .bind(&ids_json)
+            .execute(&self.pool)
+            .await?
+            .last_insert_rowid();
+            Ok(id)
+        }
+    }
+
+    /// Delete a single glossary term by id.
+    pub async fn delete_glossary_term(&self, id: i64) -> Result<()> {
+        sqlx::query("DELETE FROM glossary_term WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Delete all glossary terms (used before a full re-extraction).
+    pub async fn clear_glossary(&self) -> Result<()> {
+        sqlx::query("DELETE FROM glossary_term")
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Return the count of glossary terms.
+    pub async fn glossary_term_count(&self) -> Result<i64> {
+        let row = sqlx::query("SELECT COUNT(*) as n FROM glossary_term")
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(row.get("n"))
+    }
+
+    /// Return all articles that have at least one embedded chunk.
+    /// Returns (article_id, article_title, Vec<chunk_text>).
+    pub async fn articles_with_chunks(&self) -> Result<Vec<(i64, String, Vec<String>)>> {
+        let rows = sqlx::query(
+            "SELECT pc.article_id, a.title, pc.text \
+             FROM pdf_chunk pc \
+             INNER JOIN article a ON a.id = pc.article_id \
+             WHERE pc.embedding IS NOT NULL \
+             ORDER BY pc.article_id, pc.chunk_index",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut result: Vec<(i64, String, Vec<String>)> = vec![];
+        for r in rows {
+            let aid: i64 = r.get("article_id");
+            let title: String = r.get("title");
+            let text: String = r.get("text");
+            if let Some(entry) = result.iter_mut().find(|(id, _, _)| *id == aid) {
+                entry.2.push(text);
+            } else {
+                result.push((aid, title, vec![text]));
+            }
+        }
+        Ok(result)
     }
 }
