@@ -48,9 +48,13 @@ export function GlossaryTab() {
   }, [load]);
 
   const deleteTerm = async (id: number) => {
-    await api.deleteGlossaryTerm(id);
-    setTerms((prev) => prev.filter((t) => t.id !== id));
-    if (expandedId === id) setExpandedId(null);
+    try {
+      await api.deleteGlossaryTerm(id);
+      setTerms((prev) => prev.filter((t) => t.id !== id));
+      if (expandedId === id) setExpandedId(null);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
   };
 
   const filtered = terms.filter((t) =>

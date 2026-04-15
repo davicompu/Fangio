@@ -2170,7 +2170,17 @@ async fn extract_glossary(app: tauri::AppHandle<tauri::Wry>, state: State<'_, Ap
 
         // Concatenate up to 6 chunks (≈ 6000 chars)
         let context: String = chunks.iter().take(6).cloned().collect::<Vec<_>>().join("\n\n");
-        let context = if context.len() > 6000 { context[..6000].to_string() } else { context };
+        let context = if context.len() > 6000 {
+            // Truncate at a UTF-8 character boundary to avoid panics on non-ASCII text
+            let cut = context.char_indices()
+                .take_while(|(i, _)| *i < 6000)
+                .last()
+                .map(|(i, c)| i + c.len_utf8())
+                .unwrap_or(0);
+            context[..cut].to_string()
+        } else {
+            context
+        };
 
         let prompt = format!(
             "You are extracting a domain glossary from an academic article.\n\
@@ -2306,7 +2316,6 @@ async fn cluster_corpus(app: tauri::AppHandle<tauri::Wry>, state: State<'_, AppS
     }
 
     let _ = app.emit("clusters:progress", ClusterProgress { phase: "clustering".into(), done: n, total: n });
-    let _ = app.emit("clusters:progress", ClusterProgress { phase: "labelling".into(), done: 0, total: k });
 
     // Build cluster groups
     let mut groups: Vec<Vec<(i64, String)>> = vec![vec![]; k];
@@ -2314,9 +2323,11 @@ async fn cluster_corpus(app: tauri::AppHandle<tauri::Wry>, state: State<'_, AppS
         groups[assignments[i]].push((*aid, title.clone()));
     }
 
-    // Remove empty clusters
+    // Remove empty clusters — compute total_groups before emitting labelling event
     let groups: Vec<Vec<(i64, String)>> = groups.into_iter().filter(|g| !g.is_empty()).collect();
     let total_groups = groups.len();
+
+    let _ = app.emit("clusters:progress", ClusterProgress { phase: "labelling".into(), done: 0, total: total_groups });
 
     // Label each cluster via LLM
     let mut nodes = vec![];

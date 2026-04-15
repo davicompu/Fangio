@@ -2111,16 +2111,18 @@ impl ProjectDb {
         definition: &str,
         article_id: i64,
     ) -> Result<i64> {
-        // Check for existing term (case-insensitive)
+        let mut tx = self.pool.begin().await?;
+
+        // SELECT inside the transaction to prevent TOCTOU race
         let existing: Option<(i64, String)> = sqlx::query(
             "SELECT id, article_ids FROM glossary_term WHERE lower(term) = lower(?)",
         )
         .bind(term)
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *tx)
         .await?
         .map(|r| (r.get("id"), r.get("article_ids")));
 
-        if let Some((id, ids_json)) = existing {
+        let row_id = if let Some((id, ids_json)) = existing {
             // Merge article_id into the existing JSON array
             let mut ids: Vec<i64> = serde_json::from_str(&ids_json).unwrap_or_default();
             if !ids.contains(&article_id) {
@@ -2134,23 +2136,25 @@ impl ProjectDb {
             .bind(definition)
             .bind(&new_json)
             .bind(id)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?;
-            Ok(id)
+            id
         } else {
             let ids_json = serde_json::to_string(&[article_id]).unwrap_or_else(|_| "[]".into());
-            let id = sqlx::query(
+            sqlx::query(
                 "INSERT INTO glossary_term (term, definition, article_ids, created_at, updated_at) \
                  VALUES (?, ?, ?, datetime('now'), datetime('now'))",
             )
             .bind(term)
             .bind(definition)
             .bind(&ids_json)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?
-            .last_insert_rowid();
-            Ok(id)
-        }
+            .last_insert_rowid()
+        };
+
+        tx.commit().await?;
+        Ok(row_id)
     }
 
     /// Delete a single glossary term by id.
@@ -2191,14 +2195,18 @@ impl ProjectDb {
         .fetch_all(&self.pool)
         .await?;
 
+        // Rows are ORDER BY article_id so consecutive rows for the same article are adjacent —
+        // track the last-seen id to avoid an O(n²) linear scan.
         let mut result: Vec<(i64, String, Vec<String>)> = vec![];
+        let mut last_aid: Option<i64> = None;
         for r in rows {
             let aid: i64 = r.get("article_id");
             let title: String = r.get("title");
             let text: String = r.get("text");
-            if let Some(entry) = result.iter_mut().find(|(id, _, _)| *id == aid) {
-                entry.2.push(text);
+            if last_aid == Some(aid) {
+                result.last_mut().unwrap().2.push(text);
             } else {
+                last_aid = Some(aid);
                 result.push((aid, title, vec![text]));
             }
         }

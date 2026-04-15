@@ -190,6 +190,11 @@ export function ClustersTab() {
       >
         <RefreshCw size={11} strokeWidth={2} /> Rebuild
       </button>
+      {error && (
+        <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-10 px-4 py-2 rounded-[var(--radius-sm)] bg-white border border-[var(--color-error-200)] text-[12px] text-[var(--color-error-600)] shadow-sm">
+          {error}
+        </div>
+      )}
     </div>
   );
 }
