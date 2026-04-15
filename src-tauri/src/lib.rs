@@ -2089,6 +2089,33 @@ struct AskArticleArgs {
     question: String,
 }
 
+#[derive(serde::Serialize, Clone)]
+struct ClusterProgress {
+    phase: String, // "embedding" | "clustering" | "labelling" | "done"
+    done: usize,
+    total: usize,
+}
+
+#[derive(serde::Serialize, Clone)]
+struct ClusterArticle {
+    id: i64,
+    title: String,
+}
+
+#[derive(serde::Serialize, Clone)]
+struct ClusterNode {
+    id: usize,
+    label: String,
+    articles: Vec<ClusterArticle>,
+}
+
+#[derive(serde::Serialize, Clone)]
+struct GlossaryProgress {
+    done: usize,
+    total: usize,
+    article_title: String,
+}
+
 #[derive(Debug, Serialize)]
 struct AskCitation {
     article_id: i64,
@@ -2104,6 +2131,224 @@ struct AskResult {
     citations: Vec<AskCitation>,
     model: Option<String>,
     embed_model: String,
+}
+
+#[tauri::command]
+async fn list_glossary_terms(state: State<'_, AppState>) -> Result<Vec<db::GlossaryTerm>, String> {
+    let db = state.current().await.ok_or("no project open")?;
+    db.list_glossary_terms().await.map_err(err)
+}
+
+#[tauri::command]
+async fn delete_glossary_term(id: i64, state: State<'_, AppState>) -> Result<(), String> {
+    let db = state.current().await.ok_or("no project open")?;
+    db.delete_glossary_term(id).await.map_err(err)
+}
+
+#[tauri::command]
+async fn extract_glossary(app: tauri::AppHandle<tauri::Wry>, state: State<'_, AppState>) -> Result<usize, String> {
+    let db = state.current().await.ok_or("no project open")?;
+    let settings = db.all_settings().await.map_err(err)?;
+    let base_url = settings.get("lmstudio.base_url").and_then(|v| v.as_str()).unwrap_or("http://127.0.0.1:1234/v1").to_string();
+    let api_key = settings.get("lmstudio.api_key").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let chat_model = settings.get("lmstudio.chat_model").and_then(|v| v.as_str()).unwrap_or("google/gemma-4-e2b").to_string();
+
+    db.clear_glossary().await.map_err(err)?;
+
+    let articles = db.articles_with_chunks().await.map_err(err)?;
+    let total = articles.len();
+    if total == 0 {
+        return Err("No indexed articles. Index and embed PDFs first.".into());
+    }
+
+    for (i, (article_id, title, chunks)) in articles.iter().enumerate() {
+        let _ = app.emit("glossary:progress", GlossaryProgress {
+            done: i,
+            total,
+            article_title: title.clone(),
+        });
+
+        // Concatenate up to 6 chunks (≈ 6000 chars)
+        let context: String = chunks.iter().take(6).cloned().collect::<Vec<_>>().join("\n\n");
+        let context = if context.len() > 6000 { context[..6000].to_string() } else { context };
+
+        let prompt = format!(
+            "You are extracting a domain glossary from an academic article.\n\
+             Article title: {}\n\n\
+             Article text (excerpt):\n{}\n\n\
+             Extract 3 to 8 domain-specific technical terms or constructs that are important in this article. \
+             For each term provide a concise one-sentence definition as used in this article.\n\
+             Reply with a JSON array only, no prose before or after:\n\
+             [{{\"term\":\"Term name\",\"definition\":\"Definition sentence.\"}}]",
+            title, context
+        );
+
+        let response = match lmstudio::chat(
+            &base_url, &chat_model,
+            &[lmstudio::ChatMessage { role: "user".into(), content: prompt }],
+            None,
+            api_key.as_deref(),
+        ).await {
+            Ok(r) => r.content,
+            Err(_) => continue,
+        };
+
+        // Extract JSON array from response
+        let json_start = response.find('[');
+        let json_end = response.rfind(']');
+        if let (Some(s), Some(e)) = (json_start, json_end) {
+            let json_str = &response[s..=e];
+            if let Ok(terms) = serde_json::from_str::<Vec<serde_json::Value>>(json_str) {
+                for t in terms {
+                    let term = t.get("term").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+                    let def = t.get("definition").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+                    if !term.is_empty() && !def.is_empty() {
+                        let _ = db.upsert_glossary_term(&term, &def, *article_id).await;
+                    }
+                }
+            }
+        }
+    }
+
+    let _ = app.emit("glossary:progress", GlossaryProgress {
+        done: total,
+        total,
+        article_title: String::new(),
+    });
+
+    let count = db.glossary_term_count().await.map_err(err)?;
+    Ok(count as usize)
+}
+
+#[tauri::command]
+async fn cluster_corpus(app: tauri::AppHandle<tauri::Wry>, state: State<'_, AppState>) -> Result<Vec<ClusterNode>, String> {
+    let db = state.current().await.ok_or("no project open")?;
+    let settings = db.all_settings().await.map_err(err)?;
+    let base_url = settings.get("lmstudio.base_url").and_then(|v| v.as_str()).unwrap_or("http://127.0.0.1:1234/v1").to_string();
+    let api_key = settings.get("lmstudio.api_key").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let chat_model = settings.get("lmstudio.chat_model").and_then(|v| v.as_str()).unwrap_or("google/gemma-4-e2b").to_string();
+
+    let _ = app.emit("clusters:progress", ClusterProgress { phase: "embedding".into(), done: 0, total: 0 });
+
+    // Gather per-article centroid embeddings
+    let all_chunks = db.all_embedded_chunks().await.map_err(err)?;
+    if all_chunks.is_empty() {
+        return Err("No embedded chunks. Index and embed PDFs first.".into());
+    }
+
+    // Group chunks by article_id, average embeddings to get one centroid per article
+    let mut article_chunks: std::collections::HashMap<i64, (String, Vec<Vec<f32>>)> = std::collections::HashMap::new();
+    for (_chunk_id, art_id, title, _ci, _text, bytes) in &all_chunks {
+        let emb = vector::bytes_to_f32s(bytes);
+        article_chunks.entry(*art_id).or_insert_with(|| (title.clone(), vec![])).1.push(emb);
+    }
+
+    let articles: Vec<(i64, String, Vec<f32>)> = article_chunks
+        .into_iter()
+        .map(|(aid, (title, embs))| {
+            let dim = embs[0].len();
+            let mut centroid = vec![0.0f32; dim];
+            for e in &embs {
+                for i in 0..dim { centroid[i] += e[i]; }
+            }
+            let n = embs.len() as f32;
+            for v in &mut centroid { *v /= n; }
+            (aid, title, centroid)
+        })
+        .collect();
+
+    let n = articles.len();
+    if n < 2 {
+        return Err("Need at least 2 articles with embeddings to cluster.".into());
+    }
+
+    // K-means: k = min(8, n/2), max 20 iterations
+    let k = (n / 2).min(8).max(2);
+    let dim = articles[0].2.len();
+
+    // Initialize centroids by picking k evenly-spaced articles
+    let mut centroids: Vec<Vec<f32>> = (0..k)
+        .map(|i| articles[i * n / k].2.clone())
+        .collect();
+
+    let mut assignments = vec![0usize; n];
+
+    for _iter in 0..20 {
+        // Assign
+        let mut changed = false;
+        for (i, (_, _, emb)) in articles.iter().enumerate() {
+            let best = (0..k)
+                .max_by(|&a, &b| {
+                    vector::cosine(emb, &centroids[a])
+                        .partial_cmp(&vector::cosine(emb, &centroids[b]))
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .unwrap_or(0);
+            if assignments[i] != best { changed = true; }
+            assignments[i] = best;
+        }
+        if !changed { break; }
+
+        // Update centroids
+        let mut sums = vec![vec![0.0f32; dim]; k];
+        let mut counts = vec![0usize; k];
+        for (i, (_, _, emb)) in articles.iter().enumerate() {
+            let c = assignments[i];
+            for j in 0..dim { sums[c][j] += emb[j]; }
+            counts[c] += 1;
+        }
+        for c in 0..k {
+            if counts[c] > 0 {
+                let n_c = counts[c] as f32;
+                centroids[c] = sums[c].iter().map(|v| v / n_c).collect();
+            }
+        }
+    }
+
+    let _ = app.emit("clusters:progress", ClusterProgress { phase: "labelling".into(), done: 0, total: k });
+
+    // Build cluster groups
+    let mut groups: Vec<Vec<(i64, String)>> = vec![vec![]; k];
+    for (i, (aid, title, _)) in articles.iter().enumerate() {
+        groups[assignments[i]].push((*aid, title.clone()));
+    }
+
+    // Remove empty clusters
+    let groups: Vec<Vec<(i64, String)>> = groups.into_iter().filter(|g| !g.is_empty()).collect();
+    let total_groups = groups.len();
+
+    // Label each cluster via LLM
+    let mut nodes = vec![];
+    for (idx, group) in groups.into_iter().enumerate() {
+        let titles_list = group.iter().enumerate()
+            .map(|(i, (_, t))| format!("{}. {}", i + 1, t))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let prompt = format!(
+            "These are titles of academic articles in a systematic literature review:\n{}\n\n\
+             Give a concise 3–5 word thematic label that best describes what these articles have in common. \
+             Reply with ONLY the label, no punctuation, no explanation.",
+            titles_list
+        );
+        let label = match lmstudio::chat(
+            &base_url, &chat_model,
+            &[lmstudio::ChatMessage { role: "user".into(), content: prompt }],
+            None,
+            api_key.as_deref(),
+        ).await {
+            Ok(r) => r.content.trim().trim_matches('"').to_string(),
+            Err(_) => format!("Cluster {}", idx + 1),
+        };
+        let _ = app.emit("clusters:progress", ClusterProgress { phase: "labelling".into(), done: idx + 1, total: total_groups });
+        nodes.push(ClusterNode {
+            id: idx,
+            label,
+            articles: group.into_iter().map(|(id, title)| ClusterArticle { id, title }).collect(),
+        });
+    }
+
+    let _ = app.emit("clusters:progress", ClusterProgress { phase: "done".into(), done: total_groups, total: total_groups });
+    Ok(nodes)
 }
 
 #[tauri::command]
@@ -2869,6 +3114,10 @@ pub fn run() {
             link_pdf,
             index_pdf,
             embed_pdf,
+            cluster_corpus,
+            extract_glossary,
+            list_glossary_terms,
+            delete_glossary_term,
             ask_corpus,
             ask_article,
             get_indexed_article_ids,
