@@ -12,6 +12,7 @@ import {
   Loader2,
   RotateCcw,
   Sparkles,
+  X,
 } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -365,6 +366,7 @@ function ScreeningCard({
   onDecision: () => Promise<void>;
 }) {
   const [busy, setBusy] = useState(false);
+  const [rationaleOpen, setRationaleOpen] = useState(false);
   // Only show "Included" for articles the user explicitly kept via screening.
   // Articles auto-included by PDF attachment have screened_at = null.
   const isDecided = article.status === "included" && article.screened_at !== null;
@@ -478,27 +480,76 @@ function ScreeningCard({
 
           {/* AI rationale — shown for AI-screened and AI-uncertain articles */}
           {article.ai_rationale && (
-            <div className="mt-2 flex items-start gap-1.5 text-[11px]">
-              <Bot size={11} strokeWidth={1.75} className="shrink-0 mt-0.5 text-[var(--color-accent-500)]" />
-              <span className={cn(
-                "leading-snug",
-                article.ai_confidence !== null && article.status === "retrieved"
-                  ? "text-[var(--color-paper-500)] italic"
-                  : "text-[var(--color-paper-500)]",
-              )}>
-                {article.ai_confidence !== null && article.status === "retrieved" && (
-                  <span className="font-medium text-[var(--color-warn-600)] not-italic mr-1">
-                    AI couldn't decide —
-                  </span>
+            <>
+              <button
+                onClick={() => setRationaleOpen(true)}
+                className="mt-2 flex items-start gap-1.5 text-[11px] text-left w-full group"
+              >
+                <Bot size={11} strokeWidth={1.75} className="shrink-0 mt-0.5 text-[var(--color-accent-500)]" />
+                <span className={cn(
+                  "leading-snug group-hover:underline",
+                  article.ai_confidence !== null && article.status === "retrieved"
+                    ? "text-[var(--color-paper-500)] italic"
+                    : "text-[var(--color-paper-500)]",
+                )}>
+                  {article.ai_confidence !== null && article.status === "retrieved" && (
+                    <span className="font-medium text-[var(--color-warn-600)] not-italic mr-1">
+                      AI couldn't decide —
+                    </span>
+                  )}
+                  <span className="line-clamp-2">{article.ai_rationale}</span>
+                  {article.ai_confidence !== null && (
+                    <span className="ml-1 text-[var(--color-paper-400)] not-italic">
+                      ({Math.round(article.ai_confidence * 100)}% confidence)
+                    </span>
+                  )}
+                </span>
+              </button>
+              <AnimatePresence>
+                {rationaleOpen && (
+                  <motion.div
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    transition={{ duration: 0.12 }}
+                    className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-black/30 backdrop-blur-sm"
+                    onClick={() => setRationaleOpen(false)}
+                  >
+                    <motion.div
+                      initial={{ opacity: 0, scale: 0.97, y: 6 }}
+                      animate={{ opacity: 1, scale: 1, y: 0 }}
+                      exit={{ opacity: 0, scale: 0.97, y: 6 }}
+                      transition={{ duration: 0.15 }}
+                      className="w-full max-w-md bg-white rounded-[var(--radius-lg)] border border-[var(--color-paper-300)] shadow-[var(--shadow-paper-lg)] overflow-hidden"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <div className="flex items-center gap-2 px-5 py-3.5 border-b border-[var(--color-paper-200)]">
+                        <Bot size={14} strokeWidth={1.75} className="text-[var(--color-accent-500)]" />
+                        <span className="text-[13px] font-semibold text-[var(--color-ink-900)] flex-1">
+                          AI screener — rationale
+                        </span>
+                        <button
+                          onClick={() => setRationaleOpen(false)}
+                          className="p-1 rounded-[var(--radius-xs)] hover:bg-[var(--color-paper-200)] text-[var(--color-paper-500)] transition-paper"
+                        >
+                          <X size={13} strokeWidth={2} />
+                        </button>
+                      </div>
+                      <div className="px-5 py-4">
+                        <p className="text-[13px] text-[var(--color-ink-800)] leading-relaxed">
+                          {article.ai_rationale}
+                          {article.ai_confidence !== null && (
+                            <span className="ml-2 text-[11px] text-[var(--color-paper-400)] font-mono">
+                              ({Math.round(article.ai_confidence * 100)}% confidence)
+                            </span>
+                          )}
+                        </p>
+                      </div>
+                    </motion.div>
+                  </motion.div>
                 )}
-                {article.ai_rationale}
-                {article.ai_confidence !== null && (
-                  <span className="ml-1 text-[var(--color-paper-400)]">
-                    ({Math.round(article.ai_confidence * 100)}% confidence)
-                  </span>
-                )}
-              </span>
-            </div>
+              </AnimatePresence>
+            </>
           )}
 
           <button

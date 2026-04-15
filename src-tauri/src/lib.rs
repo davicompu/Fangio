@@ -36,13 +36,28 @@ use tokio::sync::RwLock;
 
 /// App-wide state. The currently-open project (if any) lives behind an RwLock
 /// so that opening or moving projects swaps it atomically.
-#[derive(Default)]
 struct AppState {
     current: RwLock<Option<Arc<ProjectDb>>>,
     /// Set to true by pause_ai_screening; cleared at start of each run.
     screening_paused: Arc<AtomicBool>,
     /// Set to true by cancel_ai_screening; cleared at start of each run.
     screening_cancelled: Arc<AtomicBool>,
+    /// Set to true by pause_ai_coding; cleared at start of each run.
+    coding_paused: Arc<AtomicBool>,
+    /// Set to true by cancel_ai_coding; cleared at start of each run.
+    coding_cancelled: Arc<AtomicBool>,
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        Self {
+            current: Default::default(),
+            screening_paused: Arc::new(AtomicBool::new(false)),
+            screening_cancelled: Arc::new(AtomicBool::new(false)),
+            coding_paused: Arc::new(AtomicBool::new(false)),
+            coding_cancelled: Arc::new(AtomicBool::new(false)),
+        }
+    }
 }
 
 impl AppState {
@@ -977,6 +992,513 @@ async fn resume_ai_screening(state: State<'_, AppState>) -> Result<(), String> {
 async fn cancel_ai_screening(state: State<'_, AppState>) -> Result<(), String> {
     state.screening_cancelled.store(true, Ordering::SeqCst);
     Ok(())
+}
+
+// ── AI Coding ──────────────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+struct RunAiCodingArgs {
+    rater1_model: String,
+    rater2_model: Option<String>,
+    dimensions: Vec<String>,
+    run_id: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct AiCodingProgress {
+    done: usize,
+    total: usize,
+    article_title: String,
+    /// "indexing" | "coding-rater1" | "coding-rater2" | "resolving"
+    phase: String,
+    skipped_no_pdf: usize,
+    consensus: usize,
+    disagreements: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct AiCodingResult {
+    processed: usize,
+    consensus: usize,
+    disagreements: usize,
+    skipped_no_pdf: usize,
+    indexed: usize,
+}
+
+#[tauri::command]
+async fn pause_ai_coding(state: State<'_, AppState>) -> Result<(), String> {
+    state.coding_paused.store(true, Ordering::SeqCst);
+    Ok(())
+}
+
+#[tauri::command]
+async fn resume_ai_coding(state: State<'_, AppState>) -> Result<(), String> {
+    state.coding_paused.store(false, Ordering::SeqCst);
+    Ok(())
+}
+
+#[tauri::command]
+async fn cancel_ai_coding(state: State<'_, AppState>) -> Result<(), String> {
+    state.coding_cancelled.store(true, Ordering::SeqCst);
+    Ok(())
+}
+
+#[tauri::command]
+async fn get_ai_coding_coverage(state: State<'_, AppState>) -> Result<db::AiCodingCoverage, String> {
+    let db = state.current().await.ok_or("no project open")?;
+    db.ai_coding_coverage().await.map_err(err)
+}
+
+#[tauri::command]
+async fn list_ai_coding_proposals(
+    article_id: i64,
+    state: State<'_, AppState>,
+) -> Result<Vec<db::AiCodingProposal>, String> {
+    let db = state.current().await.ok_or("no project open")?;
+    db.list_ai_coding_proposals_for_article(article_id).await.map_err(err)
+}
+
+#[tauri::command]
+async fn list_ai_coding_proposals_for_articles(
+    article_ids: Vec<i64>,
+    state: State<'_, AppState>,
+) -> Result<Vec<db::AiCodingProposal>, String> {
+    let db = state.current().await.ok_or("no project open")?;
+    db.list_ai_coding_proposals_for_articles(&article_ids).await.map_err(err)
+}
+
+#[tauri::command]
+async fn accept_ai_coding_proposal(
+    proposal_id: i64,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let db = state.current().await.ok_or("no project open")?;
+    let proposal = db
+        .get_ai_coding_proposal_by_id(proposal_id)
+        .await
+        .map_err(err)?
+        .ok_or("proposal not found")?;
+    db.save_coding(
+        proposal.article_id,
+        &proposal.dimension,
+        &proposal.code,
+        proposal.rationale.as_deref(),
+        "model-ai-accepted",
+        proposal.model_name.as_deref(),
+    )
+    .await
+    .map_err(err)?;
+    db.delete_ai_coding_proposal(proposal_id).await.map_err(err)?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn reject_ai_coding_proposal(
+    proposal_id: i64,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let db = state.current().await.ok_or("no project open")?;
+    db.delete_ai_coding_proposal(proposal_id).await.map_err(err)?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn reject_all_ai_coding_proposals_for_article(
+    article_id: i64,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let db = state.current().await.ok_or("no project open")?;
+    db.delete_ai_coding_proposals_for_article(article_id)
+        .await
+        .map_err(err)?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn run_ai_coding(
+    args: RunAiCodingArgs,
+    app: tauri::AppHandle<tauri::Wry>,
+    state: State<'_, AppState>,
+) -> Result<AiCodingResult, String> {
+    let db = state.current().await.ok_or("no project open")?;
+    let settings = db.all_settings().await.map_err(err)?;
+
+    let base_url = settings
+        .get("lmstudio.base_url")
+        .and_then(|v| v.as_str())
+        .unwrap_or("http://127.0.0.1:1234/v1")
+        .to_string();
+    let api_key = settings
+        .get("lmstudio.api_key")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let embed_model = settings
+        .get("lmstudio.embed_model")
+        .and_then(|v| v.as_str())
+        .unwrap_or("text-embedding-embeddinggemma-300m-qat")
+        .to_string();
+
+    // Reset flags from any previous run
+    state.coding_paused.store(false, Ordering::SeqCst);
+    state.coding_cancelled.store(false, Ordering::SeqCst);
+    let paused = Arc::clone(&state.coding_paused);
+    let cancelled = Arc::clone(&state.coding_cancelled);
+
+    // Load project context for the prompt
+    let project = db.get_project().await.map_err(err)?;
+    let domain = project.domain.clone().unwrap_or_default();
+    let framework = project.framework.clone().unwrap_or_default();
+    let rqs: Vec<String> = [
+        project.rq_what.clone(),
+        project.rq_how.clone(),
+        project.rq_where.clone(),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    let rq_refs: Vec<&str> = rqs.iter().map(|s| s.as_str()).collect();
+
+    // Load all framework dimensions (name + description)
+    let all_dims: Vec<(String, String)> = {
+        let fw = framework.as_str();
+        if fw == "Custom" {
+            // Custom frameworks: use code defs or project's custom_dimensions list
+            let defs = db.list_framework_code_defs().await.map_err(err)?;
+            let mut seen = std::collections::HashSet::new();
+            let mut result: Vec<(String, String)> = Vec::new();
+            for def in &defs {
+                if seen.insert(def.dimension.clone()) {
+                    result.push((def.dimension.clone(), String::new()));
+                }
+            }
+            result
+        } else {
+            framework::dimensions_for(fw)
+                .into_iter()
+                .map(|d| (d.to_string(), framework::description_for(fw, d).to_string()))
+                .collect()
+        }
+    };
+    // Filter to only the requested dimensions
+    let dims_to_code: Vec<(String, String)> = all_dims
+        .into_iter()
+        .filter(|(name, _)| args.dimensions.contains(name))
+        .collect();
+
+    if dims_to_code.is_empty() {
+        return Err("No valid dimensions selected for coding.".into());
+    }
+
+    // Load all included articles
+    let articles = db
+        .list_articles_for_coding(0, i64::MAX)
+        .await
+        .map_err(err)?;
+    let total = articles.len();
+
+    let mut processed = 0usize;
+    let mut consensus = 0usize;
+    let mut disagreements = 0usize;
+    let mut skipped_no_pdf = 0usize;
+    let mut indexed = 0usize;
+
+    // Fetch the PDF index once before the loop — calling this inside the loop
+    // would execute an identical DB query for every article (N+1 pattern).
+    let articles_with_pdf = db.included_articles_with_pdf().await.map_err(err)?;
+
+    // Load existing codes per dimension once — same result for every article
+    // (distinct codes are corpus-wide, not per-article), so this is safe to hoist.
+    let mut existing_by_dim: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+    for (dim_name, _) in &dims_to_code {
+        let codes = db.distinct_codes_for_dimension(dim_name).await.map_err(err)?;
+        existing_by_dim.insert(dim_name.clone(), codes);
+    }
+
+    for (i, article) in articles.iter().enumerate() {
+        // Cancel check
+        if cancelled.load(Ordering::SeqCst) {
+            break;
+        }
+        // Pause spin-wait
+        while paused.load(Ordering::SeqCst) {
+            if cancelled.load(Ordering::SeqCst) {
+                break;
+            }
+            tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+        }
+        if cancelled.load(Ordering::SeqCst) {
+            break;
+        }
+
+        // Check if this article has a PDF linked
+        let pdf_info = articles_with_pdf.iter().find(|(_, aid, _, _)| *aid == article.id);
+
+        if pdf_info.is_none() {
+            skipped_no_pdf += 1;
+            let _ = app.emit(
+                "coding:progress",
+                AiCodingProgress {
+                    done: i + 1,
+                    total,
+                    article_title: format!("⚠ No PDF: {}", article.title),
+                    phase: "indexing".into(),
+                    skipped_no_pdf,
+                    consensus,
+                    disagreements,
+                },
+            );
+            continue;
+        }
+
+        let (pdf_id, _, _, stored_path) = pdf_info.unwrap();
+
+        // Index the PDF if not yet done (chunks present = indexed)
+        let chunks_exist: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pdf_chunk WHERE article_id = ?",
+        )
+        .bind(article.id)
+        .fetch_one(&db.pool)
+        .await
+        .map_err(err)?;
+
+        if chunks_exist == 0 {
+            let _ = app.emit(
+                "coding:progress",
+                AiCodingProgress {
+                    done: i,
+                    total,
+                    article_title: article.title.clone(),
+                    phase: "indexing".into(),
+                    skipped_no_pdf,
+                    consensus,
+                    disagreements,
+                },
+            );
+
+            match pdf::extract(std::path::Path::new(stored_path)) {
+                Ok(extracted) => {
+                    let chunks = pdf::chunk(&extracted.text);
+                    let chunk_records: Vec<(i64, String)> =
+                        chunks.iter().map(|c| (c.index as i64, c.text.clone())).collect();
+                    db.save_pdf_chunks(*pdf_id, article.id, extracted.text.len() as i64, &chunk_records)
+                        .await
+                        .map_err(err)?;
+
+                    // Embed chunks so the article can be used for chat later
+                    if !embed_model.is_empty() {
+                        let chunk_list = db.list_chunks_for_pdf(*pdf_id).await.map_err(err)?;
+                        let batch_size = 16usize;
+                        for batch in chunk_list.chunks(batch_size) {
+                            let texts: Vec<&str> = batch.iter().map(|c| c.text.as_str()).collect();
+                            if let Ok(embeddings) = lmstudio::embed(
+                                &base_url,
+                                &embed_model,
+                                &texts,
+                                api_key.as_deref(),
+                            )
+                            .await
+                            {
+                                for (chunk, emb) in batch.iter().zip(embeddings.iter()) {
+                                    let bytes = vector::f32s_to_bytes(emb);
+                                    let _ = db.save_chunk_embedding(chunk.id, &bytes, &embed_model).await;
+                                }
+                            }
+                        }
+                        let _ = db.mark_pdf_embedded(*pdf_id).await;
+                    }
+                    indexed += 1;
+                }
+                Err(e) => {
+                    eprintln!("pdf extract error for article {}: {e}", article.id);
+                    skipped_no_pdf += 1;
+                    continue;
+                }
+            }
+        }
+
+        // Get first 8 chunks as context text for coding
+        let chunks = db.list_chunks_for_article(article.id, 8).await.map_err(err)?;
+        let context_text: String = chunks.iter().map(|c| c.text.as_str()).collect::<Vec<_>>().join("\n\n");
+
+        // Rater 1
+        let _ = app.emit(
+            "coding:progress",
+            AiCodingProgress {
+                done: i,
+                total,
+                article_title: article.title.clone(),
+                phase: "coding-rater1".into(),
+                skipped_no_pdf,
+                consensus,
+                disagreements,
+            },
+        );
+
+        let rater1_result = suggest::code_article_for_dimensions(
+            &base_url,
+            &args.rater1_model,
+            &framework,
+            &domain,
+            &rq_refs,
+            &dims_to_code,
+            &existing_by_dim,
+            &article.title,
+            article.authors.as_deref(),
+            &context_text,
+            api_key.as_deref(),
+        )
+        .await;
+
+        let rater1_codings = match rater1_result {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("Rater 1 coding error for article {}: {e}", article.id);
+                processed += 1;
+                continue;
+            }
+        };
+
+        // Rater 2 (optional)
+        let rater2_codings: Option<Vec<suggest::DimensionCoding>> = if let Some(r2_model) = &args.rater2_model {
+            let _ = app.emit(
+                "coding:progress",
+                AiCodingProgress {
+                    done: i,
+                    total,
+                    article_title: article.title.clone(),
+                    phase: "coding-rater2".into(),
+                    skipped_no_pdf,
+                    consensus,
+                    disagreements,
+                },
+            );
+            match suggest::code_article_for_dimensions(
+                &base_url,
+                r2_model,
+                &framework,
+                &domain,
+                &rq_refs,
+                &dims_to_code,
+                &existing_by_dim,
+                &article.title,
+                article.authors.as_deref(),
+                &context_text,
+                api_key.as_deref(),
+            )
+            .await
+            {
+                Ok(c) => Some(c),
+                Err(e) => {
+                    eprintln!("Rater 2 coding error for article {}: {e}", article.id);
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        // Resolve: compare rater1 vs rater2 per dimension
+        let _ = app.emit(
+            "coding:progress",
+            AiCodingProgress {
+                done: i,
+                total,
+                article_title: article.title.clone(),
+                phase: "resolving".into(),
+                skipped_no_pdf,
+                consensus,
+                disagreements,
+            },
+        );
+
+        if let Some(r2) = &rater2_codings {
+            // Build lookup: dimension -> Vec<code> for each rater
+            let r1_map: std::collections::HashMap<&str, Vec<&str>> = rater1_codings
+                .iter()
+                .map(|dc| (dc.dimension.as_str(), dc.suggestions.iter().map(|s| s.code.as_str()).collect()))
+                .collect();
+            let r2_map: std::collections::HashMap<&str, Vec<&str>> = r2
+                .iter()
+                .map(|dc| (dc.dimension.as_str(), dc.suggestions.iter().map(|s| s.code.as_str()).collect()))
+                .collect();
+
+            for r1_dim_coding in &rater1_codings {
+                let dim = r1_dim_coding.dimension.as_str();
+                let r2_codes = r2_map.get(dim).cloned().unwrap_or_default();
+
+                for s in &r1_dim_coding.suggestions {
+                    if r2_codes.contains(&s.code.as_str()) {
+                        // Both raters agree → save as consensus
+                        let _ = db.save_coding(
+                            article.id,
+                            dim,
+                            &s.code,
+                            s.rationale.as_deref(),
+                            "model-ai-consensus",
+                            Some(&args.rater1_model),
+                        ).await;
+                        consensus += 1;
+                    } else {
+                        // Rater 1 only → save as proposal
+                        let _ = db.save_ai_coding_proposal(
+                            article.id,
+                            dim,
+                            &s.code,
+                            s.rationale.as_deref(),
+                            1,
+                            Some(&args.rater1_model),
+                            &args.run_id,
+                        ).await;
+                        disagreements += 1;
+                    }
+                }
+
+                // Rater 2 codes that rater 1 didn't suggest
+                if let Some(r2_dim_coding) = r2.iter().find(|dc| dc.dimension == dim) {
+                    let r1_codes = r1_map.get(dim).cloned().unwrap_or_default();
+                    for s in &r2_dim_coding.suggestions {
+                        if !r1_codes.contains(&s.code.as_str()) {
+                            let _ = db.save_ai_coding_proposal(
+                                article.id,
+                                dim,
+                                &s.code,
+                                s.rationale.as_deref(),
+                                2,
+                                args.rater2_model.as_deref(),
+                                &args.run_id,
+                            ).await;
+                        }
+                    }
+                }
+            }
+        } else {
+            // Single rater → apply all directly as consensus
+            for dim_coding in &rater1_codings {
+                for s in &dim_coding.suggestions {
+                    let _ = db.save_coding(
+                        article.id,
+                        &dim_coding.dimension,
+                        &s.code,
+                        s.rationale.as_deref(),
+                        "model-ai-consensus",
+                        Some(&args.rater1_model),
+                    ).await;
+                    consensus += 1;
+                }
+            }
+        }
+
+        processed += 1;
+    }
+
+    Ok(AiCodingResult {
+        processed,
+        consensus,
+        disagreements,
+        skipped_no_pdf,
+        indexed,
+    })
 }
 
 #[tauri::command]
@@ -2327,6 +2849,16 @@ pub fn run() {
             pause_ai_screening,
             resume_ai_screening,
             cancel_ai_screening,
+            run_ai_coding,
+            pause_ai_coding,
+            resume_ai_coding,
+            cancel_ai_coding,
+            get_ai_coding_coverage,
+            list_ai_coding_proposals,
+            list_ai_coding_proposals_for_articles,
+            accept_ai_coding_proposal,
+            reject_ai_coding_proposal,
+            reject_all_ai_coding_proposals_for_article,
             get_prisma_state,
             suggest_codes,
             suggest_step,
