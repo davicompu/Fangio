@@ -69,6 +69,115 @@ pub struct ScreeningDecision {
     pub confidence: f64,
 }
 
+/// Generate 1–3 multi-choice clarifying questions for an onboarding step.
+/// The model is told the step kind and the researcher's current draft, then
+/// asked to surface the most useful disambiguating questions before any rewrite.
+#[allow(clippy::too_many_arguments)]
+pub async fn suggest_step_questions(
+    base_url: &str,
+    model: &str,
+    step_id: &str,
+    current_value: &str,
+    project_name: &str,
+    slr_type: &str,
+    framework: &str,
+    domain: &str,
+    api_key: Option<&str>,
+) -> Result<StepQuestionsResult> {
+    let system = "You are a systematic literature review expert assisting a researcher \
+through the SPAR-4-SLR onboarding process. \
+Before suggesting any rewrite, you ask 1–3 sharp clarifying questions that help \
+disambiguate the researcher's intent — about scope, audience, methods, or boundaries. \
+Each question MUST have either 2–4 plausible discrete options OR an empty options array \
+when the answer space is genuinely open-ended (the UI will render a free-text input). \
+Respond ONLY with a JSON object of shape: \
+{\"questions\":[{\"q\":\"...\",\"options\":[\"...\"]}]}. \
+No prose outside the JSON.".to_string();
+
+    let context = match step_id {
+        "name" => format!(
+            "Step: working title for the review.\n\
+Current draft: \"{current_value}\"\n\
+Ask questions that help pin down: domain term to use, scope/period, intended audience, contribution angle."
+        ),
+        "slr_type" => format!(
+            "Step: SLR type selection.\n\
+Project title: {project_name}\n\
+Chosen type: \"{current_value}\"\n\
+Ask questions that help confirm whether this type fits the researcher's contribution goals \
+(domain map vs theory trace vs method survey vs effect-size pooling vs review-of-reviews)."
+        ),
+        "framework" => format!(
+            "Step: organising framework selection.\n\
+Project title: {project_name}\n\
+SLR type: {slr_type}\n\
+Domain: {domain}\n\
+Chosen framework: \"{current_value}\"\n\
+Ask questions about coding granularity, theoretical maturity of the field, and time-budget tolerance \
+that help confirm or challenge this framework choice."
+        ),
+        "domain" => format!(
+            "Step: domain description (paragraph).\n\
+Project title: {project_name}\n\
+SLR type: {slr_type}\n\
+Framework: {framework}\n\
+Current draft:\n\"\"\"\n{current_value}\n\"\"\"\n\
+Ask questions that surface the in-scope/out-of-scope boundary, ambiguous terms, and edge cases \
+the researcher may not have explicitly addressed."
+        ),
+        "rq_what" => format!(
+            "Step: 'What do we know?' research question.\n\
+Project title: {project_name}\n\
+Domain: {domain}\n\
+Framework: {framework}\n\
+Current draft:\n\"\"\"\n{current_value}\n\"\"\"\n\
+Ask questions that help calibrate breadth (whole-corpus vs subset), unit of analysis, and the kind of \
+findings the researcher cares about (concepts, debates, effects)."
+        ),
+        "rq_how" => format!(
+            "Step: 'How do we know?' research question.\n\
+Project title: {project_name}\n\
+Domain: {domain}\n\
+Framework: {framework}\n\
+Current draft:\n\"\"\"\n{current_value}\n\"\"\"\n\
+Ask questions that help focus methodological lenses — theories, designs, samples, measurement — \
+and identify the methodological gap the researcher most wants to surface."
+        ),
+        "rq_where" => format!(
+            "Step: 'Where should the field head?' research question.\n\
+Project title: {project_name}\n\
+Domain: {domain}\n\
+Framework: {framework}\n\
+Current draft:\n\"\"\"\n{current_value}\n\"\"\"\n\
+Ask questions that help identify which kind of agenda the researcher wants to set: \
+unexplored contexts, contradictions to resolve, methodological extensions, or theoretical bridges."
+        ),
+        other => return Err(anyhow!("unknown step_id: {other}")),
+    };
+
+    let user = format!("{context}\n\nReturn the JSON object now.");
+
+    let messages = vec![
+        ChatMessage { role: "system".into(), content: system },
+        ChatMessage { role: "user".into(), content: user },
+    ];
+
+    let result = lmstudio::chat(base_url, model, &messages, Some(0.4), api_key).await?;
+
+    let questions = parse_step_questions(&result.content)
+        .ok_or_else(|| anyhow!("could not parse clarifying questions from model output"))?;
+
+    if questions.is_empty() {
+        return Err(anyhow!("model returned no clarifying questions"));
+    }
+
+    Ok(StepQuestionsResult {
+        questions,
+        model: result.model,
+        latency_ms: result.latency_ms,
+    })
+}
+
 /// Generic step assistant for all 7 onboarding steps.
 /// Returns (suggestion, rationale). For text steps the suggestion is a refined
 /// replacement; for choice steps it is advisory/validation text.
