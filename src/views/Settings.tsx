@@ -38,6 +38,8 @@ interface SettingsProps {
 }
 
 export function Settings({ open: openSetting, onClose, settings, onUpdate, lm, onTest }: SettingsProps) {
+  type SettingsTab = "models" | "project" | "companion" | "privacy";
+  const [tab, setTab] = useState<SettingsTab>("models");
   const [localUrl, setLocalUrl] = useState(settings["lmstudio.base_url"]);
   const [localApiKey, setLocalApiKey] = useState(settings["lmstudio.api_key"]);
   const [testing, setTesting] = useState(false);
@@ -201,8 +203,43 @@ export function Settings({ open: openSetting, onClose, settings, onUpdate, lm, o
               </button>
             </header>
 
+            <nav className="px-7 pt-3 pb-0 border-b border-[var(--color-paper-200)] flex items-end gap-1">
+              {(["models", "project", "companion", "privacy"] as const).map((t) => {
+                const labels: Record<SettingsTab, string> = {
+                  models: "Models",
+                  project: "Project",
+                  companion: "Companion",
+                  privacy: "Privacy",
+                };
+                const active = tab === t;
+                return (
+                  <button
+                    key={t}
+                    type="button"
+                    onClick={() => setTab(t)}
+                    className={
+                      "no-drag relative px-4 pt-2 pb-2.5 text-[12px] font-medium transition-paper " +
+                      (active
+                        ? "text-[var(--color-ink-900)]"
+                        : "text-[var(--color-paper-500)] hover:text-[var(--color-ink-700)]")
+                    }
+                  >
+                    {labels[t]}
+                    {active && (
+                      <motion.div
+                        layoutId="settings-tab-underline"
+                        className="absolute left-0 right-0 -bottom-px h-0.5 bg-[var(--color-ink-700)]"
+                        transition={{ type: "spring", stiffness: 500, damping: 35 }}
+                      />
+                    )}
+                  </button>
+                );
+              })}
+            </nav>
+
             <div className="flex-1 overflow-y-auto px-7 py-6 space-y-8">
               {/* Local inference section */}
+              {tab === "models" && (
               <section>
                 <SectionHeader
                   icon={<Cpu size={14} strokeWidth={1.75} />}
@@ -310,8 +347,10 @@ export function Settings({ open: openSetting, onClose, settings, onUpdate, lm, o
                   )}
                 </div>
               </section>
+              )}
 
               {/* Telemetry section */}
+              {tab === "privacy" && (
               <section>
                 <SectionHeader
                   icon={<Radio size={14} strokeWidth={1.75} />}
@@ -334,9 +373,10 @@ export function Settings({ open: openSetting, onClose, settings, onUpdate, lm, o
                   />
                 </div>
               </section>
+              )}
 
               {/* ── Companion Access ─────────────────────────────────────── */}
-              <div className="border-t-2 border-[var(--color-paper-300)] pt-8">
+              {tab === "companion" && (
                 <section>
                   <SectionHeader
                     icon={<Smartphone size={14} strokeWidth={1.75} />}
@@ -424,11 +464,11 @@ export function Settings({ open: openSetting, onClose, settings, onUpdate, lm, o
                     </div>
                   </div>
                 </section>
-              </div>
+              )}
 
               {/* ── Project & backups ────────────────────────────────────── */}
-              <div className="border-t-2 border-[var(--color-paper-300)] pt-8">
               {/* Project */}
+              {tab === "project" && (
               <section>
                 <SectionHeader
                   icon={<HardDrive size={14} strokeWidth={1.75} />}
@@ -467,8 +507,10 @@ export function Settings({ open: openSetting, onClose, settings, onUpdate, lm, o
                   </div>
                 )}
               </section>
+              )}
 
               {/* Search databases */}
+              {tab === "project" && (
               <section>
                 <SectionHeader
                   icon={<Database size={14} strokeWidth={1.75} />}
@@ -480,8 +522,10 @@ export function Settings({ open: openSetting, onClose, settings, onUpdate, lm, o
                   onChange={(dbs) => onUpdate("databases.config", dbs)}
                 />
               </section>
+              )}
 
               {/* Network sovereignty */}
+              {tab === "privacy" && (
               <section>
                 <SectionHeader
                   icon={<ShieldCheck size={14} strokeWidth={1.75} />}
@@ -498,7 +542,7 @@ export function Settings({ open: openSetting, onClose, settings, onUpdate, lm, o
                   This is opt-in only and not part of the current release.
                 </p>
               </section>
-              </div>{/* end Project & backups wrapper */}
+              )}
             </div>
           </motion.aside>
 
