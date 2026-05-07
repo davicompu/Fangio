@@ -19,9 +19,9 @@ mod svg;
 mod vector;
 
 use db::{
-    ArticleRow, AssemblingState, CodingRow, DecisionInput, ExclusionCriterionRow,
-    FrameworkCodeDefinition, JournalInput, JournalRow, NewArticle, PdfRow, PrismaState, ProjectDb,
-    ProjectRow,
+    ArrangingProgress, ArticleRow, AssemblingState, AssessingProgress, CodingRow, DecisionInput,
+    ExclusionCriterionRow, FrameworkCodeDefinition, JournalInput, JournalRow, NewArticle, PdfRow,
+    PrismaState, ProjectDb, ProjectRow,
 };
 use dedup::DedupCluster;
 use lmstudio::{ChatMessage, ChatResult, LmModel};
@@ -402,6 +402,18 @@ async fn list_articles(state: State<'_, AppState>) -> Result<Vec<ArticleRow>, St
 async fn get_assembling_state(state: State<'_, AppState>) -> Result<AssemblingState, String> {
     let db = state.current().await.ok_or("no project open")?;
     db.assembling_state().await.map_err(err)
+}
+
+#[tauri::command]
+async fn arranging_progress(state: State<'_, AppState>) -> Result<ArrangingProgress, String> {
+    let db = state.current().await.ok_or("no project open")?;
+    db.arranging_progress().await.map_err(err)
+}
+
+#[tauri::command]
+async fn assessing_progress(state: State<'_, AppState>) -> Result<AssessingProgress, String> {
+    let db = state.current().await.ok_or("no project open")?;
+    db.assessing_progress().await.map_err(err)
 }
 
 #[tauri::command]
@@ -3132,6 +3144,8 @@ pub fn run() {
             commit_import,
             list_articles,
             get_assembling_state,
+            arranging_progress,
+            assessing_progress,
             list_dedup_clusters,
             merge_dedup_cluster,
             list_framework_dimensions,
