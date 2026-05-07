@@ -467,3 +467,98 @@ function ProgressTrail({ current, total, progress }: { current: number; total: n
     </div>
   );
 }
+
+interface QuestionRowProps {
+  question: StepQuestion;
+  index: number;
+  answer: string | undefined;
+  onAnswer: (answer: string) => void;
+}
+
+function QuestionRow({ question, index, answer, onAnswer }: QuestionRowProps) {
+  const [otherOpen, setOtherOpen] = useState(false);
+  const [otherText, setOtherText] = useState("");
+
+  // Whether the current answer matches a known option
+  const matchedOption = question.options.find((opt) => opt === answer);
+  const isOtherActive = answer !== undefined && !matchedOption;
+
+  // Re-sync free-text input when phase resets (different question instance ⇒ component remounts).
+  useEffect(() => {
+    if (isOtherActive) {
+      setOtherOpen(true);
+      setOtherText(answer ?? "");
+    }
+  }, []); // run once on mount
+
+  const onPickOption = (opt: string) => {
+    setOtherOpen(false);
+    setOtherText("");
+    onAnswer(opt);
+  };
+
+  const onPickOther = () => {
+    setOtherOpen(true);
+    if (otherText.trim()) onAnswer(otherText);
+  };
+
+  const onOtherChange = (v: string) => {
+    setOtherText(v);
+    if (v.trim()) onAnswer(v);
+  };
+
+  const showOnlyFreeText = question.options.length === 0;
+
+  return (
+    <div className="space-y-2">
+      <p className="text-[12px] font-medium text-[var(--color-ink-800)]">
+        <span className="text-[var(--color-accent-600)] font-mono mr-1.5">{index + 1}.</span>
+        {question.q}
+      </p>
+      {!showOnlyFreeText && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          {question.options.map((opt) => {
+            const selected = matchedOption === opt && !isOtherActive;
+            return (
+              <button
+                key={opt}
+                type="button"
+                onClick={() => onPickOption(opt)}
+                className={cn(
+                  "inline-flex items-center px-3 h-8 rounded-full text-[11px] font-medium transition-paper",
+                  selected
+                    ? "bg-[var(--color-accent-600)] text-white border border-[var(--color-accent-600)]"
+                    : "bg-[var(--color-accent-50)] text-[var(--color-accent-600)] border border-[var(--color-accent-300)] hover:bg-[var(--color-accent-100)]",
+                )}
+              >
+                {opt}
+              </button>
+            );
+          })}
+          <button
+            type="button"
+            onClick={onPickOther}
+            className={cn(
+              "inline-flex items-center px-3 h-8 rounded-full text-[11px] font-medium transition-paper",
+              isOtherActive
+                ? "bg-[var(--color-accent-600)] text-white border border-[var(--color-accent-600)]"
+                : "bg-white text-[var(--color-paper-600)] border border-[var(--color-paper-300)] hover:border-[var(--color-paper-500)]",
+            )}
+          >
+            Other…
+          </button>
+        </div>
+      )}
+      {(otherOpen || showOnlyFreeText) && (
+        <input
+          type="text"
+          value={otherText}
+          onChange={(e) => onOtherChange(e.target.value)}
+          placeholder="Type your answer"
+          className="w-full px-3 py-2 text-[12px] rounded-[var(--radius-xs)] border border-[var(--color-accent-300)] bg-white focus:outline-none focus:border-[var(--color-accent-500)]"
+          autoFocus={otherOpen}
+        />
+      )}
+    </div>
+  );
+}
