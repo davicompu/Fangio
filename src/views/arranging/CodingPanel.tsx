@@ -216,6 +216,18 @@ export function CodingPanel({ project, refreshKey, onChanged, initialCodeFilter,
   const currentArticle = filtered[cardIndex] ?? null;
   useEffect(() => { currentArticleRef.current = currentArticle; }, [currentArticle]);
 
+  // Keep the active number-button visible without forcing the user to scroll
+  // the number strip manually when they hit Prev / Next or click somewhere
+  // in the middle of the strip.
+  const activeNumberRef = useRef<HTMLButtonElement | null>(null);
+  useEffect(() => {
+    activeNumberRef.current?.scrollIntoView({
+      behavior: "smooth",
+      inline: "center",
+      block: "nearest",
+    });
+  }, [cardIndex]);
+
   // Listen for Tauri native file-drop — the ONLY way to get real file paths from Finder
   // (HTML5 FileList.path is always empty in WKWebView)
   useEffect(() => {
@@ -637,6 +649,7 @@ export function CodingPanel({ project, refreshKey, onChanged, initialCodeFilter,
                   return (
                     <button
                       key={a.id}
+                      ref={isCurrent ? activeNumberRef : undefined}
                       onClick={() => goTo(i)}
                       title={`#${i + 1} — ${a.title}${isLastEdited ? " (last edited)" : ""}`}
                       className={cn(
