@@ -1,7 +1,7 @@
 import { useState, useRef } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { motion } from "framer-motion";
-import { Calendar, Database, ExternalLink, Filter, Globe, Lightbulb, Plus, Save, Search, Settings as SettingsIcon, Sparkles, X } from "lucide-react";
+import { Calendar, Check, Clipboard, Database, ExternalLink, Filter, Globe, Lightbulb, Plus, Save, Search, Settings as SettingsIcon, Sparkles, X } from "lucide-react";
 import { api, type ProjectRow, type SuggestQueryResult } from "../../lib/api";
 import { Card } from "../../components/ui/Card";
 import { TextField, TextArea } from "../../components/ui/TextField";
@@ -40,7 +40,19 @@ export function AcquisitionForm({ project, settings, onSaved, onOpenSettings }: 
   const [suggestResult, setSuggestResult] = useState<SuggestQueryResult | null>(null);
   const [suggestError, setSuggestError] = useState<string | null>(null);
   const [suggestMode, setSuggestMode] = useState<"suggest" | "advise">("suggest");
+  const [copied, setCopied] = useState(false);
   const previousQuery = useRef<string | null>(null);
+
+  const handleCopyQuery = async () => {
+    if (!query.trim()) return;
+    try {
+      await navigator.clipboard.writeText(query);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // ignore — older WebKit may block, user can fall back to ⌘C
+    }
+  };
 
   const toggleDb = (id: string) => {
     setDatabases((prev) => {
@@ -299,15 +311,27 @@ export function AcquisitionForm({ project, settings, onSaved, onOpenSettings }: 
             title="Boolean query"
             description="The actual string you'll paste into each database's advanced search."
           />
-          <button
-            type="button"
-            onClick={handleSuggest}
-            disabled={modalOpen}
-            className="no-drag flex items-center gap-1.5 px-3 py-1.5 rounded-[var(--radius-sm)] text-[12px] font-medium text-[var(--color-accent-600)] border border-[var(--color-accent-300)] bg-[var(--color-accent-50)] hover:bg-[var(--color-accent-100)] transition-paper disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            <Sparkles size={12} strokeWidth={2} />
-            {query.trim() ? "Advise" : "Suggest"}
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handleCopyQuery}
+              disabled={!query.trim()}
+              className="no-drag flex items-center gap-1.5 px-3 py-1.5 rounded-[var(--radius-sm)] text-[12px] font-medium text-[var(--color-paper-700)] border border-[var(--color-paper-300)] bg-white hover:border-[var(--color-paper-500)] transition-paper disabled:opacity-40 disabled:cursor-not-allowed"
+              title="Copy the query to your clipboard"
+            >
+              {copied ? <Check size={12} strokeWidth={2} className="text-[var(--color-ok-600)]" /> : <Clipboard size={12} strokeWidth={2} />}
+              {copied ? "Copied" : "Copy"}
+            </button>
+            <button
+              type="button"
+              onClick={handleSuggest}
+              disabled={modalOpen}
+              className="no-drag flex items-center gap-1.5 px-3 py-1.5 rounded-[var(--radius-sm)] text-[12px] font-medium text-[var(--color-accent-600)] border border-[var(--color-accent-300)] bg-[var(--color-accent-50)] hover:bg-[var(--color-accent-100)] transition-paper disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <Sparkles size={12} strokeWidth={2} />
+              {query.trim() ? "Advise" : "Suggest"}
+            </button>
+          </div>
         </div>
         <div className="mt-4">
           <TextArea

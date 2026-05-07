@@ -1,6 +1,6 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Loader2, Sparkles, X } from "lucide-react";
+import { Check, Clipboard, Loader2, Sparkles, X } from "lucide-react";
 import { Button } from "./ui/Button";
 import { Card } from "./ui/Card";
 import type { SuggestQueryResult } from "../lib/api";
@@ -15,6 +15,8 @@ interface Props {
 }
 
 export function QuerySuggestionModal({ open, mode, result, error, onAccept, onDismiss }: Props) {
+  const [copied, setCopied] = useState(false);
+
   // Close on Escape
   useEffect(() => {
     if (!open) return;
@@ -24,6 +26,22 @@ export function QuerySuggestionModal({ open, mode, result, error, onAccept, onDi
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, [open, onDismiss]);
+
+  // Reset the copied indicator when the modal closes or the result changes.
+  useEffect(() => {
+    if (!open) setCopied(false);
+  }, [open, result]);
+
+  const handleCopy = async () => {
+    if (!result?.query) return;
+    try {
+      await navigator.clipboard.writeText(result.query);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // ignore — older WebKit may block; user can fall back to manual copy
+    }
+  };
 
   return (
     <AnimatePresence>
@@ -108,6 +126,19 @@ export function QuerySuggestionModal({ open, mode, result, error, onAccept, onDi
                   <div className="flex items-center gap-3">
                     <Button variant="primary" size="sm" onClick={() => onAccept(result.query)}>
                       Accept
+                    </Button>
+                    <Button variant="secondary" size="sm" onClick={handleCopy}>
+                      {copied ? (
+                        <>
+                          <Check size={13} strokeWidth={2} className="text-[var(--color-ok-600)]" />
+                          Copied
+                        </>
+                      ) : (
+                        <>
+                          <Clipboard size={13} strokeWidth={2} />
+                          Copy
+                        </>
+                      )}
                     </Button>
                     <Button variant="ghost" size="sm" onClick={onDismiss}>
                       Dismiss
