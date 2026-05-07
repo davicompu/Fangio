@@ -4,6 +4,7 @@ import { BookOpen, Check, ChevronDown, ChevronUp, Pencil, Plus, Star, Trash2, X 
 import { api, type JournalRow, type JournalInput } from "../../lib/api";
 import { Button } from "../../components/ui/Button";
 import { TextField } from "../../components/ui/TextField";
+import { MarkStepComplete } from "../../components/MarkStepComplete";
 
 const ABS_RATINGS = ["4*", "4", "3", "2", "1"] as const;
 const ABDC_RATINGS = ["A*", "A", "B", "C"] as const;
@@ -191,7 +192,13 @@ function EditForm({ initial, onSave, onCancel }: EditFormProps) {
   );
 }
 
-export function JournalScopePanel() {
+export function JournalScopePanel({
+  manualComplete,
+  onChanged,
+}: {
+  manualComplete?: boolean;
+  onChanged?: () => void;
+}) {
   const [journals, setJournals] = useState<JournalRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [editingId, setEditingId] = useState<number | "new" | null>(null);
@@ -482,6 +489,12 @@ export function JournalScopePanel() {
         </p>
         <p>Custom entries (starred) are stored only in this project and not verified against any external source.</p>
       </div>
+      <MarkStepComplete
+        stage="assembling"
+        tab="journals"
+        isComplete={!!manualComplete}
+        onChanged={onChanged ?? (() => {})}
+      />
     </div>
   );
 }

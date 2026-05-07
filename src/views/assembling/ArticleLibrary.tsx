@@ -12,10 +12,12 @@ import { AnimatePresence, motion } from "framer-motion";
 import { ArrowUpDown, Check, ExternalLink, Library, Loader2, Pencil, Search, Star, Tags, X } from "lucide-react";
 import { api, type ArticleRow, type JournalRow } from "../../lib/api";
 import { cn } from "../../lib/utils";
+import { MarkStepComplete } from "../../components/MarkStepComplete";
 
 interface Props {
   refreshKey: number;
   onChanged: () => void;
+  manualComplete?: boolean;
 }
 
 const ABS_RATINGS = ["4*", "4", "3", "2", "1"] as const;
@@ -646,7 +648,7 @@ function JournalCell({
   );
 }
 
-export function ArticleLibrary({ refreshKey, onChanged }: Props) {
+export function ArticleLibrary({ refreshKey, onChanged, manualComplete }: Props) {
   const [data, setData] = useState<ArticleRow[]>([]);
   const [journals, setJournals] = useState<JournalRow[]>([]);
   const [filter, setFilter] = useState("");
@@ -960,6 +962,12 @@ export function ArticleLibrary({ refreshKey, onChanged }: Props) {
           />
         )}
       </AnimatePresence>
+      <MarkStepComplete
+        stage="assembling"
+        tab="library"
+        isComplete={!!manualComplete}
+        onChanged={onChanged}
+      />
     </div>
   );
 }

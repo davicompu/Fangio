@@ -21,6 +21,8 @@ import { DedupReview } from "./DedupReview";
 import { AcquisitionForm } from "./AcquisitionForm";
 import { CheckpointGate } from "./CheckpointGate";
 import { JournalScopePanel } from "./JournalScopePanel";
+import { ProgressionTabStrip, type ProgressionTab } from "../../components/ProgressionTabStrip";
+import { useTabProgress, readManualFlags } from "../../lib/useTabProgress";
 
 interface AssemblingStageProps {
   project: ProjectRow;
@@ -114,13 +116,34 @@ const tabs: { id: Tab; label: string; eyebrow: string; icon: any; description: s
 export function AssemblingStage({ project, settings, onLeaveStage, onAdvanceStage, onOpenRag, onOpenSettings }: AssemblingStageProps) {
   const [tab, setTab] = useState<Tab>("acquisition");
   const [assembling, setAssembling] = useState<AssemblingState | null>(null);
+  const [progressSettings, setProgressSettings] = useState<Record<string, unknown>>({});
   const [refreshTick, setRefreshTick] = useState(0);
 
   useEffect(() => {
     api.assemblingState().then(setAssembling).catch(() => {});
+    api.getSettings().then(setProgressSettings).catch(() => {});
   }, [refreshTick]);
 
   const onChanged = () => setRefreshTick((t) => t + 1);
+
+  const TAB_IDS: Tab[] = ["acquisition", "import", "journals", "library", "dedup", "checkpoint"];
+  const manualFlags = readManualFlags("assembling", TAB_IDS, progressSettings);
+  const status = useTabProgress<Tab>(tab, {
+    acquisition: () => !!assembling?.has_acquisition_saved,
+    import: () => (assembling?.import_batches ?? 0) >= 1,
+    journals: () => false, // manual only
+    library: () => false, // manual only
+    dedup: () => assembling != null && !assembling.has_unresolved_clusters && (assembling.duplicate_records ?? 0) > 0,
+    checkpoint: () => project.current_stage !== "assembling",
+  }, manualFlags);
+
+  const numberedTabs: ProgressionTab<Tab>[] = tabs.map((t, i) => ({
+    id: t.id,
+    label: t.label,
+    icon: t.icon,
+    status: status[t.id],
+    number: i + 1,
+  }));
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -158,35 +181,11 @@ export function AssemblingStage({ project, settings, onLeaveStage, onAdvanceStag
 
       {/* Tab strip — feels like a notebook tab divider */}
       <nav className="px-6 xl:px-12 mb-6">
-        <div className="flex items-end gap-1 border-b border-[var(--color-paper-300)]">
-          {tabs.map((t) => {
-            const Icon = t.icon;
-            const active = tab === t.id;
-            return (
-              <button
-                key={t.id}
-                onClick={() => setTab(t.id)}
-                className={cn(
-                  "no-drag relative px-5 pt-3 pb-3.5 text-[13px] font-medium",
-                  "transition-paper flex items-center gap-2",
-                  active
-                    ? "text-[var(--color-ink-900)]"
-                    : "text-[var(--color-paper-500)] hover:text-[var(--color-ink-700)]",
-                )}
-              >
-                <Icon size={14} strokeWidth={1.75} />
-                {t.label}
-                {active && (
-                  <motion.div
-                    layoutId="tab-underline"
-                    className="absolute left-0 right-0 -bottom-px h-0.5 bg-[var(--color-ink-700)]"
-                    transition={{ type: "spring", stiffness: 500, damping: 35 }}
-                  />
-                )}
-              </button>
-            );
-          })}
-        </div>
+        <ProgressionTabStrip
+          tabs={numberedTabs}
+          onSelect={setTab}
+          underlineLayoutId="assembling-tab-underline"
+        />
       </nav>
 
       {/* Tab content — two columns */}
@@ -210,13 +209,26 @@ export function AssemblingStage({ project, settings, onLeaveStage, onAdvanceStag
                   onOpenSettings={onOpenSettings}
                 />
               )}
-              {tab === "journals" && <JournalScopePanel />}
+              {tab === "journals" && (
+                <JournalScopePanel
+                  manualComplete={progressSettings["progress.assembling.journals.complete"] === true}
+                  onChanged={onChanged}
+                />
+              )}
               {tab === "import" && <ImportPanel onCommitted={onChanged} />}
               {tab === "library" && (
-                <ArticleLibrary refreshKey={refreshTick} onChanged={onChanged} />
+                <ArticleLibrary
+                  refreshKey={refreshTick}
+                  onChanged={onChanged}
+                  manualComplete={progressSettings["progress.assembling.library.complete"] === true}
+                />
               )}
               {tab === "dedup" && (
-                <DedupReview refreshKey={refreshTick} onChanged={onChanged} />
+                <DedupReview
+                  refreshKey={refreshTick}
+                  onChanged={onChanged}
+                  manualComplete={progressSettings["progress.assembling.dedup.complete"] === true}
+                />
               )}
               {tab === "checkpoint" && (
                 <CheckpointGate
