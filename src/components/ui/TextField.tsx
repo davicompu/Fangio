@@ -1,6 +1,11 @@
 import { forwardRef, type InputHTMLAttributes, type TextareaHTMLAttributes } from "react";
 import { cn } from "../../lib/utils";
 
+// Tauri's WKWebView (macOS) does not load browser extensions, so Grammarly
+// and similar tools cannot inject. Browser-native spellcheck (system
+// dictionary, red underlines, right-click corrections) does work — keep
+// it on by default and let mono/code-style fields opt out.
+
 interface TextFieldProps extends InputHTMLAttributes<HTMLInputElement> {
   label?: string;
   hint?: string;
@@ -9,8 +14,9 @@ interface TextFieldProps extends InputHTMLAttributes<HTMLInputElement> {
 }
 
 export const TextField = forwardRef<HTMLInputElement, TextFieldProps>(
-  ({ label, hint, error, mono, className, id, ...rest }, ref) => {
+  ({ label, hint, error, mono, className, id, spellCheck, ...rest }, ref) => {
     const inputId = id || label?.toLowerCase().replace(/\s+/g, "-");
+    const effectiveSpellCheck = spellCheck ?? !mono;
     return (
       <div className="flex flex-col gap-1.5">
         {label && (
@@ -21,6 +27,7 @@ export const TextField = forwardRef<HTMLInputElement, TextFieldProps>(
         <input
           ref={ref}
           id={inputId}
+          spellCheck={effectiveSpellCheck}
           className={cn(
             "h-11 px-3.5 rounded-[var(--radius-sm)] bg-[var(--color-paper-50)]",
             "border border-[var(--color-paper-300)] text-[var(--color-ink-800)]",
@@ -51,7 +58,7 @@ interface TextAreaProps extends TextareaHTMLAttributes<HTMLTextAreaElement> {
 }
 
 export const TextArea = forwardRef<HTMLTextAreaElement, TextAreaProps>(
-  ({ label, hint, error, className, id, rows = 4, ...rest }, ref) => {
+  ({ label, hint, error, className, id, rows = 4, spellCheck = true, ...rest }, ref) => {
     const inputId = id || label?.toLowerCase().replace(/\s+/g, "-");
     return (
       <div className="flex flex-col gap-1.5">
@@ -64,6 +71,7 @@ export const TextArea = forwardRef<HTMLTextAreaElement, TextAreaProps>(
           ref={ref}
           id={inputId}
           rows={rows}
+          spellCheck={spellCheck}
           className={cn(
             "px-3.5 py-3 rounded-[var(--radius-sm)] bg-[var(--color-paper-50)]",
             "border border-[var(--color-paper-300)] text-[var(--color-ink-800)]",

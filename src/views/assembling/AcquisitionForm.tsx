@@ -316,6 +316,7 @@ export function AcquisitionForm({ project, settings, onSaved, onOpenSettings }: 
             onChange={(e) => { setQuery(e.target.value); previousQuery.current = null; }}
             onKeyDown={handleQueryKeyDown}
             rows={6}
+            spellCheck={false}
             placeholder={`("social commerce" OR "s-commerce" OR "social shopping")\nAND ("consumer behavi*" OR "buyer behavi*")\nAND ("engagement" OR "purchase" OR "intention")`}
             hint='Use OR between synonyms, AND between concepts. Wildcards (*) where supported. Press Ctrl+Z after accepting a suggestion to undo.'
           />
