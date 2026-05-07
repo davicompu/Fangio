@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { ArrowLeft, ArrowRight, Check, Lightbulb, Sparkles, X } from "lucide-react";
 import { Markdown } from "../../components/Markdown";
-import { api, type ProjectRow } from "../../lib/api";
+import { api, type ProjectRow, type StepQuestion } from "../../lib/api";
 import { Button } from "../../components/ui/Button";
 import { TextField, TextArea } from "../../components/ui/TextField";
 import { OptionCard } from "../../components/ui/OptionCard";
@@ -15,6 +15,14 @@ interface OnboardingWizardProps {
 }
 
 type Answers = Record<string, string>;
+
+type Phase =
+  | { kind: "idle" }
+  | { kind: "asking" }
+  | { kind: "answering"; questions: StepQuestion[]; answers: Record<number, string> }
+  | { kind: "rewriting"; questions: StepQuestion[]; answers: Record<number, string> }
+  | { kind: "result"; suggestion: string; rationale: string }
+  | { kind: "error"; message: string; recoverable: "asking" | "rewriting" };
 
 function initialAnswersFromProject(p: ProjectRow): Answers {
   return {
@@ -38,10 +46,8 @@ export function OnboardingWizard({ project, onComplete }: OnboardingWizardProps)
   const [busy, setBusy] = useState(false);
   const [validationError, setValidationError] = useState<string | null>(null);
 
-  // AI assistant state
-  const [suggesting, setSuggesting] = useState(false);
-  const [suggestion, setSuggestion] = useState<{ suggestion: string; rationale: string } | null>(null);
-  const [suggestError, setSuggestError] = useState<string | null>(null);
+  // AI assistant phase machine
+  const [phase, setPhase] = useState<Phase>({ kind: "idle" });
   const previousValue = useRef<string | null>(null);
 
   const step = STEPS[stepIndex];
@@ -56,8 +62,7 @@ export function OnboardingWizard({ project, onComplete }: OnboardingWizardProps)
   };
 
   const clearAssistant = () => {
-    setSuggestion(null);
-    setSuggestError(null);
+    setPhase({ kind: "idle" });
     previousValue.current = null;
   };
 
@@ -107,32 +112,30 @@ export function OnboardingWizard({ project, onComplete }: OnboardingWizardProps)
     clearAssistant();
   };
 
+  const errorMessage = (e: unknown): string => {
+    const msg: string = (e as { message?: string })?.message ?? String(e);
+    if (msg.includes("chat model")) return "Pick a chat model in Settings first.";
+    if (msg.includes("Connection refused") || msg.includes("error sending request") || msg.includes("connect error")) {
+      return "Could not reach LM Studio — check Settings.";
+    }
+    return "Unexpected error. Try again.";
+  };
+
   const handleSuggest = async () => {
-    setSuggesting(true);
-    setSuggestion(null);
-    setSuggestError(null);
+    setPhase({ kind: "asking" });
     try {
       const result = await api.suggestStep(step.id, value);
-      setSuggestion(result);
-    } catch (e: any) {
-      const msg: string = e?.message ?? String(e);
-      setSuggestError(
-        msg.includes("chat model")
-          ? "Pick a chat model in Settings first."
-          : msg.includes("Connection refused") || msg.includes("error sending request")
-          ? "Could not reach LM Studio — check Settings."
-          : "Unexpected error. Try again.",
-      );
-    } finally {
-      setSuggesting(false);
+      setPhase({ kind: "result", suggestion: result.suggestion, rationale: result.rationale });
+    } catch (e) {
+      setPhase({ kind: "error", message: errorMessage(e), recoverable: "rewriting" });
     }
   };
 
   const acceptSuggestion = () => {
-    if (!suggestion) return;
+    if (phase.kind !== "result") return;
     previousValue.current = value;
-    setValue(suggestion.suggestion);
-    setSuggestion(null);
+    setValue(phase.suggestion);
+    setPhase({ kind: "idle" });
   };
 
   const undoAccept = () => {
@@ -188,23 +191,23 @@ export function OnboardingWizard({ project, onComplete }: OnboardingWizardProps)
                 <button
                   type="button"
                   onClick={handleSuggest}
-                  disabled={!canSuggest || suggesting}
+                  disabled={!canSuggest || phase.kind === "asking" || phase.kind === "rewriting"}
                   className={cn(
                     "inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[12px] font-medium transition-paper",
-                    canSuggest && !suggesting
+                    canSuggest && phase.kind !== "asking" && phase.kind !== "rewriting"
                       ? "text-[var(--color-accent-600)] border border-[var(--color-accent-300)] bg-[var(--color-accent-50)] hover:bg-[var(--color-accent-100)]"
                       : "text-[var(--color-paper-400)] border border-[var(--color-paper-200)] cursor-not-allowed",
                   )}
                   title={!canSuggest ? "Write your answer first" : undefined}
                 >
-                  {suggesting ? <ThinkingDots small /> : <Sparkles size={12} strokeWidth={2} />}
-                  {suggesting ? "Working…" : "✦ Ask assistant"}
+                  {phase.kind === "asking" || phase.kind === "rewriting" ? <ThinkingDots small /> : <Sparkles size={12} strokeWidth={2} />}
+                  {phase.kind === "asking" || phase.kind === "rewriting" ? "Working…" : "✦ Ask assistant"}
                 </button>
               </div>
 
               {/* AI chat bubble */}
               <AnimatePresence>
-                {(suggesting || suggestion || suggestError) && (
+                {phase.kind !== "idle" && (
                   <motion.div
                     initial={{ opacity: 0, y: -8 }}
                     animate={{ opacity: 1, y: 0 }}
@@ -217,30 +220,47 @@ export function OnboardingWizard({ project, onComplete }: OnboardingWizardProps)
                         <Sparkles size={13} strokeWidth={1.75} className="text-white" />
                       </div>
                       <div className="flex-1 min-w-0">
-                        {suggesting && (
+                        {phase.kind === "asking" && (
                           <div className="flex items-center gap-2 py-1">
                             <ThinkingDots />
-                            <span className="text-[12px] text-[var(--color-paper-500)]">Analysing your answer…</span>
+                            <span className="text-[12px] text-[var(--color-paper-500)]">Working on a rewrite…</span>
                           </div>
                         )}
-                        {suggestError && (
-                          <p className="text-[13px] text-[var(--color-warn-700)]">{suggestError}</p>
+                        {phase.kind === "rewriting" && (
+                          <div className="flex items-center gap-2 py-1">
+                            <ThinkingDots />
+                            <span className="text-[12px] text-[var(--color-paper-500)]">Working on a rewrite…</span>
+                          </div>
                         )}
-                        {suggestion && (
+                        {phase.kind === "error" && (
+                          <div className="flex items-start justify-between gap-2">
+                            <p className="text-[13px] text-[var(--color-warn-700)]">{phase.message}</p>
+                            <button
+                              type="button"
+                              onClick={() => setPhase({ kind: "idle" })}
+                              className="shrink-0 mt-0.5 text-[var(--color-paper-400)] hover:text-[var(--color-ink-700)] transition-paper"
+                              aria-label="Close"
+                            >
+                              <X size={12} strokeWidth={2} />
+                            </button>
+                          </div>
+                        )}
+                        {phase.kind === "result" && (
                           <div className="space-y-3">
                             <div className="flex items-start justify-between gap-2">
-                              <Markdown className="markdown-sm flex-1">{suggestion.suggestion}</Markdown>
+                              <Markdown className="markdown-sm flex-1">{phase.suggestion}</Markdown>
                               <button
                                 type="button"
-                                onClick={() => setSuggestion(null)}
+                                onClick={() => setPhase({ kind: "idle" })}
                                 className="shrink-0 mt-0.5 text-[var(--color-paper-400)] hover:text-[var(--color-ink-700)] transition-paper"
+                                aria-label="Close"
                               >
                                 <X size={12} strokeWidth={2} />
                               </button>
                             </div>
-                            {suggestion.rationale && (
+                            {phase.rationale && (
                               <p className="text-[11px] text-[var(--color-accent-600)] leading-snug border-t border-[var(--color-accent-100)] pt-2">
-                                {suggestion.rationale}
+                                {phase.rationale}
                               </p>
                             )}
                             {isReplaceable && (
