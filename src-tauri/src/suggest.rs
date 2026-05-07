@@ -475,6 +475,50 @@ mod tests {
         let s = r#"{"rationale": "no query here"}"#;
         assert!(parse_query_result(s).is_none());
     }
+
+    #[test]
+    fn parse_screening_decision_canonical() {
+        let s = r#"{"decision":"include","rationale":"on topic","confidence":0.9}"#;
+        let d = parse_screening_decision(s).unwrap();
+        assert_eq!(d.decision, "include");
+        assert_eq!(d.rationale, "on topic");
+        assert!((d.confidence - 0.9).abs() < f64::EPSILON);
+        assert_eq!(d.criterion_number, None);
+    }
+
+    #[test]
+    fn parse_screening_decision_plural_rationales() {
+        // Same model fragility as boolean query — rationale → rationales.
+        let s = r#"{"decision":"exclude","criterion_number":2,"rationales":"off topic","confidence":0.85}"#;
+        let d = parse_screening_decision(s).unwrap();
+        assert_eq!(d.decision, "exclude");
+        assert_eq!(d.criterion_number, Some(2));
+        assert_eq!(d.rationale, "off topic");
+    }
+
+    #[test]
+    fn parse_screening_decision_missing_rationale_is_empty() {
+        let s = r#"{"decision":"uncertain","confidence":0.5}"#;
+        let d = parse_screening_decision(s).unwrap();
+        assert_eq!(d.decision, "uncertain");
+        assert_eq!(d.rationale, "");
+    }
+
+    #[test]
+    fn parse_screening_decision_rejects_unknown_decision() {
+        let s = r#"{"decision":"maybe","rationale":"x","confidence":0.5}"#;
+        assert!(parse_screening_decision(s).is_none());
+    }
+
+    #[test]
+    fn parse_screening_decision_alternate_keys() {
+        // verdict instead of decision, score instead of confidence.
+        let s = r#"{"verdict":"include","reason":"matches scope","score":0.7}"#;
+        let d = parse_screening_decision(s).unwrap();
+        assert_eq!(d.decision, "include");
+        assert_eq!(d.rationale, "matches scope");
+        assert!((d.confidence - 0.7).abs() < f64::EPSILON);
+    }
 }
 
 /// Find the first JSON array in the model's response and parse it as a list
@@ -594,17 +638,28 @@ fn parse_screening_decision(s: &str) -> Option<ScreeningDecision> {
     }
     let end = end?;
     let v: serde_json::Value = serde_json::from_str(&s[start..end]).ok()?;
-    let decision = v.get("decision")?.as_str()?.to_string();
+    let decision = pick_str(&v, &["decision", "verdict", "result"])?.to_string();
     if !["include", "exclude", "uncertain"].contains(&decision.as_str()) {
         return None;
     }
     let criterion_number = if decision == "exclude" {
-        v.get("criterion_number").and_then(|x| x.as_i64())
+        v.get("criterion_number")
+            .or_else(|| v.get("criterion"))
+            .or_else(|| v.get("ec"))
+            .or_else(|| v.get("ec_number"))
+            .and_then(|x| x.as_i64())
     } else {
         None
     };
-    let rationale = v.get("rationale")?.as_str()?.to_string();
-    let confidence = v.get("confidence")?.as_f64()?;
+    let rationale = pick_str(
+        &v,
+        &["rationale", "rationales", "reason", "reasoning", "explanation", "notes"],
+    )
+    .unwrap_or("")
+    .to_string();
+    let confidence = ["confidence", "confidence_score", "score"]
+        .iter()
+        .find_map(|k| v.get(*k).and_then(|x| x.as_f64()))?;
     Some(ScreeningDecision { decision, criterion_number, rationale, confidence })
 }
 
