@@ -192,7 +192,7 @@ export function StatusBar({
 
       <Separator />
 
-      <span className="font-mono text-[11px] tabular-nums tracking-tight text-[var(--color-ink-700)]">
+      <span className="font-mono text-[11px] tabular-nums tracking-tight text-[var(--color-ink-700)] whitespace-nowrap shrink-0">
         {clock}
       </span>
     </button>
