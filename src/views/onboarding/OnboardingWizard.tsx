@@ -124,10 +124,57 @@ export function OnboardingWizard({ project, onComplete }: OnboardingWizardProps)
   const handleSuggest = async () => {
     setPhase({ kind: "asking" });
     try {
+      const result = await api.suggestStepQuestions(step.id, value);
+      setPhase({ kind: "answering", questions: result.questions, answers: {} });
+    } catch (e) {
+      setPhase({ kind: "error", message: errorMessage(e), recoverable: "asking" });
+    }
+  };
+
+  const setAnswer = (idx: number, answer: string) => {
+    setPhase((p) => {
+      if (p.kind !== "answering") return p;
+      return { ...p, answers: { ...p.answers, [idx]: answer } };
+    });
+  };
+
+  const submitAnswers = async () => {
+    if (phase.kind !== "answering") return;
+    const qaPairs = phase.questions
+      .map((q, i) => ({ q: q.q, a: phase.answers[i] ?? "" }))
+      .filter((p) => p.a.trim().length > 0);
+    setPhase({ kind: "rewriting", questions: phase.questions, answers: phase.answers });
+    try {
+      const result = await api.suggestStep(step.id, value, qaPairs);
+      setPhase({ kind: "result", suggestion: result.suggestion, rationale: result.rationale });
+    } catch (e) {
+      setPhase({
+        kind: "error",
+        message: errorMessage(e),
+        recoverable: "rewriting",
+      });
+    }
+  };
+
+  const skipQuestions = async () => {
+    setPhase({ kind: "rewriting", questions: [], answers: {} });
+    try {
       const result = await api.suggestStep(step.id, value);
       setPhase({ kind: "result", suggestion: result.suggestion, rationale: result.rationale });
     } catch (e) {
       setPhase({ kind: "error", message: errorMessage(e), recoverable: "rewriting" });
+    }
+  };
+
+  const retry = async () => {
+    if (phase.kind !== "error") return;
+    if (phase.recoverable === "asking") {
+      await handleSuggest();
+    } else {
+      // rewriting: re-attempt with the answers we still have in phase history.
+      // We don't store them on the error variant, so the simplest recovery is
+      // to send the user back to the answering screen by re-running questions.
+      await handleSuggest();
     }
   };
 
@@ -223,7 +270,44 @@ export function OnboardingWizard({ project, onComplete }: OnboardingWizardProps)
                         {phase.kind === "asking" && (
                           <div className="flex items-center gap-2 py-1">
                             <ThinkingDots />
-                            <span className="text-[12px] text-[var(--color-paper-500)]">Working on a rewrite…</span>
+                            <span className="text-[12px] text-[var(--color-paper-500)]">Thinking up some questions…</span>
+                          </div>
+                        )}
+                        {phase.kind === "answering" && (
+                          <div className="space-y-4">
+                            <div className="space-y-3">
+                              {phase.questions.map((q, i) => (
+                                <QuestionRow
+                                  key={i}
+                                  question={q}
+                                  index={i}
+                                  answer={phase.answers[i]}
+                                  onAnswer={(a) => setAnswer(i, a)}
+                                />
+                              ))}
+                            </div>
+                            <div className="flex items-center gap-3 pt-2 border-t border-[var(--color-accent-100)]">
+                              <button
+                                type="button"
+                                onClick={submitAnswers}
+                                disabled={phase.questions.some((_, i) => !phase.answers[i] || !phase.answers[i].trim())}
+                                className={cn(
+                                  "inline-flex items-center gap-1.5 px-3 py-1.5 rounded-[var(--radius-xs)] text-[11px] font-medium transition-paper",
+                                  phase.questions.every((_, i) => phase.answers[i] && phase.answers[i].trim())
+                                    ? "bg-[var(--color-accent-600)] text-white hover:bg-[var(--color-accent-700)]"
+                                    : "bg-[var(--color-paper-200)] text-[var(--color-paper-400)] cursor-not-allowed",
+                                )}
+                              >
+                                Generate suggestion
+                              </button>
+                              <button
+                                type="button"
+                                onClick={skipQuestions}
+                                className="text-[11px] text-[var(--color-paper-500)] hover:text-[var(--color-ink-700)] underline-offset-2 hover:underline transition-paper"
+                              >
+                                Skip — just suggest
+                              </button>
+                            </div>
                           </div>
                         )}
                         {phase.kind === "rewriting" && (
@@ -233,15 +317,24 @@ export function OnboardingWizard({ project, onComplete }: OnboardingWizardProps)
                           </div>
                         )}
                         {phase.kind === "error" && (
-                          <div className="flex items-start justify-between gap-2">
-                            <p className="text-[13px] text-[var(--color-warn-700)]">{phase.message}</p>
+                          <div className="space-y-3">
+                            <div className="flex items-start justify-between gap-2">
+                              <p className="text-[13px] text-[var(--color-warn-700)] flex-1">{phase.message}</p>
+                              <button
+                                type="button"
+                                onClick={() => setPhase({ kind: "idle" })}
+                                className="shrink-0 mt-0.5 text-[var(--color-paper-400)] hover:text-[var(--color-ink-700)] transition-paper"
+                                aria-label="Close"
+                              >
+                                <X size={12} strokeWidth={2} />
+                              </button>
+                            </div>
                             <button
                               type="button"
-                              onClick={() => setPhase({ kind: "idle" })}
-                              className="shrink-0 mt-0.5 text-[var(--color-paper-400)] hover:text-[var(--color-ink-700)] transition-paper"
-                              aria-label="Close"
+                              onClick={retry}
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-[var(--radius-xs)] text-[11px] font-medium bg-[var(--color-accent-600)] text-white hover:bg-[var(--color-accent-700)] transition-paper"
                             >
-                              <X size={12} strokeWidth={2} />
+                              Retry
                             </button>
                           </div>
                         )}
