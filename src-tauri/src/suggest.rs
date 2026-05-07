@@ -461,26 +461,43 @@ pub async fn suggest_query(
         rqs_block
     };
 
-    let inclusion_block = if inclusion_criteria.is_empty() {
-        String::new()
-    } else {
-        let list = inclusion_criteria
-            .iter()
-            .map(|c| format!("- {c}"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        format!("\nSearch inclusion criteria (records must satisfy):\n{list}")
-    };
+    let inclusion_list = inclusion_criteria
+        .iter()
+        .map(|c| format!("- {c}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let exclusion_list = exclusion_criteria
+        .iter()
+        .map(|c| format!("- {c}"))
+        .collect::<Vec<_>>()
+        .join("\n");
 
-    let exclusion_block = if exclusion_criteria.is_empty() {
-        String::new()
-    } else {
-        let list = exclusion_criteria
-            .iter()
-            .map(|c| format!("- {c}"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        format!("\nSearch exclusion criteria (records that match should be omitted):\n{list}")
+    // Criteria block: visible in the user message so the model can't overlook it.
+    // Empty when neither list has content, so the prompt stays clean for projects
+    // that haven't recorded eligibility criteria yet.
+    let criteria_section = match (inclusion_criteria.is_empty(), exclusion_criteria.is_empty()) {
+        (true, true) => String::new(),
+        (false, true) => format!(
+            "\nEligibility criteria the researcher has recorded:\n\nInclusion (records must satisfy):\n{inclusion_list}\n\n\
+Where these criteria reference subject-matter concepts (topics, populations, contexts, methods named in the criterion), \
+fold matching keyword groups into the query so the search itself targets eligible records. \
+Where they reference publication metadata only (study type, language, year range, peer-reviewed status), \
+note in your rationale that screening will enforce them and do not force them into the boolean string.\n"
+        ),
+        (true, false) => format!(
+            "\nEligibility criteria the researcher has recorded:\n\nExclusion (records that match should be omitted):\n{exclusion_list}\n\n\
+Where these criteria reference subject-matter concepts, avoid keyword groups that would invite those records, \
+or use boolean NOT clauses if the unwanted concept has a precise term. \
+Where they reference publication metadata only, note in your rationale that screening will enforce them and do not force them into the boolean string.\n"
+        ),
+        (false, false) => format!(
+            "\nEligibility criteria the researcher has recorded:\n\nInclusion (records must satisfy):\n{inclusion_list}\n\nExclusion (records that match should be omitted):\n{exclusion_list}\n\n\
+Where these criteria reference subject-matter concepts (topics, populations, contexts, methods named in the criterion), \
+weave matching keyword groups into the query so the search itself targets eligible records. \
+For exclusion criteria with a precise term, you may use boolean NOT clauses. \
+Where criteria reference publication metadata only (study type, language, year range, peer-reviewed status), \
+note in your rationale that screening will enforce them and do not force them into the boolean string.\n"
+        ),
     };
 
     let system = format!(
@@ -494,22 +511,26 @@ Research questions:
 {rqs_block}
 
 Target databases:
-{db_list}{inclusion_block}{exclusion_block}"
+{db_list}"
     );
 
     let user = match existing_query {
-        None => "Generate a boolean search query for this systematic literature review. \
-Return a JSON object with exactly two keys: \
-\"query\" (the full boolean search string, ready to paste into a database) and \
-\"rationale\" (one sentence explaining the key choices made). \
-No prose outside the JSON object.".to_string(),
+        None => format!(
+            "Generate a boolean search query for this systematic literature review.\n\
+{criteria_section}\n\
+Return a JSON object with exactly two keys:\n\
+- \"query\": the full boolean search string, ready to paste into a database\n\
+- \"rationale\": one sentence explaining the key term choices, including which inclusion or exclusion criteria informed your keyword selection (or why they were left for screening)\n\
+No prose outside the JSON object."
+        ),
 
         Some(q) => format!(
             "Here is the researcher's current boolean query:\n\n{q}\n\n\
-Advise and improve it: fix any weaknesses, add missing synonyms, improve structure. \
-Return a JSON object with exactly two keys: \
-\"query\" (the improved boolean search string) and \
-\"rationale\" (one sentence explaining what was changed and why). \
+{criteria_section}\n\
+Advise and improve it: fix any weaknesses, add missing synonyms or concept groups (especially ones suggested by the inclusion criteria), and trim or NOT-out concepts the exclusion criteria would reject. \
+Return a JSON object with exactly two keys:\n\
+- \"query\": the improved boolean search string\n\
+- \"rationale\": one sentence explaining what was changed and why, naming any criterion that drove a change\n\
 No prose outside the JSON object."
         ),
     };
