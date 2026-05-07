@@ -299,7 +299,7 @@ export function ArrangingStage({ project, onLeaveStage, onProjectChanged, lmMode
               )}
 
               {tab === "prisma" && (
-                <div className="mt-3 rounded-[var(--radius-md)] border border-[var(--color-paper-300)] bg-[var(--color-paper-50)] px-4 py-3">
+                <div className="mt-3">
                   <MarkStepComplete
                     stage="arranging"
                     tab={tab}
