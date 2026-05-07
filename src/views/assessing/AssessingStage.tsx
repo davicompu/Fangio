@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   ArrowLeft,
@@ -63,15 +63,32 @@ export function AssessingStage({ project, onLeaveStage, onOpenRag }: Props) {
 
   const [progress, setProgress] = useState<AssessingProgress | null>(null);
   const [progressSettings, setProgressSettings] = useState<Record<string, unknown>>({});
+  const lastTabHydrated = useRef(false);
+  const TAB_IDS: Tab[] = ["library", "ask", "draft", "export"];
 
   useEffect(() => {
     api.assessingProgress().then(setProgress).catch(() => {});
-    api.getSettings().then(setProgressSettings).catch(() => {});
+    api.getSettings().then((s) => {
+      setProgressSettings(s);
+      if (!lastTabHydrated.current) {
+        const saved = s["last_tab.assessing"];
+        if (typeof saved === "string" && (TAB_IDS as readonly string[]).includes(saved)) {
+          setTab(saved as Tab);
+        }
+        lastTabHydrated.current = true;
+      }
+    }).catch(() => {
+      lastTabHydrated.current = true;
+    });
   }, [project.id, refreshTick]);
 
-  const onChanged = () => setRefreshTick((t) => t + 1);
+  useEffect(() => {
+    if (lastTabHydrated.current) {
+      api.setSetting("last_tab.assessing", tab).catch(() => {});
+    }
+  }, [tab]);
 
-  const TAB_IDS: Tab[] = ["library", "ask", "draft", "export"];
+  const onChanged = () => setRefreshTick((t) => t + 1);
   const manualFlags = readManualFlags("assessing", TAB_IDS, progressSettings);
   const status = useTabProgress<Tab>(tab, {
     library: () =>

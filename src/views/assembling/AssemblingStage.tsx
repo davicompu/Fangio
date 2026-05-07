@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   ArrowLeft,
@@ -114,16 +114,37 @@ const tabs: { id: Tab; label: string; eyebrow: string; icon: any; description: s
   },
 ];
 
+const ALL_TAB_IDS: Tab[] = ["acquisition", "import", "journals", "library", "dedup", "checkpoint"];
+
 export function AssemblingStage({ project, settings, onLeaveStage, onAdvanceStage, onOpenRag, onOpenSettings }: AssemblingStageProps) {
   const [tab, setTab] = useState<Tab>("acquisition");
   const [assembling, setAssembling] = useState<AssemblingState | null>(null);
   const [progressSettings, setProgressSettings] = useState<Record<string, unknown>>({});
   const [refreshTick, setRefreshTick] = useState(0);
+  const lastTabHydrated = useRef(false);
 
   useEffect(() => {
     api.assemblingState().then(setAssembling).catch(() => {});
-    api.getSettings().then(setProgressSettings).catch(() => {});
+    api.getSettings().then((s) => {
+      setProgressSettings(s);
+      if (!lastTabHydrated.current) {
+        const saved = s["last_tab.assembling"];
+        if (typeof saved === "string" && (ALL_TAB_IDS as readonly string[]).includes(saved)) {
+          setTab(saved as Tab);
+        }
+        lastTabHydrated.current = true;
+      }
+    }).catch(() => {
+      lastTabHydrated.current = true;
+    });
   }, [refreshTick]);
+
+  // Persist whichever tab the user lands on so reopening the stage returns there.
+  useEffect(() => {
+    if (lastTabHydrated.current) {
+      api.setSetting("last_tab.assembling", tab).catch(() => {});
+    }
+  }, [tab]);
 
   const onChanged = () => setRefreshTick((t) => t + 1);
 

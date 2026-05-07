@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   ArrowLeft,
@@ -92,6 +92,8 @@ export function ArrangingStage({ project, onLeaveStage, onProjectChanged, lmMode
   const coding = useAiCoding();
   const [aiCodingModalOpen, setAiCodingModalOpen] = useState(false);
   const [dimensions, setDimensions] = useState<DimensionInfo[]>([]);
+  const lastTabHydrated = useRef(false);
+  const ALL_TAB_IDS: Tab[] = ["organization", "criteria", "screening", "coding", "prisma"];
 
   useEffect(() => {
     api.listFrameworkDimensions().then(setDimensions).catch(() => {});
@@ -99,8 +101,25 @@ export function ArrangingStage({ project, onLeaveStage, onProjectChanged, lmMode
 
   useEffect(() => {
     api.arrangingProgress().then(setProgress).catch(() => {});
-    api.getSettings().then(setProgressSettings).catch(() => {});
+    api.getSettings().then((s) => {
+      setProgressSettings(s);
+      if (!lastTabHydrated.current) {
+        const saved = s["last_tab.arranging"];
+        if (typeof saved === "string" && (ALL_TAB_IDS as readonly string[]).includes(saved)) {
+          setTab(saved as Tab);
+        }
+        lastTabHydrated.current = true;
+      }
+    }).catch(() => {
+      lastTabHydrated.current = true;
+    });
   }, [project.id, refreshTick]);
+
+  useEffect(() => {
+    if (lastTabHydrated.current) {
+      api.setSetting("last_tab.arranging", tab).catch(() => {});
+    }
+  }, [tab]);
 
   const onChanged = async () => {
     await onProjectChanged();
