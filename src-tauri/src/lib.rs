@@ -1820,6 +1820,53 @@ async fn suggest_step(
 }
 
 #[derive(Debug, Deserialize)]
+struct SuggestStepQuestionsArgs {
+    step_id: String,
+    current_value: String,
+}
+
+#[tauri::command]
+async fn suggest_step_questions(
+    args: SuggestStepQuestionsArgs,
+    state: State<'_, AppState>,
+) -> Result<suggest::StepQuestionsResult, String> {
+    let db = state.current().await.ok_or("no project open")?;
+    let project = db.get_project().await.map_err(err)?;
+    let settings = db.all_settings().await.map_err(err)?;
+    let base_url = settings
+        .get("lmstudio.base_url")
+        .and_then(|v| v.as_str())
+        .unwrap_or("http://127.0.0.1:1234/v1")
+        .to_string();
+    let api_key = settings
+        .get("lmstudio.api_key")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let model = settings
+        .get("lmstudio.chat_model")
+        .and_then(|v| v.as_str())
+        .unwrap_or("google/gemma-4-e2b")
+        .to_string();
+    if model.is_empty() {
+        return Err("Pick a chat model in Settings first.".into());
+    }
+    let result = suggest::suggest_step_questions(
+        &base_url,
+        &model,
+        &args.step_id,
+        &args.current_value,
+        &project.name,
+        project.slr_type.as_deref().unwrap_or(""),
+        project.framework.as_deref().unwrap_or(""),
+        project.domain.as_deref().unwrap_or(""),
+        api_key.as_deref(),
+    )
+    .await
+    .map_err(err)?;
+    Ok(result)
+}
+
+#[derive(Debug, Deserialize)]
 struct SuggestQueryArgs {
     databases: Vec<String>,
     existing_query: Option<String>,
@@ -3122,6 +3169,7 @@ pub fn run() {
             get_prisma_state,
             suggest_codes,
             suggest_step,
+            suggest_step_questions,
             suggest_boolean_query,
             add_pdf,
             list_pdfs,
