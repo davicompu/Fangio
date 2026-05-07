@@ -11,7 +11,6 @@ import { api, type AskResult } from "../../lib/api";
 import { Card } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
 import { TextArea } from "../../components/ui/TextField";
-import { MarkStepComplete } from "../../components/MarkStepComplete";
 
 const SUGGESTED = [
   "What are the dominant theoretical lenses across the corpus?",
@@ -20,12 +19,7 @@ const SUGGESTED = [
   "Which methodological approaches dominate, and which are underused?",
 ];
 
-interface Props {
-  manualComplete?: boolean;
-  onChanged?: () => void;
-}
-
-export function AskCorpusPanel({ manualComplete, onChanged }: Props) {
+export function AskCorpusPanel() {
   const [question, setQuestion] = useState("");
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<AskResult | null>(null);
@@ -153,12 +147,6 @@ export function AskCorpusPanel({ manualComplete, onChanged }: Props) {
             </motion.div>
           )}
         </AnimatePresence>
-        <MarkStepComplete
-          stage="assessing"
-          tab="ask"
-          isComplete={!!manualComplete}
-          onChanged={onChanged ?? (() => {})}
-        />
       </div>
 
       {/* Suggested questions */}

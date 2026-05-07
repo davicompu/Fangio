@@ -9,13 +9,11 @@ import {
 import { api, type ArticleRow, type DedupCluster } from "../../lib/api";
 import { Card } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
-import { MarkStepComplete } from "../../components/MarkStepComplete";
 import { cn } from "../../lib/utils";
 
 interface Props {
   refreshKey: number;
   onChanged: () => void;
-  manualComplete?: boolean;
 }
 
 interface ResolvedCluster {
@@ -23,7 +21,7 @@ interface ResolvedCluster {
   members: ArticleRow[];
 }
 
-export function DedupReview({ refreshKey, onChanged, manualComplete }: Props) {
+export function DedupReview({ refreshKey, onChanged }: Props) {
   const [clusters, setClusters] = useState<ResolvedCluster[] | null>(null);
   const [busy, setBusy] = useState<number | null>(null);
   // Per-cluster keeper choice; key is the cluster's signature, value is the article id.
@@ -240,12 +238,6 @@ export function DedupReview({ refreshKey, onChanged, manualComplete }: Props) {
           );
         })}
       </AnimatePresence>
-      <MarkStepComplete
-        stage="assembling"
-        tab="dedup"
-        isComplete={!!manualComplete}
-        onChanged={onChanged}
-      />
     </div>
   );
 }

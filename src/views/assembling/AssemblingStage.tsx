@@ -21,6 +21,7 @@ import { DedupReview } from "./DedupReview";
 import { AcquisitionForm } from "./AcquisitionForm";
 import { CheckpointGate } from "./CheckpointGate";
 import { JournalScopePanel } from "./JournalScopePanel";
+import { MarkStepComplete } from "../../components/MarkStepComplete";
 import { ProgressionTabStrip, type ProgressionTab } from "../../components/ProgressionTabStrip";
 import { useTabProgress, readManualFlags } from "../../lib/useTabProgress";
 
@@ -210,10 +211,7 @@ export function AssemblingStage({ project, settings, onLeaveStage, onAdvanceStag
                 />
               )}
               {tab === "journals" && (
-                <JournalScopePanel
-                  manualComplete={progressSettings["progress.assembling.journals.complete"] === true}
-                  onChanged={onChanged}
-                />
+                <JournalScopePanel />
               )}
               {tab === "import" && (
                 <ImportPanel
@@ -231,14 +229,12 @@ export function AssemblingStage({ project, settings, onLeaveStage, onAdvanceStag
                 <ArticleLibrary
                   refreshKey={refreshTick}
                   onChanged={onChanged}
-                  manualComplete={progressSettings["progress.assembling.library.complete"] === true}
                 />
               )}
               {tab === "dedup" && (
                 <DedupReview
                   refreshKey={refreshTick}
                   onChanged={onChanged}
-                  manualComplete={progressSettings["progress.assembling.dedup.complete"] === true}
                 />
               )}
               {tab === "checkpoint" && (
@@ -284,6 +280,17 @@ export function AssemblingStage({ project, settings, onLeaveStage, onAdvanceStag
                   </div>
                 )}
               </div>
+
+              {(tab === "journals" || tab === "library" || tab === "dedup") && (
+                <div className="mt-3 rounded-[var(--radius-md)] border border-[var(--color-paper-300)] bg-[var(--color-paper-50)] px-4 py-3">
+                  <MarkStepComplete
+                    stage="assembling"
+                    tab={tab}
+                    isComplete={progressSettings[`progress.assembling.${tab}.complete`] === true}
+                    onChanged={onChanged}
+                  />
+                </div>
+              )}
             </motion.aside>
           </AnimatePresence>
         </div>

@@ -17,6 +17,7 @@ import { DraftPanel } from "./DraftPanel";
 import { ExportPanel } from "./ExportPanel";
 import { ProgressionTabStrip, type ProgressionTab } from "../../components/ProgressionTabStrip";
 import { useTabProgress, readManualFlags } from "../../lib/useTabProgress";
+import { MarkStepComplete } from "../../components/MarkStepComplete";
 
 interface Props {
   project: ProjectRow;
@@ -139,26 +140,10 @@ export function AssessingStage({ project, onLeaveStage, onOpenRag }: Props) {
               transition={{ duration: 0.25, ease: [0.2, 0.7, 0.2, 1] }}
               className="pl-6 pr-4 xl:pl-12 xl:pr-8"
             >
-              {tab === "library" && (
-                <PdfLibraryPanel
-                  refreshKey={refreshTick}
-                  onChanged={onChanged}
-                  manualComplete={progressSettings["progress.assessing.library.complete"] === true}
-                />
-              )}
-              {tab === "ask" && (
-                <AskCorpusPanel
-                  manualComplete={progressSettings["progress.assessing.ask.complete"] === true}
-                  onChanged={onChanged}
-                />
-              )}
+              {tab === "library" && <PdfLibraryPanel refreshKey={refreshTick} onChanged={onChanged} />}
+              {tab === "ask" && <AskCorpusPanel />}
               {tab === "draft" && <DraftPanel project={project} />}
-              {tab === "export" && (
-                <ExportPanel
-                  manualComplete={progressSettings["progress.assessing.export.complete"] === true}
-                  onChanged={onChanged}
-                />
-              )}
+              {tab === "export" && <ExportPanel />}
             </motion.div>
           </AnimatePresence>
         </div>
@@ -196,6 +181,17 @@ export function AssessingStage({ project, onLeaveStage, onOpenRag }: Props) {
                   </div>
                 )}
               </div>
+
+              {(tab === "library" || tab === "ask" || tab === "export") && (
+                <div className="mt-3 rounded-[var(--radius-md)] border border-[var(--color-paper-300)] bg-[var(--color-paper-50)] px-4 py-3">
+                  <MarkStepComplete
+                    stage="assessing"
+                    tab={tab}
+                    isComplete={progressSettings[`progress.assessing.${tab}.complete`] === true}
+                    onChanged={onChanged}
+                  />
+                </div>
+              )}
             </motion.aside>
           </AnimatePresence>
         </div>

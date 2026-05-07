@@ -3,15 +3,12 @@ import { motion } from "framer-motion";
 import { ArrowRight, GitBranch, Loader2 } from "lucide-react";
 import { api, type PrismaState } from "../../lib/api";
 import { Card } from "../../components/ui/Card";
-import { MarkStepComplete } from "../../components/MarkStepComplete";
 
 interface Props {
   refreshKey: number;
-  manualComplete?: boolean;
-  onChanged?: () => void;
 }
 
-export function PrismaPanel({ refreshKey, manualComplete, onChanged }: Props) {
+export function PrismaPanel({ refreshKey }: Props) {
   const [state, setState] = useState<PrismaState | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -118,12 +115,6 @@ export function PrismaPanel({ refreshKey, manualComplete, onChanged }: Props) {
         Compatible with the PRISMA 2020 flow template (Page et al., 2021). Export to SVG ships in
         a later session.
       </p>
-      <MarkStepComplete
-        stage="arranging"
-        tab="prisma"
-        isComplete={!!manualComplete}
-        onChanged={onChanged ?? (() => {})}
-      />
     </div>
   );
 }

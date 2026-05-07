@@ -14,7 +14,6 @@ import { api } from "../../lib/api";
 import { Card } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
 import { cn } from "../../lib/utils";
-import { MarkStepComplete } from "../../components/MarkStepComplete";
 
 type Job =
   | "csv"
@@ -23,12 +22,7 @@ type Job =
   | "svg"
   | null;
 
-interface Props {
-  manualComplete?: boolean;
-  onChanged?: () => void;
-}
-
-export function ExportPanel({ manualComplete, onChanged }: Props) {
+export function ExportPanel() {
   const [busy, setBusy] = useState<Job>(null);
   const [result, setResult] = useState<{ kind: Job; files: string[] } | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -142,12 +136,6 @@ export function ExportPanel({ manualComplete, onChanged }: Props) {
           are a future polish.
         </div>
       </div>
-      <MarkStepComplete
-        stage="assessing"
-        tab="export"
-        isComplete={!!manualComplete}
-        onChanged={onChanged ?? (() => {})}
-      />
     </div>
   );
 }

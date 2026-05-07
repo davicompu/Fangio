@@ -23,7 +23,7 @@ export function RagChatView({ onBack, onOpenSettings }: Props) {
   const [tab, setTab] = useState<Tab>("chat");
 
   return (
-    <div className="flex flex-col h-screen bg-[var(--color-paper-50)]">
+    <div className="flex flex-col h-screen pt-10 bg-[var(--color-paper-50)]">
       {/* ── Top bar ── */}
       <div className="flex items-center gap-3 px-5 h-14 border-b border-[var(--color-paper-200)] bg-white shrink-0">
         <button

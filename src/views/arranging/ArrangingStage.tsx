@@ -22,6 +22,7 @@ import type { AiScreeningResult, ArrangingProgress, DimensionInfo, LmModel, Proj
 import { api } from "../../lib/api";
 import { ProgressionTabStrip, type ProgressionTab } from "../../components/ProgressionTabStrip";
 import { useTabProgress, readManualFlags } from "../../lib/useTabProgress";
+import { MarkStepComplete } from "../../components/MarkStepComplete";
 import { Button } from "../../components/ui/Button";
 import { AiScreeningModal } from "../../components/AiScreeningModal";
 import { AiCodingModal } from "../../components/AiCodingModal";
@@ -199,13 +200,7 @@ export function ArrangingStage({ project, onLeaveStage, onProjectChanged, lmMode
               {tab === "coding" && <CodingPanel project={project} refreshKey={refreshTick} onChanged={onChanged} initialCodeFilter={jumpCodeFilter} onCodeFilterConsumed={() => setJumpCodeFilter(null)} lastEditedArticleId={lastEditedArticleId} onArticleEdited={setLastEditedArticleId} onOpenAiCodingModal={() => setAiCodingModalOpen(true)} />}
               {tab === "criteria" && <CriteriaPanel project={project} refreshKey={refreshTick} onChanged={onChanged} />}
               {tab === "screening" && <ScreeningPanel project={project} refreshKey={refreshTick} onChanged={onChanged} onOpenAiModal={() => setAiModalOpen(true)} />}
-              {tab === "prisma" && (
-                <PrismaPanel
-                  refreshKey={refreshTick}
-                  manualComplete={progressSettings["progress.arranging.prisma.complete"] === true}
-                  onChanged={onChanged}
-                />
-              )}
+              {tab === "prisma" && <PrismaPanel refreshKey={refreshTick} />}
             </motion.div>
           </AnimatePresence>
         </div>
@@ -281,6 +276,17 @@ export function ArrangingStage({ project, onLeaveStage, onProjectChanged, lmMode
                       </motion.div>
                     )}
                   </AnimatePresence>
+                </div>
+              )}
+
+              {tab === "prisma" && (
+                <div className="mt-3 rounded-[var(--radius-md)] border border-[var(--color-paper-300)] bg-[var(--color-paper-50)] px-4 py-3">
+                  <MarkStepComplete
+                    stage="arranging"
+                    tab={tab}
+                    isComplete={progressSettings[`progress.arranging.${tab}.complete`] === true}
+                    onChanged={onChanged}
+                  />
                 </div>
               )}
             </motion.aside>
