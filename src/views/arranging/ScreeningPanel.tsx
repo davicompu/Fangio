@@ -151,6 +151,11 @@ export function ScreeningPanel({ project, refreshKey, onChanged, onOpenAiModal }
   const [activeTab, setActiveTab] = useState<ScreeningTab>("pending");
   const [articles, setArticles] = useState<ArticleRow[]>([]);
   const [total, setTotal] = useState(0);
+  const [tabCounts, setTabCounts] = useState<Record<ScreeningTab, number>>({
+    pending: 0,
+    included: 0,
+    excluded: 0,
+  });
   const [criteria, setCriteria] = useState<ExclusionCriterionRow[]>([]);
   const [journals, setJournals] = useState<JournalRow[]>([]);
   const [offset, setOffset] = useState(0);
@@ -161,14 +166,17 @@ export function ScreeningPanel({ project, refreshKey, onChanged, onOpenAiModal }
 
   const reload = async (tab = activeTab, off = offset) => {
     setLoading(true);
-    const [arts, cnt, crits, jList] = await Promise.all([
+    const [arts, cntPending, cntIncluded, cntExcluded, crits, jList] = await Promise.all([
       api.listScreeningTab(tab, off, BATCH_SIZE),
-      api.countScreeningTab(tab),
+      api.countScreeningTab("pending"),
+      api.countScreeningTab("included"),
+      api.countScreeningTab("excluded"),
       api.listCriteria(),
       api.listJournals(),
     ]);
     setArticles(arts);
-    setTotal(cnt);
+    setTabCounts({ pending: cntPending, included: cntIncluded, excluded: cntExcluded });
+    setTotal(tab === "pending" ? cntPending : tab === "included" ? cntIncluded : cntExcluded);
     setCriteria(crits.filter((c) => c.number > 1));
     setJournals(jList);
     setLoading(false);
@@ -180,13 +188,16 @@ export function ScreeningPanel({ project, refreshKey, onChanged, onOpenAiModal }
     setLoading(true);
     Promise.all([
       api.listScreeningTab(activeTab, 0, BATCH_SIZE),
-      api.countScreeningTab(activeTab),
+      api.countScreeningTab("pending"),
+      api.countScreeningTab("included"),
+      api.countScreeningTab("excluded"),
       api.listCriteria(),
       api.listJournals(),
-    ]).then(([arts, cnt, crits, jList]) => {
+    ]).then(([arts, cntPending, cntIncluded, cntExcluded, crits, jList]) => {
       if (cancelled) return;
       setArticles(arts);
-      setTotal(cnt);
+      setTabCounts({ pending: cntPending, included: cntIncluded, excluded: cntExcluded });
+      setTotal(activeTab === "pending" ? cntPending : activeTab === "included" ? cntIncluded : cntExcluded);
       setCriteria(crits.filter((c) => c.number > 1));
       setJournals(jList);
       setLoading(false);
@@ -237,26 +248,36 @@ export function ScreeningPanel({ project, refreshKey, onChanged, onOpenAiModal }
 
       {/* Tabs */}
       <div className="flex items-center gap-1 mb-5 border-b border-[var(--color-paper-200)]">
-        {TABS.map((t) => (
-          <button
-            key={t.id}
-            type="button"
-            onClick={() => { setActiveTab(t.id); setOffset(0); }}
-            className={cn(
-              "px-4 py-2 text-[13px] font-medium transition-paper -mb-px border-b-2",
-              activeTab === t.id
-                ? "border-[var(--color-ink-800)] text-[var(--color-ink-800)]"
-                : "border-transparent text-[var(--color-paper-500)] hover:text-[var(--color-ink-700)]",
-            )}
-          >
-            {t.label}
-            {!loading && t.id === activeTab && (
-              <span className="ml-1.5 text-[11px] tabular-nums text-[var(--color-paper-500)]">
-                {total}
+        {TABS.map((t) => {
+          const count = tabCounts[t.id];
+          const isActive = activeTab === t.id;
+          return (
+            <button
+              key={t.id}
+              type="button"
+              onClick={() => { setActiveTab(t.id); setOffset(0); }}
+              className={cn(
+                "inline-flex items-center gap-2 px-4 py-2 text-[13px] font-medium transition-paper -mb-px border-b-2",
+                isActive
+                  ? "border-[var(--color-ink-800)] text-[var(--color-ink-800)]"
+                  : "border-transparent text-[var(--color-paper-500)] hover:text-[var(--color-ink-700)]",
+              )}
+            >
+              {t.label}
+              <span
+                className={cn(
+                  "inline-flex items-center justify-center min-w-[22px] h-[18px] px-1.5 rounded-full",
+                  "text-[11px] font-mono font-semibold tabular-nums",
+                  isActive
+                    ? "bg-[var(--color-ink-800)] text-white"
+                    : "bg-[var(--color-paper-100)] text-[var(--color-paper-600)] border border-[var(--color-paper-300)]",
+                )}
+              >
+                {count}
               </span>
-            )}
-          </button>
-        ))}
+            </button>
+          );
+        })}
       </div>
 
       {/* Description + Pagination */}
