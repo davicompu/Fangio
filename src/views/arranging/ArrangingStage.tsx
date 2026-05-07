@@ -18,9 +18,10 @@ import {
   Tags,
   X,
 } from "lucide-react";
-import type { AiScreeningResult, DimensionInfo, LmModel, ProjectRow } from "../../lib/api";
+import type { AiScreeningResult, ArrangingProgress, DimensionInfo, LmModel, ProjectRow } from "../../lib/api";
 import { api } from "../../lib/api";
-import { cn } from "../../lib/utils";
+import { ProgressionTabStrip, type ProgressionTab } from "../../components/ProgressionTabStrip";
+import { useTabProgress, readManualFlags } from "../../lib/useTabProgress";
 import { Button } from "../../components/ui/Button";
 import { AiScreeningModal } from "../../components/AiScreeningModal";
 import { AiCodingModal } from "../../components/AiCodingModal";
@@ -80,6 +81,8 @@ const tabInfo: Record<Tab, { headline: string; body: string; tip?: string }> = {
 export function ArrangingStage({ project, onLeaveStage, onProjectChanged, lmModels, defaultChatModel }: Props) {
   const [tab, setTab] = useState<Tab>("organization");
   const [refreshTick, setRefreshTick] = useState(0);
+  const [progress, setProgress] = useState<ArrangingProgress | null>(null);
+  const [progressSettings, setProgressSettings] = useState<Record<string, unknown>>({});
   const [jumpCodeFilter, setJumpCodeFilter] = useState<{ dimension: string; code: string } | null>(null);
   const [lastEditedArticleId, setLastEditedArticleId] = useState<number | null>(null);
   const [domainExpanded, setDomainExpanded] = useState(false);
@@ -93,10 +96,33 @@ export function ArrangingStage({ project, onLeaveStage, onProjectChanged, lmMode
     api.listFrameworkDimensions().then(setDimensions).catch(() => {});
   }, [project.id, refreshTick]);
 
+  useEffect(() => {
+    api.arrangingProgress().then(setProgress).catch(() => {});
+    api.getSettings().then(setProgressSettings).catch(() => {});
+  }, [project.id, refreshTick]);
+
   const onChanged = async () => {
     await onProjectChanged();
     setRefreshTick((t) => t + 1);
   };
+
+  const TAB_IDS: Tab[] = ["organization", "criteria", "screening", "coding", "prisma"];
+  const manualFlags = readManualFlags("arranging", TAB_IDS, progressSettings);
+  const status = useTabProgress<Tab>(tab, {
+    organization: () => (progress?.codes_count ?? 0) >= 1,
+    criteria: () => (progress?.criteria_count ?? 0) >= 1,
+    screening: () => progress != null && progress.articles_retrieved > 0 && progress.articles_screened >= progress.articles_retrieved,
+    coding: () => progress != null && progress.articles_included > 0 && progress.articles_coded >= progress.articles_included,
+    prisma: () => false, // manual only
+  }, manualFlags);
+
+  const numberedTabs: ProgressionTab<Tab>[] = tabs.map((t, i) => ({
+    id: t.id,
+    label: t.label,
+    icon: t.icon,
+    status: status[t.id],
+    number: i + 1,
+  }));
 
   const handleAiComplete = (_result: AiScreeningResult) => {
     setAiModalOpen(false);
@@ -151,34 +177,11 @@ export function ArrangingStage({ project, onLeaveStage, onProjectChanged, lmMode
       </header>
 
       <nav className="px-6 xl:px-12 mb-6">
-        <div className="flex items-end gap-1 border-b border-[var(--color-paper-300)]">
-          {tabs.map((t) => {
-            const Icon = t.icon;
-            const active = tab === t.id;
-            return (
-              <button
-                key={t.id}
-                onClick={() => setTab(t.id)}
-                className={cn(
-                  "no-drag relative px-5 pt-3 pb-3.5 text-[13px] font-medium transition-paper flex items-center gap-2",
-                  active
-                    ? "text-[var(--color-ink-900)]"
-                    : "text-[var(--color-paper-500)] hover:text-[var(--color-ink-700)]",
-                )}
-              >
-                <Icon size={14} strokeWidth={1.75} />
-                {t.label}
-                {active && (
-                  <motion.div
-                    layoutId="arranging-tab-underline"
-                    className="absolute left-0 right-0 -bottom-px h-0.5 bg-[var(--color-ink-700)]"
-                    transition={{ type: "spring", stiffness: 500, damping: 35 }}
-                  />
-                )}
-              </button>
-            );
-          })}
-        </div>
+        <ProgressionTabStrip
+          tabs={numberedTabs}
+          onSelect={setTab}
+          underlineLayoutId="arranging-tab-underline"
+        />
       </nav>
 
       <div className="flex-1 grid grid-cols-[1fr_240px] xl:grid-cols-[1fr_300px] pb-32 min-w-0">
@@ -196,7 +199,13 @@ export function ArrangingStage({ project, onLeaveStage, onProjectChanged, lmMode
               {tab === "coding" && <CodingPanel project={project} refreshKey={refreshTick} onChanged={onChanged} initialCodeFilter={jumpCodeFilter} onCodeFilterConsumed={() => setJumpCodeFilter(null)} lastEditedArticleId={lastEditedArticleId} onArticleEdited={setLastEditedArticleId} onOpenAiCodingModal={() => setAiCodingModalOpen(true)} />}
               {tab === "criteria" && <CriteriaPanel project={project} refreshKey={refreshTick} onChanged={onChanged} />}
               {tab === "screening" && <ScreeningPanel project={project} refreshKey={refreshTick} onChanged={onChanged} onOpenAiModal={() => setAiModalOpen(true)} />}
-              {tab === "prisma" && <PrismaPanel refreshKey={refreshTick} />}
+              {tab === "prisma" && (
+                <PrismaPanel
+                  refreshKey={refreshTick}
+                  manualComplete={progressSettings["progress.arranging.prisma.complete"] === true}
+                  onChanged={onChanged}
+                />
+              )}
             </motion.div>
           </AnimatePresence>
         </div>
