@@ -191,6 +191,7 @@ pub async fn suggest_step(
     slr_type: &str,
     framework: &str,
     domain: &str,
+    answers: Option<&[QAndA]>,
     api_key: Option<&str>,
 ) -> Result<(String, String)> {
     let system = "You are a systematic literature review expert assisting a researcher \
@@ -283,6 +284,19 @@ Return the JSON (suggestion = the refined question)."
         ),
 
         other => return Err(anyhow!("unknown step_id: {other}")),
+    };
+
+    let user = if let Some(qa) = answers.filter(|a| !a.is_empty()) {
+        let block = qa
+            .iter()
+            .map(|p| format!("Q: {}\nA: {}", p.q, p.a))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        format!(
+            "Researcher's clarifications:\n{block}\n\nUse these clarifications to inform the rewrite below.\n\n{user}"
+        )
+    } else {
+        user
     };
 
     let messages = vec![

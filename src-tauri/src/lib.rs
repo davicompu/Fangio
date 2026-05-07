@@ -1767,6 +1767,8 @@ async fn suggest_codes(
 struct SuggestStepArgs {
     step_id: String,
     current_value: String,
+    #[serde(default)]
+    answers: Option<Vec<suggest::QAndA>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1809,6 +1811,7 @@ async fn suggest_step(
         project.slr_type.as_deref().unwrap_or(""),
         project.framework.as_deref().unwrap_or(""),
         project.domain.as_deref().unwrap_or(""),
+        args.answers.as_deref(),
         api_key.as_deref(),
     )
     .await
