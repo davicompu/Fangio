@@ -88,6 +88,29 @@ pub struct AssemblingState {
     pub unique_records: i64,
     pub duplicate_records: i64,
     pub import_batches: i64,
+    /// True when the project has both a non-empty boolean_query AND
+    /// at least one selected database. Drives the Acquisition tab status.
+    pub has_acquisition_saved: bool,
+    /// True when at least one duplicate cluster is awaiting review
+    /// (article rows in status='retrieved' that share a dedup_group_id with another retrieved article).
+    pub has_unresolved_clusters: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ArrangingProgress {
+    pub codes_count: i64,
+    pub criteria_count: i64,
+    pub articles_retrieved: i64,
+    pub articles_screened: i64,
+    pub articles_included: i64,
+    pub articles_coded: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AssessingProgress {
+    pub articles_included: i64,
+    pub articles_with_pdf: i64,
+    pub has_draft: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -612,11 +635,130 @@ impl ProjectDb {
         let batches: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM import_batch")
             .fetch_one(&self.pool)
             .await?;
+
+        // Acquisition saved: project has non-empty boolean_query AND non-empty databases
+        let proj_row = sqlx::query("SELECT boolean_query, databases FROM project LIMIT 1")
+            .fetch_optional(&self.pool)
+            .await?;
+        let has_acquisition_saved = match proj_row {
+            Some(r) => {
+                let bq: Option<String> = r.try_get("boolean_query").ok();
+                let dbs: Option<String> = r.try_get("databases").ok();
+                let bq_set = bq.as_deref().map(|s| !s.trim().is_empty()).unwrap_or(false);
+                let dbs_set = dbs.as_deref()
+                    .map(|s| s != "[]" && !s.trim().is_empty())
+                    .unwrap_or(false);
+                bq_set && dbs_set
+            }
+            None => false,
+        };
+
+        // Unresolved clusters: 'retrieved' articles sharing dedup_group_id with another 'retrieved' row.
+        let unresolved: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM article a \
+             WHERE a.status = 'retrieved' AND a.dedup_group_id IS NOT NULL \
+             AND EXISTS (SELECT 1 FROM article b WHERE b.status = 'retrieved' \
+                         AND b.dedup_group_id = a.dedup_group_id AND b.id <> a.id)",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .unwrap_or(0);
+
         Ok(AssemblingState {
             total_records: total,
             unique_records: unique,
             duplicate_records: duplicates,
             import_batches: batches,
+            has_acquisition_saved,
+            has_unresolved_clusters: unresolved > 0,
+        })
+    }
+
+    pub async fn arranging_progress(&self) -> Result<ArrangingProgress> {
+        let codes_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM framework_code_definition",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .unwrap_or(0);
+
+        let criteria_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM exclusion_criterion",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .unwrap_or(0);
+
+        let articles_retrieved: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM article WHERE status = 'retrieved'",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+
+        let articles_screened: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM article WHERE status IN ('included', 'excluded') \
+             AND COALESCE(exclusion_criterion, 0) != 1",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+
+        let articles_included: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM article WHERE status = 'included'",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+
+        let articles_coded: i64 = sqlx::query_scalar(
+            "SELECT COUNT(DISTINCT article_id) FROM coding",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .unwrap_or(0);
+
+        Ok(ArrangingProgress {
+            codes_count,
+            criteria_count,
+            articles_retrieved,
+            articles_screened,
+            articles_included,
+            articles_coded,
+        })
+    }
+
+    pub async fn assessing_progress(&self) -> Result<AssessingProgress> {
+        let articles_included: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM article WHERE status = 'included'",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+
+        // The pdf table doesn't have an `article_id` column directly — PDFs link to
+        // articles via their pdf_path or via pdf_chunk. Use the article's `pdf_path`
+        // field as the simplest signal that a PDF is attached.
+        let articles_with_pdf: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM article WHERE status = 'included' \
+             AND pdf_path IS NOT NULL AND pdf_path <> ''",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .unwrap_or(0);
+
+        // Draft persistence: a non-empty value at settings key 'draft.text'.
+        let draft_text: Option<String> = sqlx::query_scalar(
+            "SELECT value FROM settings WHERE key = 'draft.text'",
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .unwrap_or(None);
+        let has_draft = draft_text
+            .as_deref()
+            .map(|s| !s.trim().is_empty() && s.trim() != "\"\"")
+            .unwrap_or(false);
+
+        Ok(AssessingProgress {
+            articles_included,
+            articles_with_pdf,
+            has_draft,
         })
     }
 
