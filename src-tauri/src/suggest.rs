@@ -413,9 +413,68 @@ fn parse_query_result(s: &str) -> Option<(String, String)> {
     let end = end?;
     let slice = &s[start..end];
     let v: serde_json::Value = serde_json::from_str(slice).ok()?;
-    let query = v.get("query")?.as_str()?.to_string();
-    let rationale = v.get("rationale")?.as_str()?.to_string();
+    let query = pick_str(&v, &["query", "queries", "boolean_query", "search_query"])?
+        .to_string();
+    let rationale = pick_str(
+        &v,
+        &["rationale", "rationales", "reason", "reasoning", "explanation", "notes"],
+    )
+    .unwrap_or("")
+    .to_string();
     Some((query, rationale))
+}
+
+fn pick_str<'a>(v: &'a serde_json::Value, keys: &[&str]) -> Option<&'a str> {
+    for k in keys {
+        if let Some(s) = v.get(*k).and_then(|x| x.as_str()) {
+            return Some(s);
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_query_result_canonical_keys() {
+        let s = r#"{"query": "X AND Y", "rationale": "because"}"#;
+        let (q, r) = parse_query_result(s).unwrap();
+        assert_eq!(q, "X AND Y");
+        assert_eq!(r, "because");
+    }
+
+    #[test]
+    fn parse_query_result_plural_rationales() {
+        // gemma-4-26b-a4b and others sometimes emit "rationales" (plural).
+        let s = r#"{"query": "X AND Y", "rationales": "because"}"#;
+        let (q, r) = parse_query_result(s).unwrap();
+        assert_eq!(q, "X AND Y");
+        assert_eq!(r, "because");
+    }
+
+    #[test]
+    fn parse_query_result_missing_rationale_is_empty() {
+        let s = r#"{"query": "X AND Y"}"#;
+        let (q, r) = parse_query_result(s).unwrap();
+        assert_eq!(q, "X AND Y");
+        assert_eq!(r, "");
+    }
+
+    #[test]
+    fn parse_query_result_markdown_fenced() {
+        let s = "```json\n{\"query\": \"X AND Y\", \"rationale\": \"because\"}\n```";
+        let (q, r) = parse_query_result(s).unwrap();
+        assert_eq!(q, "X AND Y");
+        assert_eq!(r, "because");
+    }
+
+    #[test]
+    fn parse_query_result_fails_without_query() {
+        let s = r#"{"rationale": "no query here"}"#;
+        assert!(parse_query_result(s).is_none());
+    }
 }
 
 /// Find the first JSON array in the model's response and parse it as a list
