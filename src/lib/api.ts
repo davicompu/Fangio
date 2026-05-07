@@ -243,6 +243,22 @@ export interface SuggestQueryResult {
   latency_ms: number;
 }
 
+export interface StepQuestion {
+  q: string;
+  options: string[];
+}
+
+export interface StepQuestionsResult {
+  questions: StepQuestion[];
+  model: string | null;
+  latency_ms: number;
+}
+
+export interface QAndA {
+  q: string;
+  a: string;
+}
+
 export interface AiCodingProposal {
   id: number;
   article_id: number;
@@ -604,8 +620,17 @@ export const api = {
   suggestCodes(article_id: number, dimension: string) {
     return invoke<SuggestResult>("suggest_codes", { args: { article_id, dimension } });
   },
-  suggestStep(stepId: string, currentValue: string) {
+  suggestStep(stepId: string, currentValue: string, answers?: QAndA[]) {
     return invoke<{ suggestion: string; rationale: string }>("suggest_step", {
+      args: {
+        step_id: stepId,
+        current_value: currentValue,
+        answers: answers && answers.length > 0 ? answers : null,
+      },
+    });
+  },
+  suggestStepQuestions(stepId: string, currentValue: string) {
+    return invoke<StepQuestionsResult>("suggest_step_questions", {
       args: { step_id: stepId, current_value: currentValue },
     });
   },
