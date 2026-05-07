@@ -11,10 +11,11 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Suggestion {
+    #[serde(alias = "codes", alias = "name", alias = "label")]
     pub code: String,
-    #[serde(default)]
+    #[serde(default, alias = "rationales", alias = "reason", alias = "reasoning", alias = "explanation")]
     pub rationale: Option<String>,
-    #[serde(default)]
+    #[serde(default, alias = "isNew", alias = "new")]
     pub is_new: bool,
 }
 
@@ -181,8 +182,18 @@ Return the JSON (suggestion = the refined question)."
     }
     let end = end.ok_or_else(|| anyhow!("unterminated JSON object"))?;
     let v: serde_json::Value = serde_json::from_str(&result.content[start..end])?;
-    let suggestion = v.get("suggestion").and_then(|x| x.as_str()).unwrap_or("").to_string();
-    let rationale = v.get("rationale").and_then(|x| x.as_str()).unwrap_or("").to_string();
+    let suggestion = pick_str(
+        &v,
+        &["suggestion", "suggestions", "improved", "revised", "result", "output", "text"],
+    )
+    .unwrap_or("")
+    .to_string();
+    let rationale = pick_str(
+        &v,
+        &["rationale", "rationales", "reason", "reasoning", "explanation", "notes"],
+    )
+    .unwrap_or("")
+    .to_string();
     Ok((suggestion, rationale))
 }
 
@@ -518,6 +529,41 @@ mod tests {
         assert_eq!(d.decision, "include");
         assert_eq!(d.rationale, "matches scope");
         assert!((d.confidence - 0.7).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn suggestion_deserializes_canonical_keys() {
+        let s = r#"{"code":"X","rationale":"y","is_new":true}"#;
+        let sug: Suggestion = serde_json::from_str(s).unwrap();
+        assert_eq!(sug.code, "X");
+        assert_eq!(sug.rationale.as_deref(), Some("y"));
+        assert!(sug.is_new);
+    }
+
+    #[test]
+    fn suggestion_deserializes_alias_keys() {
+        // codes (plural), rationales (plural), isNew (camelCase) all accepted.
+        let s = r#"{"codes":"X","rationales":"y","isNew":true}"#;
+        let sug: Suggestion = serde_json::from_str(s).unwrap();
+        assert_eq!(sug.code, "X");
+        assert_eq!(sug.rationale.as_deref(), Some("y"));
+        assert!(sug.is_new);
+    }
+
+    #[test]
+    fn suggestion_array_parses_with_alias_keys() {
+        // parse_suggestions tolerates per-element key drift.
+        let s = r#"[
+            {"code":"A","rationale":"first"},
+            {"codes":"B","reason":"second","new":true}
+        ]"#;
+        let v = parse_suggestions(s).unwrap();
+        assert_eq!(v.len(), 2);
+        assert_eq!(v[0].code, "A");
+        assert_eq!(v[0].rationale.as_deref(), Some("first"));
+        assert_eq!(v[1].code, "B");
+        assert_eq!(v[1].rationale.as_deref(), Some("second"));
+        assert!(v[1].is_new);
     }
 }
 
