@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   ArrowLeft,
@@ -9,12 +9,14 @@ import {
   Search,
   Sparkles,
 } from "lucide-react";
-import type { ProjectRow } from "../../lib/api";
-import { cn } from "../../lib/utils";
+import type { ProjectRow, AssessingProgress } from "../../lib/api";
+import { api } from "../../lib/api";
 import { PdfLibraryPanel } from "./PdfLibraryPanel";
 import { AskCorpusPanel } from "./AskCorpusPanel";
 import { DraftPanel } from "./DraftPanel";
 import { ExportPanel } from "./ExportPanel";
+import { ProgressionTabStrip, type ProgressionTab } from "../../components/ProgressionTabStrip";
+import { useTabProgress, readManualFlags } from "../../lib/useTabProgress";
 
 interface Props {
   project: ProjectRow;
@@ -57,7 +59,35 @@ const tabInfo: Record<Tab, { headline: string; body: string; tip?: string }> = {
 export function AssessingStage({ project, onLeaveStage, onOpenRag }: Props) {
   const [tab, setTab] = useState<Tab>("library");
   const [refreshTick, setRefreshTick] = useState(0);
+
+  const [progress, setProgress] = useState<AssessingProgress | null>(null);
+  const [progressSettings, setProgressSettings] = useState<Record<string, unknown>>({});
+
+  useEffect(() => {
+    api.assessingProgress().then(setProgress).catch(() => {});
+    api.getSettings().then(setProgressSettings).catch(() => {});
+  }, [project.id, refreshTick]);
+
   const onChanged = () => setRefreshTick((t) => t + 1);
+
+  const TAB_IDS: Tab[] = ["library", "ask", "draft", "export"];
+  const manualFlags = readManualFlags("assessing", TAB_IDS, progressSettings);
+  const status = useTabProgress<Tab>(tab, {
+    library: () =>
+      progress != null && progress.articles_included > 0 &&
+      progress.articles_with_pdf / progress.articles_included >= 0.8,
+    ask: () => false, // manual only
+    draft: () => !!progress?.has_draft,
+    export: () => false, // manual only
+  }, manualFlags);
+
+  const numberedTabs: ProgressionTab<Tab>[] = tabs.map((t, i) => ({
+    id: t.id,
+    label: t.label,
+    icon: t.icon,
+    status: status[t.id],
+    number: i + 1,
+  }));
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -90,34 +120,11 @@ export function AssessingStage({ project, onLeaveStage, onOpenRag }: Props) {
       </header>
 
       <nav className="px-6 xl:px-12 mb-6">
-        <div className="flex items-end gap-1 border-b border-[var(--color-paper-300)]">
-          {tabs.map((t) => {
-            const Icon = t.icon;
-            const active = tab === t.id;
-            return (
-              <button
-                key={t.id}
-                onClick={() => setTab(t.id)}
-                className={cn(
-                  "no-drag relative px-5 pt-3 pb-3.5 text-[13px] font-medium transition-paper flex items-center gap-2",
-                  active
-                    ? "text-[var(--color-ink-900)]"
-                    : "text-[var(--color-paper-500)] hover:text-[var(--color-ink-700)]",
-                )}
-              >
-                <Icon size={14} strokeWidth={1.75} />
-                {t.label}
-                {active && (
-                  <motion.div
-                    layoutId="assessing-tab-underline"
-                    className="absolute left-0 right-0 -bottom-px h-0.5 bg-[var(--color-ink-700)]"
-                    transition={{ type: "spring", stiffness: 500, damping: 35 }}
-                  />
-                )}
-              </button>
-            );
-          })}
-        </div>
+        <ProgressionTabStrip
+          tabs={numberedTabs}
+          onSelect={setTab}
+          underlineLayoutId="assessing-tab-underline"
+        />
       </nav>
 
       <div className="flex-1 grid grid-cols-[1fr_240px] xl:grid-cols-[1fr_300px] pb-32 min-w-0">
@@ -132,10 +139,26 @@ export function AssessingStage({ project, onLeaveStage, onOpenRag }: Props) {
               transition={{ duration: 0.25, ease: [0.2, 0.7, 0.2, 1] }}
               className="pl-6 pr-4 xl:pl-12 xl:pr-8"
             >
-              {tab === "library" && <PdfLibraryPanel refreshKey={refreshTick} onChanged={onChanged} />}
-              {tab === "ask" && <AskCorpusPanel />}
+              {tab === "library" && (
+                <PdfLibraryPanel
+                  refreshKey={refreshTick}
+                  onChanged={onChanged}
+                  manualComplete={progressSettings["progress.assessing.library.complete"] === true}
+                />
+              )}
+              {tab === "ask" && (
+                <AskCorpusPanel
+                  manualComplete={progressSettings["progress.assessing.ask.complete"] === true}
+                  onChanged={onChanged}
+                />
+              )}
               {tab === "draft" && <DraftPanel project={project} />}
-              {tab === "export" && <ExportPanel />}
+              {tab === "export" && (
+                <ExportPanel
+                  manualComplete={progressSettings["progress.assessing.export.complete"] === true}
+                  onChanged={onChanged}
+                />
+              )}
             </motion.div>
           </AnimatePresence>
         </div>

@@ -16,13 +16,15 @@ import { Card } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
 import { Select } from "../../components/ui/Select";
 import { cn } from "../../lib/utils";
+import { MarkStepComplete } from "../../components/MarkStepComplete";
 
 interface Props {
   refreshKey: number;
   onChanged: () => void;
+  manualComplete?: boolean;
 }
 
-export function PdfLibraryPanel({ refreshKey, onChanged }: Props) {
+export function PdfLibraryPanel({ refreshKey, onChanged, manualComplete }: Props) {
   const [pdfs, setPdfs] = useState<PdfRow[]>([]);
   const [included, setIncluded] = useState<ArticleRow[]>([]);
   const [busy, setBusy] = useState(false);
@@ -163,6 +165,12 @@ export function PdfLibraryPanel({ refreshKey, onChanged }: Props) {
           </AnimatePresence>
         </div>
       )}
+      <MarkStepComplete
+        stage="assessing"
+        tab="library"
+        isComplete={!!manualComplete}
+        onChanged={onChanged ?? (() => {})}
+      />
     </div>
   );
 }
