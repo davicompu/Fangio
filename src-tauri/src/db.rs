@@ -581,16 +581,24 @@ impl ProjectDb {
             .collect())
     }
 
-    pub async fn merge_dedup_cluster(&self, members: &[i64]) -> Result<()> {
-        // Keep the lowest id, mark the rest as 'excluded' with criterion 1 (duplicate)
+    /// Merge a duplicate cluster: `keeper_id` (when supplied and present in
+    /// `members`) is the article that stays; the rest are marked excluded
+    /// with criterion 1 (duplicate). When `keeper_id` is `None`, the lowest
+    /// id wins — preserves the prior behaviour for callers that don't care.
+    pub async fn merge_dedup_cluster(
+        &self,
+        members: &[i64],
+        keeper_id: Option<i64>,
+    ) -> Result<()> {
         if members.len() < 2 {
             return Ok(());
         }
-        let mut sorted = members.to_vec();
-        sorted.sort();
-        let keeper = sorted[0];
+        let keeper = match keeper_id.filter(|k| members.contains(k)) {
+            Some(k) => k,
+            None => *members.iter().min().expect("non-empty cluster"),
+        };
         let now = chrono::Utc::now().to_rfc3339();
-        for &id in &sorted[1..] {
+        for &id in members.iter().filter(|&&id| id != keeper) {
             sqlx::query(
                 "UPDATE article SET status = 'excluded', exclusion_criterion = 1, \
                  exclusion_rationale = 'Duplicate (merged into article ' || ? || ')', \
@@ -610,6 +618,58 @@ impl ProjectDb {
             .execute(&self.pool)
             .await?;
         Ok(())
+    }
+
+    /// Record that the researcher reviewed `members` and decided they are NOT
+    /// duplicates. The signature is the sorted ids joined by '-'; subsequent
+    /// runs of the dedup clusterer use this to suppress the cluster.
+    pub async fn keep_dedup_cluster_separate(&self, members: &[i64]) -> Result<()> {
+        if members.len() < 2 {
+            return Ok(());
+        }
+        let mut sorted = members.to_vec();
+        sorted.sort();
+        let signature = sorted
+            .iter()
+            .map(|n| n.to_string())
+            .collect::<Vec<_>>()
+            .join("-");
+        let now = chrono::Utc::now().to_rfc3339();
+        let existing: Option<String> = sqlx::query_scalar(
+            "SELECT value FROM settings WHERE key = 'dedup.kept_separate'",
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+        let mut sigs: Vec<String> = existing
+            .as_deref()
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or_default();
+        if !sigs.contains(&signature) {
+            sigs.push(signature);
+        }
+        let value = serde_json::to_string(&sigs).unwrap_or_else(|_| "[]".to_string());
+        sqlx::query(
+            "INSERT INTO settings (key, value, updated_at) VALUES ('dedup.kept_separate', ?, ?) \
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+        )
+        .bind(&value)
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Load the cluster signatures the researcher has previously kept separate.
+    pub async fn dedup_kept_separate_signatures(&self) -> Result<Vec<String>> {
+        let row: Option<String> = sqlx::query_scalar(
+            "SELECT value FROM settings WHERE key = 'dedup.kept_separate'",
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row
+            .as_deref()
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or_default())
     }
 
     pub async fn article_count(&self) -> Result<i64> {

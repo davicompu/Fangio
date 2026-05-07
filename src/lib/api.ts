@@ -508,8 +508,11 @@ export const api = {
   listDedupClusters() {
     return invoke<DedupCluster[]>("list_dedup_clusters");
   },
-  mergeDedupCluster(members: number[]) {
-    return invoke<void>("merge_dedup_cluster", { members });
+  mergeDedupCluster(members: number[], keeperId?: number) {
+    return invoke<void>("merge_dedup_cluster", { members, keeperId: keeperId ?? null });
+  },
+  keepDedupClusterSeparate(members: number[]) {
+    return invoke<void>("keep_dedup_cluster_separate", { members });
   },
   // ── Arranging stage ──
   listFrameworkDimensions() {

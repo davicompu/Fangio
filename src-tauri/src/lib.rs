@@ -420,18 +420,48 @@ async fn assessing_progress(state: State<'_, AppState>) -> Result<AssessingProgr
 async fn list_dedup_clusters(state: State<'_, AppState>) -> Result<Vec<DedupCluster>, String> {
     let db = state.current().await.ok_or("no project open")?;
     let candidates = db.list_articles_for_dedup().await.map_err(err)?;
-    Ok(dedup::cluster(candidates))
+    let mut clusters = dedup::cluster(candidates);
+    // Filter out clusters the researcher has previously declared not duplicates.
+    let kept_separate = db.dedup_kept_separate_signatures().await.unwrap_or_default();
+    clusters.retain(|c| {
+        let mut sorted = c.members.clone();
+        sorted.sort();
+        let signature = sorted
+            .iter()
+            .map(|n| n.to_string())
+            .collect::<Vec<_>>()
+            .join("-");
+        !kept_separate.contains(&signature)
+    });
+    Ok(clusters)
 }
 
 #[tauri::command]
 async fn merge_dedup_cluster(
     members: Vec<i64>,
+    keeper_id: Option<i64>,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let db = state.current().await.ok_or("no project open")?;
-    db.merge_dedup_cluster(&members).await.map_err(err)?;
+    db.merge_dedup_cluster(&members, keeper_id).await.map_err(err)?;
     db.record_telemetry(
         "dedup.merged",
+        &serde_json::json!({ "size": members.len(), "keeper_picked": keeper_id.is_some() }),
+    )
+    .await
+    .ok();
+    Ok(())
+}
+
+#[tauri::command]
+async fn keep_dedup_cluster_separate(
+    members: Vec<i64>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let db = state.current().await.ok_or("no project open")?;
+    db.keep_dedup_cluster_separate(&members).await.map_err(err)?;
+    db.record_telemetry(
+        "dedup.kept_separate",
         &serde_json::json!({ "size": members.len() }),
     )
     .await
@@ -3148,6 +3178,7 @@ pub fn run() {
             assessing_progress,
             list_dedup_clusters,
             merge_dedup_cluster,
+            keep_dedup_cluster_separate,
             list_framework_dimensions,
             list_framework_code_defs,
             add_framework_code_def,
