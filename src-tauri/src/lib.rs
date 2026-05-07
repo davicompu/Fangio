@@ -3,6 +3,7 @@
 mod backup;
 mod browser;
 mod clone;
+mod crossref;
 mod db;
 mod dedup;
 mod draft;
@@ -467,6 +468,95 @@ async fn keep_dedup_cluster_separate(
     .await
     .ok();
     Ok(())
+}
+
+#[derive(Debug, Serialize)]
+struct EnrichResult {
+    processed: usize,
+    updated: usize,
+    skipped_no_doi: usize,
+    failures: usize,
+    error_messages: Vec<String>,
+}
+
+#[tauri::command]
+async fn enrich_articles_from_doi(
+    state: State<'_, AppState>,
+) -> Result<EnrichResult, String> {
+    let db = state.current().await.ok_or("no project open")?;
+    let articles = db.list_articles().await.map_err(err)?;
+
+    let mut processed = 0usize;
+    let mut updated = 0usize;
+    let mut skipped_no_doi = 0usize;
+    let mut failures = 0usize;
+    let mut error_messages: Vec<String> = Vec::new();
+
+    for a in articles {
+        // Skip articles without DOI or with no target fields missing.
+        let doi = match a.doi.as_deref().filter(|s| !s.trim().is_empty()) {
+            Some(d) => d,
+            None => {
+                skipped_no_doi += 1;
+                continue;
+            }
+        };
+
+        let needs_title = a.title.trim().is_empty();
+        let needs_authors = a.authors.as_deref().map(|s| s.trim().is_empty()).unwrap_or(true);
+        let needs_year = a.year.is_none();
+        let needs_journal = a.journal.as_deref().map(|s| s.trim().is_empty()).unwrap_or(true);
+        let needs_abstract = a.abstract_text.as_deref().map(|s| s.trim().is_empty()).unwrap_or(true);
+
+        if !(needs_title || needs_authors || needs_year || needs_journal || needs_abstract) {
+            continue;
+        }
+
+        processed += 1;
+        match crossref::fetch(doi).await {
+            Ok(rec) => {
+                let did_update = db
+                    .fill_missing_article_metadata(
+                        a.id,
+                        rec.title.as_deref(),
+                        rec.authors.as_deref(),
+                        rec.year,
+                        rec.journal.as_deref(),
+                        rec.abstract_text.as_deref(),
+                    )
+                    .await
+                    .map_err(err)?;
+                if did_update {
+                    updated += 1;
+                }
+            }
+            Err(e) => {
+                failures += 1;
+                if error_messages.len() < 5 {
+                    error_messages.push(format!("article #{}: {}", a.id, e));
+                }
+            }
+        }
+    }
+
+    db.record_telemetry(
+        "library.enrich_from_doi",
+        &serde_json::json!({
+            "processed": processed,
+            "updated": updated,
+            "failures": failures,
+        }),
+    )
+    .await
+    .ok();
+
+    Ok(EnrichResult {
+        processed,
+        updated,
+        skipped_no_doi,
+        failures,
+        error_messages,
+    })
 }
 
 // ── Arranging stage commands ──────────────────────────────────────────────
@@ -3179,6 +3269,7 @@ pub fn run() {
             list_dedup_clusters,
             merge_dedup_cluster,
             keep_dedup_cluster_separate,
+            enrich_articles_from_doi,
             list_framework_dimensions,
             list_framework_code_defs,
             add_framework_code_def,

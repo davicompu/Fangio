@@ -514,6 +514,15 @@ export const api = {
   keepDedupClusterSeparate(members: number[]) {
     return invoke<void>("keep_dedup_cluster_separate", { members });
   },
+  enrichArticlesFromDoi() {
+    return invoke<{
+      processed: number;
+      updated: number;
+      skipped_no_doi: number;
+      failures: number;
+      error_messages: string[];
+    }>("enrich_articles_from_doi");
+  },
   // ── Arranging stage ──
   listFrameworkDimensions() {
     return invoke<DimensionInfo[]>("list_framework_dimensions");

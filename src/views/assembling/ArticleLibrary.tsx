@@ -9,7 +9,7 @@ import {
   type SortingState,
 } from "@tanstack/react-table";
 import { AnimatePresence, motion } from "framer-motion";
-import { ArrowUpDown, Check, ExternalLink, Library, Loader2, Pencil, Search, Star, Tags, X } from "lucide-react";
+import { ArrowUpDown, Check, ExternalLink, Library, Loader2, Pencil, Search, Sparkles, Star, Tags, X } from "lucide-react";
 import { api, type ArticleRow, type JournalRow } from "../../lib/api";
 import { cn } from "../../lib/utils";
 interface Props {
@@ -655,6 +655,35 @@ export function ArticleLibrary({ refreshKey, onChanged }: Props) {
   const [loading, setLoading] = useState(true);
   const [ratingArticle, setRatingArticle] = useState<ArticleRow | null>(null);
   const [bulkRating, setBulkRating] = useState(false);
+  const [enriching, setEnriching] = useState(false);
+  const [enrichStatus, setEnrichStatus] = useState<string | null>(null);
+  const enrichStatusTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const handleEnrich = async () => {
+    setEnriching(true);
+    setEnrichStatus(null);
+    try {
+      const result = await api.enrichArticlesFromDoi();
+      let msg = `Updated ${result.updated} · processed ${result.processed} · skipped ${result.skipped_no_doi} (no DOI)`;
+      if (result.failures > 0) {
+        msg += ` · failed ${result.failures}`;
+        if (result.error_messages.length > 0) {
+          msg += ` — ${result.error_messages[0]}`;
+        }
+      }
+      setEnrichStatus(msg);
+      if (enrichStatusTimer.current) clearTimeout(enrichStatusTimer.current);
+      enrichStatusTimer.current = setTimeout(() => setEnrichStatus(null), 6000);
+      // Refresh article list to show newly filled fields
+      Promise.all([api.listArticles(), api.listJournals()]).then(([rows, jList]) => {
+        setData(rows);
+        setJournals(jList);
+        onChanged();
+      });
+    } finally {
+      setEnriching(false);
+    }
+  };
 
   const uniqueJournals = useMemo(() => {
     const seen = new Set<string>();
@@ -875,7 +904,21 @@ export function ArticleLibrary({ refreshKey, onChanged }: Props) {
           <Tags size={12} strokeWidth={1.75} />
           Rate all articles
         </button>
+        <button
+          onClick={handleEnrich}
+          disabled={enriching}
+          title="Fetch missing title / authors / year / journal / abstract from Crossref using each article's DOI. Existing values are never overwritten."
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-medium rounded-[var(--radius-sm)] border border-[var(--color-accent-300)] text-[var(--color-accent-600)] bg-[var(--color-accent-50)] hover:bg-[var(--color-accent-100)] disabled:opacity-50 disabled:cursor-not-allowed transition-paper"
+        >
+          {enriching ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} strokeWidth={2} />}
+          Enrich from DOI
+        </button>
       </div>
+      {enrichStatus && (
+        <div className="mb-3 px-3 py-2 rounded-[var(--radius-sm)] bg-[var(--color-accent-50)] border border-[var(--color-accent-200)] text-[11px] text-[var(--color-accent-700)] leading-relaxed">
+          {enrichStatus}
+        </div>
+      )}
 
       <div className="border border-[var(--color-paper-200)] rounded-[var(--radius-md)] overflow-hidden bg-[var(--color-paper-50)]">
         <table className="w-full">

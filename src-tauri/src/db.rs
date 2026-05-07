@@ -1133,6 +1133,96 @@ impl ProjectDb {
         Ok(())
     }
 
+    /// Update only the article fields that are currently empty/null. Existing
+    /// values are preserved — never overwritten.
+    pub async fn fill_missing_article_metadata(
+        &self,
+        id: i64,
+        title: Option<&str>,
+        authors: Option<&str>,
+        year: Option<i32>,
+        journal: Option<&str>,
+        abstract_text: Option<&str>,
+    ) -> Result<bool> {
+        let row = sqlx::query(
+            "SELECT title, authors, year, journal, \"abstract\" FROM article WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some(row) = row else {
+            return Ok(false);
+        };
+        use sqlx::Row;
+        let cur_title: String = row.try_get("title").unwrap_or_default();
+        let cur_authors: Option<String> = row.try_get("authors").ok();
+        let cur_year: Option<i32> = row.try_get("year").ok();
+        let cur_journal: Option<String> = row.try_get("journal").ok();
+        let cur_abstract: Option<String> = row.try_get("abstract").ok();
+
+        // Helper: a string field is "empty" if NULL or just whitespace.
+        let is_blank = |s: Option<&str>| s.map(|x| x.trim().is_empty()).unwrap_or(true);
+
+        let mut sets: Vec<&'static str> = Vec::new();
+        let mut updated = false;
+
+        // We bind values inline below; the ordering of pushes here matches the
+        // order of binds in the .bind() chain.
+        let new_title = title.filter(|_| cur_title.trim().is_empty());
+        let new_authors = authors.filter(|_| is_blank(cur_authors.as_deref()));
+        let new_year = year.filter(|_| cur_year.is_none());
+        let new_journal = journal.filter(|_| is_blank(cur_journal.as_deref()));
+        let new_abstract = abstract_text.filter(|_| is_blank(cur_abstract.as_deref()));
+
+        if new_title.is_some() {
+            sets.push("title = ?");
+            updated = true;
+        }
+        if new_authors.is_some() {
+            sets.push("authors = ?");
+            updated = true;
+        }
+        if new_year.is_some() {
+            sets.push("year = ?");
+            updated = true;
+        }
+        if new_journal.is_some() {
+            sets.push("journal = ?");
+            updated = true;
+        }
+        if new_abstract.is_some() {
+            sets.push("\"abstract\" = ?");
+            updated = true;
+        }
+        if !updated {
+            return Ok(false);
+        }
+        let now = chrono::Utc::now().to_rfc3339();
+        let sql = format!(
+            "UPDATE article SET {}, updated_at = ? WHERE id = ?",
+            sets.join(", ")
+        );
+        let mut q = sqlx::query(&sql);
+        if let Some(v) = new_title {
+            q = q.bind(v);
+        }
+        if let Some(v) = new_authors {
+            q = q.bind(v);
+        }
+        if let Some(v) = new_year {
+            q = q.bind(v);
+        }
+        if let Some(v) = new_journal {
+            q = q.bind(v);
+        }
+        if let Some(v) = new_abstract {
+            q = q.bind(v);
+        }
+        q = q.bind(&now).bind(id);
+        q.execute(&self.pool).await?;
+        Ok(true)
+    }
+
     pub async fn list_articles_for_screening(
         &self,
         offset: i64,
