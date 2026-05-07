@@ -146,6 +146,23 @@ export interface AssemblingState {
   unique_records: number;
   duplicate_records: number;
   import_batches: number;
+  has_acquisition_saved: boolean;
+  has_unresolved_clusters: boolean;
+}
+
+export interface ArrangingProgress {
+  codes_count: number;
+  criteria_count: number;
+  articles_retrieved: number;
+  articles_screened: number;
+  articles_included: number;
+  articles_coded: number;
+}
+
+export interface AssessingProgress {
+  articles_included: number;
+  articles_with_pdf: number;
+  has_draft: boolean;
 }
 
 export interface DedupCluster {
@@ -481,6 +498,12 @@ export const api = {
   },
   assemblingState() {
     return invoke<AssemblingState>("get_assembling_state");
+  },
+  arrangingProgress() {
+    return invoke<ArrangingProgress>("arranging_progress");
+  },
+  assessingProgress() {
+    return invoke<AssessingProgress>("assessing_progress");
   },
   listDedupClusters() {
     return invoke<DedupCluster[]>("list_dedup_clusters");
