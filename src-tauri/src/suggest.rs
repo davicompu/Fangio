@@ -36,6 +36,26 @@ pub struct SuggestQueryResult {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct StepQuestion {
+    pub q: String,
+    /// 0–4 options. Empty means the UI should render a free-text input only.
+    pub options: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct StepQuestionsResult {
+    pub questions: Vec<StepQuestion>,
+    pub model: Option<String>,
+    pub latency_ms: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct QAndA {
+    pub q: String,
+    pub a: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct DimensionCoding {
     pub dimension: String,
     pub suggestions: Vec<Suggestion>,
@@ -444,6 +464,60 @@ fn pick_str<'a>(v: &'a serde_json::Value, keys: &[&str]) -> Option<&'a str> {
     None
 }
 
+/// Extract a list of clarifying questions from a model's JSON response.
+/// Tolerates prose before/after the object, markdown fences, and key drift
+/// (`questions`/`question`, `q`/`question`/`prompt`, `options`/`choices`).
+/// Entries missing the question text are silently dropped.
+fn parse_step_questions(s: &str) -> Option<Vec<StepQuestion>> {
+    let bytes = s.as_bytes();
+    let start = bytes.iter().position(|&b| b == b'{')?;
+    let mut depth = 0i32;
+    let mut in_str = false;
+    let mut esc = false;
+    let mut end = None;
+    for i in start..bytes.len() {
+        let c = bytes[i];
+        if esc { esc = false; continue; }
+        if c == b'\\' { esc = true; continue; }
+        if c == b'"' { in_str = !in_str; continue; }
+        if in_str { continue; }
+        if c == b'{' { depth += 1; }
+        else if c == b'}' {
+            depth -= 1;
+            if depth == 0 { end = Some(i + 1); break; }
+        }
+    }
+    let end = end?;
+    let v: serde_json::Value = serde_json::from_str(&s[start..end]).ok()?;
+
+    let arr = v.get("questions")
+        .or_else(|| v.get("question"))
+        .or_else(|| v.get("items"))
+        .and_then(|x| x.as_array())?;
+
+    let mut out = Vec::with_capacity(arr.len());
+    for entry in arr {
+        let q = pick_str(entry, &["q", "question", "prompt", "text"]);
+        let q = match q {
+            Some(s) if !s.trim().is_empty() => s.to_string(),
+            _ => continue,
+        };
+        let options = entry
+            .get("options")
+            .or_else(|| entry.get("choices"))
+            .or_else(|| entry.get("answers"))
+            .and_then(|x| x.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|o| o.as_str().map(|s| s.to_string()))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        out.push(StepQuestion { q, options });
+    }
+    Some(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -564,6 +638,66 @@ mod tests {
         assert_eq!(v[1].code, "B");
         assert_eq!(v[1].rationale.as_deref(), Some("second"));
         assert!(v[1].is_new);
+    }
+
+    #[test]
+    fn parse_step_questions_canonical() {
+        let s = r#"{
+            "questions": [
+                {"q": "What is the audience?", "options": ["Practitioners", "Academics"]},
+                {"q": "Pick a region", "options": ["EU", "US", "Global"]}
+            ]
+        }"#;
+        let qs = parse_step_questions(s).unwrap();
+        assert_eq!(qs.len(), 2);
+        assert_eq!(qs[0].q, "What is the audience?");
+        assert_eq!(qs[0].options, vec!["Practitioners", "Academics"]);
+    }
+
+    #[test]
+    fn parse_step_questions_empty_options_for_freetext() {
+        let s = r#"{"questions": [{"q": "Describe in your words", "options": []}]}"#;
+        let qs = parse_step_questions(s).unwrap();
+        assert_eq!(qs.len(), 1);
+        assert!(qs[0].options.is_empty());
+    }
+
+    #[test]
+    fn parse_step_questions_alias_keys() {
+        // question (singular) instead of questions; "question" / "prompt" instead of "q";
+        // "choices" instead of "options".
+        let s = r#"{"question": [{"prompt": "Pick scope", "choices": ["narrow", "broad"]}]}"#;
+        let qs = parse_step_questions(s).unwrap();
+        assert_eq!(qs.len(), 1);
+        assert_eq!(qs[0].q, "Pick scope");
+        assert_eq!(qs[0].options, vec!["narrow", "broad"]);
+    }
+
+    #[test]
+    fn parse_step_questions_drops_malformed_entries() {
+        // entries without q/question are skipped; the rest still parse.
+        let s = r#"{"questions": [
+            {"q": "ok", "options": ["a"]},
+            {"options": ["no q"]},
+            {"q": "also ok", "options": []}
+        ]}"#;
+        let qs = parse_step_questions(s).unwrap();
+        assert_eq!(qs.len(), 2);
+        assert_eq!(qs[0].q, "ok");
+        assert_eq!(qs[1].q, "also ok");
+    }
+
+    #[test]
+    fn parse_step_questions_fails_when_no_object() {
+        assert!(parse_step_questions("not json at all").is_none());
+    }
+
+    #[test]
+    fn parse_step_questions_markdown_fenced() {
+        let s = "```json\n{\"questions\":[{\"q\":\"A?\",\"options\":[\"x\",\"y\"]}]}\n```";
+        let qs = parse_step_questions(s).unwrap();
+        assert_eq!(qs.len(), 1);
+        assert_eq!(qs[0].q, "A?");
     }
 }
 
