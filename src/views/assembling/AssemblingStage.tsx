@@ -215,7 +215,18 @@ export function AssemblingStage({ project, settings, onLeaveStage, onAdvanceStag
                   onChanged={onChanged}
                 />
               )}
-              {tab === "import" && <ImportPanel onCommitted={onChanged} />}
+              {tab === "import" && (
+                <ImportPanel
+                  onCommitted={onChanged}
+                  availableDatabases={(() => {
+                    const cfg = settings["databases.config"] ?? [];
+                    const ids: string[] = project.databases
+                      ? (JSON.parse(project.databases) as string[])
+                      : [];
+                    return cfg.filter((d) => ids.includes(d.id)).map((d) => d.label);
+                  })()}
+                />
+              )}
               {tab === "library" && (
                 <ArticleLibrary
                   refreshKey={refreshTick}

@@ -18,9 +18,12 @@ import { Select } from "../../components/ui/Select";
 
 interface Props {
   onCommitted: () => void;
+  /** Labels of the databases the researcher selected on the Acquisition tab.
+   *  When non-empty, the Source database dropdown is restricted to this list. */
+  availableDatabases?: string[];
 }
 
-export function ImportPanel({ onCommitted }: Props) {
+export function ImportPanel({ onCommitted, availableDatabases = [] }: Props) {
   const [preview, setPreview] = useState<ParsePreview | null>(null);
   const [filePath, setFilePath] = useState<string | null>(null);
   const [database, setDatabase] = useState("");
@@ -55,9 +58,8 @@ export function ImportPanel({ onCommitted }: Props) {
         const p = await api.parsePreview(dropped);
         setPreview(p);
         if (!database) {
-          if (p.format === "scopus-csv") setDatabase("Scopus");
-          else if (p.format === "wos-tab") setDatabase("Web of Science");
-          else setDatabase("");
+          const guess = guessDatabase(p.format, availableDatabases);
+          if (guess) setDatabase(guess);
         }
       } catch (e: any) {
         setError(e?.message || String(e));
@@ -96,11 +98,11 @@ export function ImportPanel({ onCommitted }: Props) {
     try {
       const p = await api.parsePreview(path);
       setPreview(p);
-      // Suggest a default database label from the format
+      // Suggest a default database label from the format, but only when the
+      // guess is one the researcher actually disclosed.
       if (!database) {
-        if (p.format === "scopus-csv") setDatabase("Scopus");
-        else if (p.format === "wos-tab") setDatabase("Web of Science");
-        else setDatabase("");
+        const guess = guessDatabase(p.format, availableDatabases);
+        if (guess) setDatabase(guess);
       }
     } catch (e: any) {
       setError(e?.message || String(e));
@@ -183,22 +185,25 @@ export function ImportPanel({ onCommitted }: Props) {
                 )}
 
                 <div className="mb-5">
-                  <Select
-                    label="Source database"
-                    value={database}
-                    onChange={(e) => setDatabase(e.target.value)}
-                    hint="This label gets recorded with every imported article."
-                  >
-                    <option value="">— pick or type below —</option>
-                    <option>Scopus</option>
-                    <option>Web of Science</option>
-                    <option>EBSCO Business Source Complete</option>
-                    <option>PubMed</option>
-                    <option>IEEE Xplore</option>
-                    <option>ACM Digital Library</option>
-                    <option>Google Scholar</option>
-                    <option>ScienceDirect</option>
-                  </Select>
+                  {availableDatabases.length === 0 ? (
+                    <div className="px-3.5 py-3 rounded-[var(--radius-sm)] bg-[var(--color-accent-50)] border border-[var(--color-accent-300)] text-[12px] text-[var(--color-accent-700)] leading-relaxed">
+                      <strong>No databases selected.</strong> Open the Acquisition tab and tick the
+                      databases you'll search before importing — Reeves only lets you label imports
+                      with sources you've disclosed in your method.
+                    </div>
+                  ) : (
+                    <Select
+                      label="Source database"
+                      value={database}
+                      onChange={(e) => setDatabase(e.target.value)}
+                      hint="Restricted to the databases you selected on the Acquisition tab."
+                    >
+                      <option value="">— pick the source —</option>
+                      {availableDatabases.map((label) => (
+                        <option key={label} value={label}>{label}</option>
+                      ))}
+                    </Select>
+                  )}
                 </div>
 
                 {/* Preview table — first 5 records */}
@@ -344,6 +349,16 @@ function Dropzone({ onPick, busy, isDragOver }: { onPick: () => void; busy: bool
       </p>
     </button>
   );
+}
+
+/** Guess a database label from the parsed format, but only return labels
+ *  that appear in the researcher's disclosed list. */
+function guessDatabase(format: string, available: string[]): string | null {
+  const findCaseInsensitive = (needle: string) =>
+    available.find((d) => d.toLowerCase().includes(needle.toLowerCase())) ?? null;
+  if (format === "scopus-csv") return findCaseInsensitive("scopus");
+  if (format === "wos-tab") return findCaseInsensitive("web of science") ?? findCaseInsensitive("wos");
+  return null;
 }
 
 function FormatRow({ name, tag, desc }: { name: string; tag: string; desc: string }) {
