@@ -941,11 +941,25 @@ pub async fn screen_article(
          When a criterion concerns publication metadata (journal name, publication year, authors), \
          use the metadata fields below — not just the abstract — to evaluate it. When a criterion \
          is about content or scope, read the abstract.\n\n\
+         RATIONALE REQUIREMENTS (read carefully — your rationale is logged in the audit trail and \
+         a human researcher will read it):\n\
+         - 2–4 complete sentences. Never one bare clause.\n\
+         - Cite specific evidence: quote a phrase from the title or abstract, name the journal, \
+           reference the year, etc. Generic statements like 'the article is relevant' or \
+           'matches the domain' are unacceptable.\n\
+         - For an exclude decision, state which criterion text matched and why the evidence \
+           triggered it.\n\
+         - For an include decision, identify which aspects of the abstract or metadata place \
+           the article inside the domain scope.\n\
+         - For uncertain, name what specific information you would need to decide and why the \
+           current input is insufficient.\n\
+         - Do NOT pad with filler. Do NOT restate the criteria list verbatim. Do NOT mention \
+           your confidence number in the rationale text.\n\n\
          Respond ONLY with a JSON object with exactly four keys:\n\
          - \"decision\": \"include\" if the article is relevant to the domain scope and passes all exclusion criteria, \
          \"exclude\" if it meets any exclusion criterion, or \"uncertain\" if relevance is unclear\n\
          - \"criterion_number\": the integer EC number if decision is \"exclude\", otherwise null\n\
-         - \"rationale\": one sentence explaining the decision\n\
+         - \"rationale\": grounded explanation following the requirements above\n\
          - \"confidence\": a number 0.0–1.0 (how confident you are)\n\
          No prose outside the JSON."
     );
@@ -976,8 +990,74 @@ pub async fn screen_article(
 
     let result = lmstudio::chat(base_url, model, &messages, Some(0.1), api_key).await?;
 
-    parse_screening_decision(&result.content)
-        .ok_or_else(|| anyhow::anyhow!("could not parse screening decision from model output: {}", result.content))
+    let mut decision = parse_screening_decision(&result.content)
+        .ok_or_else(|| anyhow::anyhow!("could not parse screening decision from model output: {}", result.content))?;
+
+    // Validate the rationale — a confidence with no real reasoning is useless
+    // for an audit trail. If the model returned a trivially short or generic
+    // rationale, retry once with a sharper nudge.
+    if !is_substantive_rationale(&decision.rationale) {
+        let retry_messages = vec![
+            ChatMessage { role: "system".into(), content: messages[0].content.clone() },
+            ChatMessage { role: "user".into(), content: messages[1].content.clone() },
+            ChatMessage {
+                role: "assistant".into(),
+                content: serde_json::to_string(&serde_json::json!({
+                    "decision": decision.decision,
+                    "criterion_number": decision.criterion_number,
+                    "rationale": decision.rationale,
+                    "confidence": decision.confidence,
+                })).unwrap_or_default(),
+            },
+            ChatMessage {
+                role: "user".into(),
+                content: "Your rationale is too short or generic for an audit trail. Rewrite it as 2–4 complete sentences that cite specific evidence from the title, abstract, journal, year, or authors above. Do not change your decision or confidence. Return the same JSON shape with only the rationale rewritten.".into(),
+            },
+        ];
+        if let Ok(retry) = lmstudio::chat(base_url, model, &retry_messages, Some(0.1), api_key).await {
+            if let Some(retried) = parse_screening_decision(&retry.content) {
+                if is_substantive_rationale(&retried.rationale) {
+                    decision.rationale = retried.rationale;
+                }
+            }
+        }
+        // If retry also failed to produce a substantive rationale, prefix a marker so
+        // a downstream reviewer knows the audit trail is weak rather than missing.
+        if !is_substantive_rationale(&decision.rationale) {
+            decision.rationale = format!(
+                "[weak rationale — recommend manual review] {}",
+                decision.rationale.trim()
+            );
+        }
+    }
+
+    Ok(decision)
+}
+
+/// A rationale is substantive when it has at least ~40 non-whitespace characters
+/// AND is not one of a small set of generic filler phrases the model produces
+/// when it skips the reasoning step. The threshold is conservative: a single
+/// sentence with specific evidence is usually 40+ characters; trivial responses
+/// like "Relevant to the domain." or "Matches the criteria." don't meet it.
+fn is_substantive_rationale(s: &str) -> bool {
+    let trimmed = s.trim();
+    if trimmed.chars().filter(|c| !c.is_whitespace()).count() < 40 {
+        return false;
+    }
+    let lower = trimmed.to_lowercase();
+    let trivial_starts = [
+        "relevant to the domain",
+        "matches the criteria",
+        "fits the scope",
+        "no rationale",
+        "see above",
+        "as stated",
+        "n/a",
+    ];
+    if trivial_starts.iter().any(|p| lower.starts_with(p)) && trimmed.len() < 80 {
+        return false;
+    }
+    true
 }
 
 fn parse_screening_decision(s: &str) -> Option<ScreeningDecision> {
