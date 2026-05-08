@@ -179,7 +179,7 @@ export function StageHub({ project, onOpenSettings, onProjectChanged, onEnterSta
   return (
     <div className="min-h-screen flex flex-col">
       {/* Top bar doubles as drag region */}
-      <div className="drag-region px-6 xl:px-12 pt-10 pb-8 flex items-start justify-between">
+      <div className="drag-region px-6 xl:px-12 pt-14 pb-8 flex items-start justify-between">
         <div>
           <span className="eyebrow">In progress</span>
           <ProjectNameEditor

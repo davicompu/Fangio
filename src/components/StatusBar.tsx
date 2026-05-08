@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
-import { Database, Gauge, MessageSquare, Radio, Smartphone, Type, WifiOff } from "lucide-react";
+import { Database, Gauge, MessageSquare, Radio, Smartphone, WifiOff } from "lucide-react";
 import { getVersion } from "@tauri-apps/api/app";
 import { cn } from "../lib/utils";
 
@@ -129,21 +129,7 @@ export function StatusBar({
 
       <Separator />
 
-      <div className="flex items-center gap-1.5 min-w-0">
-        <MessageSquare size={12} strokeWidth={1.75} className="text-[var(--color-paper-500)]" />
-        <span className="hidden xl:inline eyebrow text-[var(--color-paper-500)]">chat</span>
-        <span className="font-mono text-[11px] truncate max-w-[120px] xl:max-w-[200px] text-[var(--color-ink-700)]">
-          {chatModel || "—"}
-        </span>
-      </div>
-
-      <div className="hidden lg:flex items-center gap-1.5 min-w-0">
-        <Type size={12} strokeWidth={1.75} className="text-[var(--color-paper-500)]" />
-        <span className="hidden xl:inline eyebrow text-[var(--color-paper-500)]">embed</span>
-        <span className="font-mono text-[11px] truncate max-w-[120px] xl:max-w-[200px] text-[var(--color-ink-700)]">
-          {embedModel || "—"}
-        </span>
-      </div>
+      <ModelsBadge chatModel={chatModel} embedModel={embedModel} />
 
       {latencyMs !== null && (
         <div className="hidden lg:flex items-center gap-1.5">
@@ -201,4 +187,58 @@ export function StatusBar({
 
 function Separator() {
   return <span className="w-px h-3 bg-[var(--color-paper-300)]" />;
+}
+
+/** Compact "Models" badge — collapsed by default, reveals chat + embed model
+ *  identifiers in a popover above the status bar on hover. Click toggles the
+ *  popover open so you can move the cursor and copy the value. */
+function ModelsBadge({ chatModel, embedModel }: { chatModel: string | null; embedModel: string | null }) {
+  const [pinned, setPinned] = useState(false);
+  const ready = chatModel && chatModel.trim().length > 0 && embedModel && embedModel.trim().length > 0;
+  return (
+    <div className="relative group">
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          setPinned((v) => !v);
+        }}
+        className="inline-flex items-center gap-1.5 px-2 h-6 rounded-[var(--radius-xs)] hover:bg-[var(--color-paper-200)] transition-paper"
+        title={ready ? "Hover or click to see model identifiers" : "Pick chat + embed models in Settings"}
+      >
+        <MessageSquare size={11} strokeWidth={1.75} className="text-[var(--color-paper-500)]" />
+        <span className="eyebrow text-[var(--color-paper-500)]">Models</span>
+        <span
+          className={
+            "w-1.5 h-1.5 rounded-full " +
+            (ready ? "bg-[var(--color-ok-500)]" : "bg-[var(--color-paper-400)]")
+          }
+        />
+      </button>
+      <div
+        className={
+          "absolute bottom-full mb-2 left-0 min-w-[260px] px-3 py-2.5 rounded-[var(--radius-sm)] " +
+          "bg-white border border-[var(--color-paper-300)] shadow-[var(--shadow-paper-lg)] z-50 " +
+          "transition-all duration-150 " +
+          (pinned ? "opacity-100 visible" : "opacity-0 invisible group-hover:opacity-100 group-hover:visible")
+        }
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="space-y-1.5 text-[11px]">
+          <div className="flex items-baseline gap-2">
+            <span className="eyebrow text-[var(--color-paper-500)] w-12 shrink-0">Chat</span>
+            <span className="font-mono text-[var(--color-ink-800)] break-all">
+              {chatModel || "— not set —"}
+            </span>
+          </div>
+          <div className="flex items-baseline gap-2">
+            <span className="eyebrow text-[var(--color-paper-500)] w-12 shrink-0">Embed</span>
+            <span className="font-mono text-[var(--color-ink-800)] break-all">
+              {embedModel || "— not set —"}
+            </span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 }
