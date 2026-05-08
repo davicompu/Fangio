@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
-import { ArrowRight, GitBranch, Loader2 } from "lucide-react";
+import { ArrowRight, Download, GitBranch, Loader2 } from "lucide-react";
+import { toPng } from "html-to-image";
 import { api, type PrismaState } from "../../lib/api";
 import { Card } from "../../components/ui/Card";
 
@@ -11,6 +12,8 @@ interface Props {
 export function PrismaPanel({ refreshKey }: Props) {
   const [state, setState] = useState<PrismaState | null>(null);
   const [loading, setLoading] = useState(true);
+  const [exporting, setExporting] = useState(false);
+  const diagramRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     setLoading(true);
@@ -19,6 +22,27 @@ export function PrismaPanel({ refreshKey }: Props) {
       setLoading(false);
     });
   }, [refreshKey]);
+
+  const handleExport = async () => {
+    if (!diagramRef.current) return;
+    setExporting(true);
+    try {
+      const dataUrl = await toPng(diagramRef.current, {
+        cacheBust: true,
+        pixelRatio: 2,
+        backgroundColor: "#ffffff",
+      });
+      const a = document.createElement("a");
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+      a.download = `prisma-flow-${stamp}.png`;
+      a.href = dataUrl;
+      a.click();
+    } catch (e) {
+      console.error("PRISMA export failed:", e);
+    } finally {
+      setExporting(false);
+    }
+  };
 
   if (loading || !state) {
     return (
@@ -32,21 +56,34 @@ export function PrismaPanel({ refreshKey }: Props) {
 
   return (
     <div className="pl-6 pr-4 xl:pl-12 xl:pr-8">
-      <div className="mb-8">
-        <div className="eyebrow text-[var(--color-paper-500)] flex items-center gap-2">
-          <GitBranch size={11} strokeWidth={1.75} />
-          PRISMA 2020 flow diagram
+      <div className="mb-8 flex items-start justify-between gap-6">
+        <div>
+          <div className="eyebrow text-[var(--color-paper-500)] flex items-center gap-2">
+            <GitBranch size={11} strokeWidth={1.75} />
+            PRISMA 2020 flow diagram
+          </div>
+          <h2 className="font-serif text-[26px] tracking-tight text-[var(--color-ink-900)] mt-1">
+            Live record flow
+          </h2>
+          <p className="text-[13px] text-[var(--color-paper-600)] mt-2 max-w-2xl leading-relaxed">
+            Counts update automatically from your project database. This is the diagram you'll
+            include in the methods section of your paper, with the same numbers a journal reviewer
+            would compute themselves from your CSVs.
+          </p>
         </div>
-        <h2 className="font-serif text-[26px] tracking-tight text-[var(--color-ink-900)] mt-1">
-          Live record flow
-        </h2>
-        <p className="text-[13px] text-[var(--color-paper-600)] mt-2 max-w-2xl leading-relaxed">
-          Counts update automatically from your project database. This is the diagram you'll
-          include in the methods section of your paper, with the same numbers a journal reviewer
-          would compute themselves from your CSVs.
-        </p>
+        <button
+          type="button"
+          onClick={handleExport}
+          disabled={exporting}
+          className="shrink-0 inline-flex items-center gap-1.5 px-3 py-2 rounded-[var(--radius-sm)] text-[12px] font-medium text-[var(--color-accent-700)] border border-[var(--color-accent-300)] bg-[var(--color-accent-50)] hover:bg-[var(--color-accent-100)] transition-paper disabled:opacity-50 disabled:cursor-wait"
+          title="Download the diagram as a PNG image (2× DPI)"
+        >
+          {exporting ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} strokeWidth={2} />}
+          {exporting ? "Exporting…" : "Export PNG"}
+        </button>
       </div>
 
+      <div ref={diagramRef}>
       <Card className="paper-grain p-10">
         {/* PRISMA layout — three vertical lanes */}
         <div className="space-y-10">
@@ -110,10 +147,10 @@ export function PrismaPanel({ refreshKey }: Props) {
           </Lane>
         </div>
       </Card>
+      </div>
 
       <p className="mt-4 text-[11px] text-[var(--color-paper-500)] italic">
-        Compatible with the PRISMA 2020 flow template (Page et al., 2021). Export to SVG ships in
-        a later session.
+        Compatible with the PRISMA 2020 flow template (Page et al., 2021).
       </p>
     </div>
   );
