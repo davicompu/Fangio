@@ -721,37 +721,148 @@ function DecisionChip({ decision, criterionNumber }: { decision: string; criteri
   );
 }
 
+/** Split a rationale into 1-N sentences for cleaner reading. Conservative —
+ *  splits on `. `/`! `/`? ` followed by an uppercase letter or end of string,
+ *  preserves trailing punctuation, drops empties. Single-sentence rationales
+ *  come back as a one-element array. */
+function splitSentences(text: string): string[] {
+  const trimmed = text.trim();
+  if (!trimmed) return [];
+  // Look-behind for sentence-ending punctuation, look-ahead for whitespace then capital or end.
+  const parts = trimmed
+    .split(/(?<=[.!?])\s+(?=[A-Z“"'(\[]|$)/u)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return parts.length > 0 ? parts : [trimmed];
+}
+
+/** Pull out anything in straight or curly quotes so the UI can emphasise it as
+ *  evidence. Returns the rationale text broken into ordered fragments
+ *  ({text} | {evidence}). */
+function extractEvidence(sentence: string): { text: string; evidence: boolean }[] {
+  const out: { text: string; evidence: boolean }[] = [];
+  const re = /[“"']([^"'“”]{4,200}?)["”']/g;
+  let lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(sentence)) !== null) {
+    if (m.index > lastIndex) {
+      out.push({ text: sentence.slice(lastIndex, m.index), evidence: false });
+    }
+    out.push({ text: m[1], evidence: true });
+    lastIndex = m.index + m[0].length;
+  }
+  if (lastIndex < sentence.length) {
+    out.push({ text: sentence.slice(lastIndex), evidence: false });
+  }
+  return out.length > 0 ? out : [{ text: sentence, evidence: false }];
+}
+
 function RaterCard({
   label,
   proposal,
   busy,
+  highlight,
   onAccept,
 }: {
   label: string;
   proposal: AiScreeningProposal;
   busy: boolean;
+  /** Optional accent — colored left stripe + button tint matched to the decision. */
+  highlight?: "include" | "exclude" | "uncertain";
   onAccept: () => void;
 }) {
+  const stripe =
+    highlight === "include"
+      ? "before:bg-[var(--color-ok-500)]"
+      : highlight === "exclude"
+      ? "before:bg-[var(--color-warn-500)]"
+      : "before:bg-[var(--color-paper-400)]";
+  const acceptClasses =
+    highlight === "include"
+      ? "bg-[var(--color-ok-600)] hover:bg-[var(--color-ok-700)]"
+      : highlight === "exclude"
+      ? "bg-[var(--color-warn-600)] hover:bg-[var(--color-warn-700)]"
+      : "bg-[var(--color-ink-800)] hover:bg-[var(--color-ink-900)]";
+  const rawRationale = proposal.rationale ?? "";
+  const isWeak = rawRationale.startsWith("[weak rationale");
+  const rationaleText = isWeak
+    ? rawRationale.replace(/^\[weak rationale[^\]]*\]\s*/, "")
+    : rawRationale;
+  const sentences = splitSentences(rationaleText);
+  const confPct = Math.round(proposal.confidence * 100);
   return (
-    <div className="flex flex-col gap-2 p-3 rounded-[var(--radius-xs)] bg-white/70 border border-[var(--color-accent-200)]">
+    <div
+      className={cn(
+        "relative flex flex-col gap-2.5 p-3 pl-4 rounded-[var(--radius-xs)] bg-white border border-[var(--color-paper-200)]",
+        "before:absolute before:left-0 before:top-0 before:bottom-0 before:w-1 before:rounded-l-[var(--radius-xs)]",
+        stripe,
+      )}
+    >
       <div className="flex items-center gap-2 flex-wrap">
         <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--color-paper-500)]">
           {label}
         </span>
         <DecisionChip decision={proposal.decision} criterionNumber={proposal.criterion_number} />
-        <span className="text-[11px] font-mono tabular-nums text-[var(--color-paper-400)]">
-          {Math.round(proposal.confidence * 100)}%
+      </div>
+
+      {/* Confidence — visual + numeric, easier to compare across raters than a raw % */}
+      <div className="flex items-center gap-2">
+        <div className="flex-1 h-1.5 rounded-full bg-[var(--color-paper-200)] overflow-hidden">
+          <div
+            className={cn(
+              "h-full rounded-full transition-all",
+              confPct >= 90 ? "bg-[var(--color-ok-500)]"
+              : confPct >= 70 ? "bg-[var(--color-paper-500)]"
+              : "bg-[var(--color-warn-500)]",
+            )}
+            style={{ width: `${confPct}%` }}
+          />
+        </div>
+        <span className="text-[10px] font-mono tabular-nums text-[var(--color-paper-500)] shrink-0">
+          {confPct}% confidence
         </span>
       </div>
-      <p className="text-[12px] text-[var(--color-ink-800)] leading-relaxed italic">
-        {proposal.rationale}
-      </p>
+
+      {isWeak && (
+        <div className="flex items-start gap-1.5 text-[10px] text-[var(--color-warn-700)]">
+          <AlertTriangle size={11} strokeWidth={2} className="shrink-0 mt-0.5" />
+          <span>Weak rationale — recommend manual review.</span>
+        </div>
+      )}
+
+      {/* Rationale: each sentence on its own line, with quoted evidence emphasised */}
+      <ul className="space-y-1.5 text-[12px] text-[var(--color-ink-800)] leading-relaxed">
+        {sentences.map((s, i) => (
+          <li key={i} className="flex gap-1.5">
+            <span className="text-[var(--color-paper-400)] shrink-0 select-none">·</span>
+            <span className="flex-1">
+              {extractEvidence(s).map((frag, j) =>
+                frag.evidence ? (
+                  <span
+                    key={j}
+                    className="font-medium text-[var(--color-ink-900)] bg-[var(--color-accent-50)] border-b border-[var(--color-accent-300)] px-0.5 rounded-sm"
+                  >
+                    "{frag.text}"
+                  </span>
+                ) : (
+                  <span key={j}>{frag.text}</span>
+                ),
+              )}
+            </span>
+          </li>
+        ))}
+      </ul>
+
       <button
         onClick={onAccept}
         disabled={busy}
-        className="mt-1 self-start px-3 py-1 rounded-[var(--radius-xs)] text-[11px] font-semibold bg-[var(--color-accent-600)] text-white hover:bg-[var(--color-accent-700)] disabled:opacity-40 transition-paper"
+        className={cn(
+          "mt-1 self-start inline-flex items-center gap-1.5 px-3 py-1.5 rounded-[var(--radius-xs)] text-[11px] font-semibold text-white transition-paper disabled:opacity-40",
+          acceptClasses,
+        )}
       >
-        Accept this
+        <Check size={11} strokeWidth={2.5} />
+        Accept Rater {label.replace(/\D/g, "")}
       </button>
     </div>
   );
@@ -770,24 +881,31 @@ function DisagreementBanner({
   onAccept: (p: AiScreeningProposal) => void;
   onDecideManually: () => void;
 }) {
+  const decisionColor = (d: string) =>
+    d === "include" ? "include" : d === "exclude" ? "exclude" : "uncertain";
   return (
     <div className="mb-3 p-3 rounded-[var(--radius-sm)] bg-[var(--color-accent-50)] border border-[var(--color-accent-200)]">
-      <div className="flex items-center gap-2 mb-2.5">
+      <div className="flex items-center gap-2 mb-2 flex-wrap">
         <AlertTriangle size={13} className="text-[var(--color-warn-600)]" />
         <span className="text-[12px] font-semibold text-[var(--color-ink-800)]">AI raters disagree</span>
-        <span className="text-[11px] text-[var(--color-paper-500)]">— pick one or decide manually</span>
+        <span className="text-[11px] text-[var(--color-paper-500)]">·</span>
+        <DecisionChip decision={p1.decision} criterionNumber={p1.criterion_number} />
+        <span className="text-[11px] text-[var(--color-paper-500)]">vs</span>
+        <DecisionChip decision={p2.decision} criterionNumber={p2.criterion_number} />
       </div>
       <div className="grid grid-cols-2 gap-3">
         <RaterCard
           label="Rater 1"
           proposal={p1}
           busy={busy}
+          highlight={decisionColor(p1.decision) as "include" | "exclude" | "uncertain"}
           onAccept={() => onAccept(p1)}
         />
         <RaterCard
           label="Rater 2"
           proposal={p2}
           busy={busy}
+          highlight={decisionColor(p2.decision) as "include" | "exclude" | "uncertain"}
           onAccept={() => onAccept(p2)}
         />
       </div>
@@ -795,7 +913,7 @@ function DisagreementBanner({
         <button
           onClick={onDecideManually}
           disabled={busy}
-          className="text-[11px] text-[var(--color-paper-500)] hover:text-[var(--color-ink-700)] disabled:opacity-40 transition-paper"
+          className="text-[11px] text-[var(--color-paper-500)] hover:text-[var(--color-ink-700)] underline-offset-2 hover:underline disabled:opacity-40 transition-paper"
         >
           Decide manually
         </button>
