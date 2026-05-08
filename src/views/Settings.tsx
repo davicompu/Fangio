@@ -18,12 +18,13 @@ import {
   Radio,
   ShieldCheck,
   Smartphone,
+  Users,
   X,
 } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { api, type BackupInfo } from "../lib/api";
 import { Button } from "../components/ui/Button";
-import { TextField } from "../components/ui/TextField";
+import { TextField, TextArea } from "../components/ui/TextField";
 import { Select } from "../components/ui/Select";
 import type { AppSettings, DatabaseEntry, LmState } from "../lib/useAppState";
 import { cn, formatRelative } from "../lib/utils";
@@ -42,6 +43,8 @@ export function Settings({ open: openSetting, onClose, settings, onUpdate, lm, o
   const [tab, setTab] = useState<SettingsTab>("models");
   const [localUrl, setLocalUrl] = useState(settings["lmstudio.base_url"]);
   const [localApiKey, setLocalApiKey] = useState(settings["lmstudio.api_key"]);
+  const [localRater1Profile, setLocalRater1Profile] = useState(settings["ai_raters.rater1.profile"]);
+  const [localRater2Profile, setLocalRater2Profile] = useState(settings["ai_raters.rater2.profile"]);
   const [testing, setTesting] = useState(false);
   const [backups, setBackups] = useState<BackupInfo[]>([]);
   const [backupBusy, setBackupBusy] = useState(false);
@@ -63,6 +66,8 @@ export function Settings({ open: openSetting, onClose, settings, onUpdate, lm, o
   useEffect(() => {
     setLocalUrl(settings["lmstudio.base_url"]);
     setLocalApiKey(settings["lmstudio.api_key"]);
+    setLocalRater1Profile(settings["ai_raters.rater1.profile"]);
+    setLocalRater2Profile(settings["ai_raters.rater2.profile"]);
   }, [settings, openSetting]);
 
   useEffect(() => {
@@ -345,6 +350,38 @@ export function Settings({ open: openSetting, onClose, settings, onUpdate, lm, o
                       running and a model is loaded. <span className="font-mono">{lm.error}</span>
                     </div>
                   )}
+                </div>
+              </section>
+              )}
+
+              {/* AI raters section */}
+              {tab === "models" && (
+              <section>
+                <SectionHeader
+                  icon={<Users size={14} strokeWidth={1.75} />}
+                  title="AI raters"
+                  description="Reeves runs each AI screening or coding pass twice — once per rater profile — and surfaces disagreements for you to resolve."
+                />
+
+                <div className="space-y-4 mt-5">
+                  <TextArea
+                    label="Rater 1 profile"
+                    rows={6}
+                    value={localRater1Profile}
+                    onChange={(e) => setLocalRater1Profile(e.target.value)}
+                    onBlur={() => onUpdate("ai_raters.rater1.profile", localRater1Profile)}
+                    placeholder="Methodological purist: weight rigour and transparency over novelty. Prefer empirical studies with clear methods. Flag papers with sample sizes < 30 or unclear analytic strategy."
+                    hint="Leave blank for a neutral default. Describes how this rater should evaluate articles."
+                  />
+                  <TextArea
+                    label="Rater 2 profile"
+                    rows={6}
+                    value={localRater2Profile}
+                    onChange={(e) => setLocalRater2Profile(e.target.value)}
+                    onBlur={() => onUpdate("ai_raters.rater2.profile", localRater2Profile)}
+                    placeholder="Theory builder: weight conceptual contribution and integrative framing. Prefer papers that build or extend constructs."
+                    hint="Leave blank for a neutral default. Describes how this rater should evaluate articles."
+                  />
                 </div>
               </section>
               )}

@@ -30,6 +30,9 @@ export interface AppSettings {
   "screening.confidence_threshold": number;
   /** Full database configuration — replaces the old per-database.*.url keys */
   "databases.config": DatabaseEntry[];
+  /** Rater profiles for dual-rater AI screening and coding */
+  "ai_raters.rater1.profile": string;
+  "ai_raters.rater2.profile": string;
 }
 
 const DEFAULTS: AppSettings = {
@@ -41,6 +44,8 @@ const DEFAULTS: AppSettings = {
   "telemetry.log_reasoning": false,
   "screening.confidence_threshold": 0.9,
   "databases.config": DEFAULT_DATABASES,
+  "ai_raters.rater1.profile": "",
+  "ai_raters.rater2.profile": "",
 };
 
 export interface LmState {
