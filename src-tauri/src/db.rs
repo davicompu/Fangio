@@ -83,9 +83,23 @@ pub struct ArticleRow {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct PurificationCriterionApplied {
+    pub number: i64,
+    pub label: String,
+    pub excluded: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct PurificationCriterionSkipped {
+    pub number: i64,
+    pub label: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct PurificationResult {
-    pub excluded_year: i64,
-    pub excluded_quality: i64,
+    pub applied: Vec<PurificationCriterionApplied>,
+    pub skipped: Vec<PurificationCriterionSkipped>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -2047,96 +2061,157 @@ impl ProjectDb {
     /// outside the project's search_period_start..search_period_end gets excluded
     /// with criterion 2 ("Outside search period"). Articles already excluded by a
     /// different criterion are left alone. Returns the count newly excluded.
+    /// Walk the live `exclusion_criterion` list and apply each criterion the
+    /// system knows how to enforce deterministically. Criteria the system
+    /// can't auto-apply (custom labels, judgment calls, fields the schema
+    /// doesn't track) are reported as `skipped` so the UI can explain to the
+    /// researcher exactly which criteria fired and which need AI screening
+    /// or manual review.
+    ///
+    /// Auto-appliable criterion numbers (matching the SPAR-4-SLR seed):
+    ///   1 = Duplicate (handled by the Deduplication step, not here)
+    ///   2 = Outside search period — uses project.search_period_start/end
+    ///   3 = Below source quality threshold — uses project.journal_quality
     pub async fn run_purification(&self) -> Result<PurificationResult> {
         let now = chrono::Utc::now().to_rfc3339();
+        let criteria = self.list_criteria().await?;
 
-        // First reset any articles previously auto-excluded by criterion 2 so
-        // shrinking the date range doesn't leave stale exclusions.
+        // Always reset prior auto-exclusions for the criteria the system knows
+        // how to apply (criterion 2 year filter, criterion 0 = legacy quality
+        // sentinel). This makes the run idempotent: deleting a criterion or
+        // changing its underlying threshold never leaves stale exclusions.
         sqlx::query(
             "UPDATE article SET status = 'retrieved', exclusion_criterion = NULL, \
              exclusion_rationale = NULL, screened_at = NULL, updated_at = ? \
-             WHERE status = 'excluded' AND exclusion_criterion = 2",
+             WHERE status = 'excluded' AND exclusion_criterion IN (0, 2)",
         )
         .bind(&now)
         .execute(&self.pool)
         .await?;
 
-        // ── Pass 1: search period (criterion 2) ──────────────────────────────
+        // Cache project fields once.
         use sqlx::Row;
-        let row = sqlx::query(
+        let project_row = sqlx::query(
             "SELECT search_period_start, search_period_end, journal_quality FROM project LIMIT 1",
         )
         .fetch_optional(&self.pool)
         .await?;
-
-        let mut excluded_year: i64 = 0;
-        let mut excluded_quality: i64 = 0;
-        let mut journal_quality_raw: Option<String> = None;
-
-        if let Some(row) = row {
-            let start_str: Option<String> = row.try_get("search_period_start").ok();
-            let end_str: Option<String> = row.try_get("search_period_end").ok();
-            journal_quality_raw = row.try_get("journal_quality").ok();
-            let start_year: Option<i32> = start_str.as_deref().and_then(|s| s.trim().parse().ok());
-            let end_year: Option<i32> = end_str.as_deref().and_then(|s| s.trim().parse().ok());
-
-            if start_year.is_some() || end_year.is_some() {
-                let rationale = match (start_year, end_year) {
-                    (Some(a), Some(b)) => format!("Outside search period ({a}–{b})"),
-                    (Some(a), None) => format!("Before search period start ({a})"),
-                    (None, Some(b)) => format!("After search period end ({b})"),
-                    _ => unreachable!(),
-                };
-                if let Some(start) = start_year {
-                    let result = sqlx::query(
-                        "UPDATE article SET status = 'excluded', exclusion_criterion = 2, \
-                         exclusion_rationale = ?, screened_at = ?, updated_at = ? \
-                         WHERE status = 'retrieved' AND year IS NOT NULL AND year < ?",
-                    )
-                    .bind(&rationale)
-                    .bind(&now)
-                    .bind(&now)
-                    .bind(start)
-                    .execute(&self.pool)
-                    .await?;
-                    excluded_year += result.rows_affected() as i64;
-                }
-                if let Some(end) = end_year {
-                    let result = sqlx::query(
-                        "UPDATE article SET status = 'excluded', exclusion_criterion = 2, \
-                         exclusion_rationale = ?, screened_at = ?, updated_at = ? \
-                         WHERE status = 'retrieved' AND year IS NOT NULL AND year > ?",
-                    )
-                    .bind(&rationale)
-                    .bind(&now)
-                    .bind(&now)
-                    .bind(end)
-                    .execute(&self.pool)
-                    .await?;
-                    excluded_year += result.rows_affected() as i64;
-                }
+        let (start_year, end_year, journal_quality_raw) = match project_row {
+            Some(row) => {
+                let s: Option<String> = row.try_get("search_period_start").ok();
+                let e: Option<String> = row.try_get("search_period_end").ok();
+                let jq: Option<String> = row.try_get("journal_quality").ok();
+                let sy: Option<i32> = s.as_deref().and_then(|x| x.trim().parse().ok());
+                let ey: Option<i32> = e.as_deref().and_then(|x| x.trim().parse().ok());
+                (sy, ey, jq)
             }
-        }
+            None => (None, None, None),
+        };
 
-        // ── Pass 2: journal quality threshold (criterion 0) ──────────────────
-        // Saved on project.journal_quality as JSON: { abs_min, abdc_min, if_min }.
-        if let Some(raw) = journal_quality_raw {
-            if let Ok(jq) = serde_json::from_str::<serde_json::Value>(&raw) {
-                let abs_min = jq.get("abs_min").and_then(|v| v.as_str()).map(|s| s.to_string());
-                let abdc_min = jq.get("abdc_min").and_then(|v| v.as_str()).map(|s| s.to_string());
-                let if_min = jq.get("if_min").and_then(|v| v.as_f64());
-                if abs_min.is_some() || abdc_min.is_some() || if_min.is_some() {
-                    excluded_quality = self
+        let mut applied: Vec<PurificationCriterionApplied> = Vec::new();
+        let mut skipped: Vec<PurificationCriterionSkipped> = Vec::new();
+
+        for c in &criteria {
+            match c.number {
+                1 => {
+                    skipped.push(PurificationCriterionSkipped {
+                        number: c.number,
+                        label: c.label.clone(),
+                        reason: "Handled by the Deduplication step in Stage 1.".into(),
+                    });
+                }
+                2 => {
+                    // Year filter
+                    if start_year.is_none() && end_year.is_none() {
+                        skipped.push(PurificationCriterionSkipped {
+                            number: c.number,
+                            label: c.label.clone(),
+                            reason: "No search period configured. Set start/end years in Acquisition first.".into(),
+                        });
+                        continue;
+                    }
+                    let rationale = match (start_year, end_year) {
+                        (Some(a), Some(b)) => format!("{} ({a}–{b})", c.label),
+                        (Some(a), None) => format!("{} (before {a})", c.label),
+                        (None, Some(b)) => format!("{} (after {b})", c.label),
+                        _ => unreachable!(),
+                    };
+                    let mut excluded: i64 = 0;
+                    if let Some(start) = start_year {
+                        let r = sqlx::query(
+                            "UPDATE article SET status = 'excluded', exclusion_criterion = 2, \
+                             exclusion_rationale = ?, screened_at = ?, updated_at = ? \
+                             WHERE status = 'retrieved' AND year IS NOT NULL AND year < ?",
+                        )
+                        .bind(&rationale)
+                        .bind(&now)
+                        .bind(&now)
+                        .bind(start)
+                        .execute(&self.pool)
+                        .await?;
+                        excluded += r.rows_affected() as i64;
+                    }
+                    if let Some(end) = end_year {
+                        let r = sqlx::query(
+                            "UPDATE article SET status = 'excluded', exclusion_criterion = 2, \
+                             exclusion_rationale = ?, screened_at = ?, updated_at = ? \
+                             WHERE status = 'retrieved' AND year IS NOT NULL AND year > ?",
+                        )
+                        .bind(&rationale)
+                        .bind(&now)
+                        .bind(&now)
+                        .bind(end)
+                        .execute(&self.pool)
+                        .await?;
+                        excluded += r.rows_affected() as i64;
+                    }
+                    applied.push(PurificationCriterionApplied {
+                        number: c.number,
+                        label: c.label.clone(),
+                        excluded,
+                    });
+                }
+                3 => {
+                    // Journal quality threshold
+                    let parsed = journal_quality_raw
+                        .as_deref()
+                        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok());
+                    let (abs_min, abdc_min, if_min) = match parsed {
+                        Some(v) => (
+                            v.get("abs_min").and_then(|x| x.as_str()).map(|s| s.to_string()),
+                            v.get("abdc_min").and_then(|x| x.as_str()).map(|s| s.to_string()),
+                            v.get("if_min").and_then(|x| x.as_f64()),
+                        ),
+                        None => (None, None, None),
+                    };
+                    if abs_min.is_none() && abdc_min.is_none() && if_min.is_none() {
+                        skipped.push(PurificationCriterionSkipped {
+                            number: c.number,
+                            label: c.label.clone(),
+                            reason: "No journal quality thresholds configured below.".into(),
+                        });
+                        continue;
+                    }
+                    let count = self
                         .apply_quality_exclusions(abs_min, abdc_min, if_min)
                         .await?;
+                    applied.push(PurificationCriterionApplied {
+                        number: c.number,
+                        label: c.label.clone(),
+                        excluded: count,
+                    });
+                }
+                _ => {
+                    skipped.push(PurificationCriterionSkipped {
+                        number: c.number,
+                        label: c.label.clone(),
+                        reason: "Cannot be applied automatically — runs through AI screening or manual review.".into(),
+                    });
                 }
             }
         }
 
-        Ok(PurificationResult {
-            excluded_year,
-            excluded_quality,
-        })
+        Ok(PurificationResult { applied, skipped })
     }
 
     // ── Journal scope ─────────────────────────────────────────────────────

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { BookOpen, Filter, Loader2, Plus, RefreshCw, Save, Sparkles, Trash2, X } from "lucide-react";
+import { BookOpen, Check, Filter, Loader2, Plus, RefreshCw, Save, Sparkles, Trash2, X } from "lucide-react";
 import { api, type ExclusionCriterionRow, type ProjectRow } from "../../lib/api";
 import { Card } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
@@ -47,7 +47,10 @@ export function CriteriaPanel({ project, onChanged }: Props) {
   const [reApplying, setReApplying] = useState(false);
 
   const [purifying, setPurifying] = useState(false);
-  const [purifyResult, setPurifyResult] = useState<{ excluded_year: number; excluded_quality: number } | null>(null);
+  const [purifyResult, setPurifyResult] = useState<{
+    applied: { number: number; label: string; excluded: number }[];
+    skipped: { number: number; label: string; reason: string }[];
+  } | null>(null);
 
   const reload = async () => {
     const c = await api.listCriteria();
@@ -154,7 +157,8 @@ export function CriteriaPanel({ project, onChanged }: Props) {
       const result = await api.runPurification();
       setPurifyResult(result);
       onChanged();
-      setTimeout(() => setPurifyResult(null), 6000);
+      // Don't auto-clear: the breakdown is the receipt of what ran. The user
+      // dismisses it implicitly by navigating away or running again.
     } finally {
       setPurifying(false);
     }
@@ -196,11 +200,10 @@ export function CriteriaPanel({ project, onChanged }: Props) {
               <h3 className="text-[14px] font-semibold text-[var(--color-ink-900)]">Run purification</h3>
             </div>
             <p className="text-[12px] text-[var(--color-paper-700)] leading-relaxed max-w-xl">
-              Apply every deterministic exclusion criterion in one click — articles outside the
-              configured <strong>search period</strong> (criterion 2) and any that fail the
-              <strong> journal quality thresholds</strong> saved below (auto-criterion). Articles
-              without a year or a recognised journal are left alone for manual review. Other
-              criteria (off-topic, retracted, non-English, etc.) flow through AI screening.
+              Walk through your exclusion criteria below and apply each one Reeves can check
+              from the project's data. Criteria that need a judgment call or a field Reeves
+              doesn't track are listed afterwards so you can route them to AI screening or
+              manual review.
             </p>
           </div>
           <button
@@ -213,26 +216,82 @@ export function CriteriaPanel({ project, onChanged }: Props) {
             {purifying ? "Purifying…" : "Run purification"}
           </button>
         </div>
+
         {purifyResult !== null && (() => {
-          const total = purifyResult.excluded_year + purifyResult.excluded_quality;
-          if (total === 0) {
-            return (
-              <p className="mt-3 text-[12px] text-[var(--color-paper-600)]">
-                No articles matched any auto-applicable criterion. (Set a search period or journal quality threshold to enable more rules.)
-              </p>
-            );
-          }
-          const parts: string[] = [];
-          if (purifyResult.excluded_year > 0) {
-            parts.push(`${purifyResult.excluded_year} for falling outside the search period`);
-          }
-          if (purifyResult.excluded_quality > 0) {
-            parts.push(`${purifyResult.excluded_quality} for failing the journal quality threshold`);
-          }
+          const totalExcluded = purifyResult.applied.reduce((sum, a) => sum + a.excluded, 0);
+          const appliedHits = purifyResult.applied.filter((a) => a.excluded > 0);
+          const appliedZero = purifyResult.applied.filter((a) => a.excluded === 0);
           return (
-            <p className="mt-3 text-[12px] text-[var(--color-ok-700)]">
-              ✓ Excluded {total} article{total === 1 ? "" : "s"} — {parts.join(", ")}.
-            </p>
+            <div className="mt-4 space-y-3 border-t border-[var(--color-accent-200)] pt-4">
+              <div className="flex items-center gap-2">
+                <span className="text-[13px] font-semibold text-[var(--color-ink-900)] tabular-nums">
+                  {totalExcluded === 0
+                    ? "No articles excluded"
+                    : `Excluded ${totalExcluded} article${totalExcluded === 1 ? "" : "s"}`}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setPurifyResult(null)}
+                  className="ml-auto text-[11px] text-[var(--color-paper-500)] hover:text-[var(--color-ink-700)] underline-offset-2 hover:underline"
+                >
+                  Dismiss
+                </button>
+              </div>
+
+              {appliedHits.length > 0 && (
+                <ul className="space-y-1">
+                  {appliedHits.map((a) => (
+                    <li
+                      key={a.number}
+                      className="flex items-baseline gap-2 text-[12px] text-[var(--color-ok-700)]"
+                    >
+                      <Check size={11} strokeWidth={2.5} className="shrink-0 mt-0.5" />
+                      <span className="font-mono text-[10px] text-[var(--color-paper-500)] tabular-nums">EC{a.number}</span>
+                      <span className="flex-1">{a.label}</span>
+                      <span className="font-mono tabular-nums">{a.excluded}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+
+              {appliedZero.length > 0 && (
+                <details className="group">
+                  <summary className="text-[11px] text-[var(--color-paper-500)] cursor-pointer hover:text-[var(--color-ink-700)]">
+                    {appliedZero.length} criteria checked, no matches
+                  </summary>
+                  <ul className="mt-1.5 space-y-0.5 pl-4">
+                    {appliedZero.map((a) => (
+                      <li key={a.number} className="text-[11px] text-[var(--color-paper-500)]">
+                        <span className="font-mono mr-1.5">EC{a.number}</span>
+                        {a.label}
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              )}
+
+              {purifyResult.skipped.length > 0 && (
+                <div className="space-y-1.5">
+                  <p className="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-paper-500)]">
+                    Needs AI screening or manual review
+                  </p>
+                  <ul className="space-y-1">
+                    {purifyResult.skipped.map((s) => (
+                      <li
+                        key={s.number}
+                        className="flex items-baseline gap-2 text-[11px] text-[var(--color-paper-600)]"
+                      >
+                        <span className="font-mono text-[10px] text-[var(--color-paper-500)] tabular-nums shrink-0">EC{s.number}</span>
+                        <span className="flex-1">
+                          <span className="text-[var(--color-ink-700)]">{s.label}</span>
+                          <span className="text-[var(--color-paper-500)]"> — {s.reason}</span>
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
           );
         })()}
       </div>

@@ -2300,8 +2300,10 @@ async fn run_purification(state: State<'_, AppState>) -> Result<db::Purification
     db.record_telemetry(
         "purification.executed",
         &serde_json::json!({
-            "excluded_year": result.excluded_year,
-            "excluded_quality": result.excluded_quality,
+            "applied": result.applied.iter().map(|a| {
+                serde_json::json!({ "number": a.number, "excluded": a.excluded })
+            }).collect::<Vec<_>>(),
+            "skipped_count": result.skipped.len(),
         }),
     )
     .await
