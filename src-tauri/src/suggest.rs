@@ -890,12 +890,18 @@ fn parse_suggestions(s: &str) -> Option<Vec<Suggestion>> {
 /// Screen a single article against the review's domain scope and exclusion criteria.
 /// Returns a ScreeningDecision with decision, optional criterion, rationale, and confidence.
 /// `profile` is prepended to the system prompt when non-empty, shaping how the rater evaluates.
+/// `journal`, `year`, and `authors` are passed alongside title + abstract so the model can
+/// evaluate criteria that depend on publication metadata (predatory journal, source type,
+/// search period sanity check, etc.).
 #[allow(clippy::too_many_arguments)]
 pub async fn screen_article(
     base_url: &str,
     model: &str,
     title: &str,
     abstract_text: Option<&str>,
+    journal: Option<&str>,
+    year: Option<i32>,
+    authors: Option<&str>,
     domain: &str,
     exclusion_criteria_labeled: &[(i64, String)], // (criterion_number, label)
     profile: &str,
@@ -927,10 +933,14 @@ pub async fn screen_article(
     };
 
     let system = format!(
-        "You are a systematic literature review screener applying title and abstract screening.{profile_block}\n\
+        "You are a systematic literature review screener applying title-and-abstract level screening, \
+         with the article's publication metadata available alongside the abstract.{profile_block}\n\
          You decide whether each article should be included, excluded, or flagged as uncertain.\n\n\
          Domain scope of this review:\n{domain_block}\n\n\
          Exclusion criteria (exclude the article if it meets ANY of these):\n{exc_block}\n\n\
+         When a criterion concerns publication metadata (journal name, publication year, authors), \
+         use the metadata fields below — not just the abstract — to evaluate it. When a criterion \
+         is about content or scope, read the abstract.\n\n\
          Respond ONLY with a JSON object with exactly four keys:\n\
          - \"decision\": \"include\" if the article is relevant to the domain scope and passes all exclusion criteria, \
          \"exclude\" if it meets any exclusion criterion, or \"uncertain\" if relevance is unclear\n\
@@ -941,8 +951,22 @@ pub async fn screen_article(
     );
 
     let abstract_block = abstract_text.unwrap_or("(no abstract available)");
+    let journal_block = journal
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or("(not recorded)");
+    let year_block = year
+        .map(|y| y.to_string())
+        .unwrap_or_else(|| "(not recorded)".to_string());
+    let authors_block = authors
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or("(not recorded)");
     let user = format!(
-        "Title: {title}\nAbstract: {abstract_block}\n\nReturn the JSON decision."
+        "Title: {title}\n\
+         Authors: {authors_block}\n\
+         Journal: {journal_block}\n\
+         Year: {year_block}\n\
+         Abstract: {abstract_block}\n\n\
+         Return the JSON decision."
     );
 
     let messages = vec![

@@ -313,7 +313,7 @@ export function CriteriaPanel({ project, onChanged, screening }: Props) {
                       <div className="flex items-start justify-between gap-3">
                         <div className="flex-1 min-w-0">
                           <p className="text-[12px] text-[var(--color-paper-700)] leading-relaxed">
-                            <strong className="text-[var(--color-ink-900)]">Apply AI purification</strong> for the {aiEligible.length} judgment criteria above. Reeves checks each remaining article's title and abstract against those criteria and excludes the ones that match — uncertain cases stay for manual review.
+                            <strong className="text-[var(--color-ink-900)]">Apply AI purification</strong> for the {aiEligible.length} judgment criteria above. Reeves sends each remaining article's title, abstract, journal, year, and authors to the AI raters, then excludes the ones that match — uncertain cases stay for manual review.
                           </p>
                         </div>
                         <button
