@@ -830,11 +830,14 @@ function RaterCard({
         </div>
       )}
 
-      {/* Rationale: each sentence on its own line, with quoted evidence emphasised */}
-      <ul className="space-y-1.5 text-[12px] text-[var(--color-ink-800)] leading-relaxed">
+      {/* Rationale: each sentence on its own line, separated by a hairline so
+          the reasoning steps read as discrete claims rather than one block. */}
+      <ul className="text-[12px] text-[var(--color-ink-800)] leading-relaxed divide-y divide-[var(--color-paper-200)]">
         {sentences.map((s, i) => (
-          <li key={i} className="flex gap-1.5">
-            <span className="text-[var(--color-paper-400)] shrink-0 select-none">·</span>
+          <li key={i} className="flex gap-2 py-2 first:pt-0 last:pb-0">
+            <span className="font-mono text-[10px] text-[var(--color-paper-400)] shrink-0 select-none mt-0.5 tabular-nums">
+              {i + 1}
+            </span>
             <span className="flex-1">
               {extractEvidence(s).map((frag, j) =>
                 frag.evidence ? (
@@ -893,7 +896,7 @@ function DisagreementBanner({
         <span className="text-[11px] text-[var(--color-paper-500)]">vs</span>
         <DecisionChip decision={p2.decision} criterionNumber={p2.criterion_number} />
       </div>
-      <div className="grid grid-cols-2 gap-3">
+      <div className="relative grid grid-cols-2 gap-6">
         <RaterCard
           label="Rater 1"
           proposal={p1}
@@ -901,6 +904,17 @@ function DisagreementBanner({
           highlight={decisionColor(p1.decision) as "include" | "exclude" | "uncertain"}
           onAccept={() => onAccept(p1)}
         />
+        {/* Vertical divider with "vs" pill, sitting in the gutter between the two cards */}
+        <div
+          className="pointer-events-none absolute inset-y-2 left-1/2 -translate-x-1/2 flex flex-col items-center"
+          aria-hidden="true"
+        >
+          <div className="flex-1 w-px bg-[var(--color-paper-300)]" />
+          <span className="my-2 px-2 py-0.5 rounded-full bg-[var(--color-paper-100)] border border-[var(--color-paper-300)] text-[9px] font-semibold uppercase tracking-wider text-[var(--color-paper-500)]">
+            vs
+          </span>
+          <div className="flex-1 w-px bg-[var(--color-paper-300)]" />
+        </div>
         <RaterCard
           label="Rater 2"
           proposal={p2}
