@@ -1511,7 +1511,12 @@ function DimensionRow({
                       {raterProposals.map((p) => (
                         <div key={p.id} className="flex items-start gap-2 rounded-[var(--radius-xs)] bg-white/60 border border-amber-100 px-2.5 py-1.5">
                           <div className="flex-1 min-w-0">
-                            <span className="text-[12px] font-medium text-[var(--color-ink-900)]">{p.code}</span>
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="text-[12px] font-medium text-[var(--color-ink-900)]">{p.code}</span>
+                              <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--color-paper-500)]">
+                                Rater {p.rater}
+                              </span>
+                            </div>
                             {p.rationale && (
                               <p className="text-[11px] text-[var(--color-paper-600)] italic leading-snug mt-0.5">
                                 {p.rationale}
