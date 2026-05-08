@@ -6,12 +6,15 @@ import { Card } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
 import { TextField, TextArea } from "../../components/ui/TextField";
 import { Select } from "../../components/ui/Select";
+import type { AiScreeningHook } from "../../components/AiScreeningModal";
 
 interface Props {
   project: ProjectRow;
   refreshKey: number;
   onChanged: () => void;
-  onRunAiScreening?: (criteria: string[]) => void;
+  /** AI screening hook owned by ArrangingStage. Lets purification run AI
+   *  judgment criteria inline without redirecting to the Screening tab. */
+  screening?: AiScreeningHook;
 }
 
 // AI screening looks at title + abstract only; criteria the AI cannot
@@ -31,7 +34,7 @@ function parseJournalQuality(raw: string | null) {
   }
 }
 
-export function CriteriaPanel({ project, onChanged, onRunAiScreening }: Props) {
+export function CriteriaPanel({ project, onChanged, screening }: Props) {
   const [criteria, setCriteria] = useState<ExclusionCriterionRow[]>([]);
   const [adding, setAdding] = useState<{ label: string; rationale: string } | null>(null);
   const [editing, setEditing] = useState<number | null>(null);
@@ -207,8 +210,8 @@ export function CriteriaPanel({ project, onChanged, onRunAiScreening }: Props) {
             <p className="text-[12px] text-[var(--color-paper-700)] leading-relaxed max-w-xl">
               Walk through your exclusion criteria below and apply each one Reeves can check
               from the project's data. Criteria that need a judgment call or a field Reeves
-              doesn't track are listed afterwards so you can route them to AI screening or
-              manual review.
+              doesn't track are listed afterwards — Reeves can run AI on those too, right
+              here on this card.
             </p>
           </div>
           <button
@@ -278,7 +281,7 @@ export function CriteriaPanel({ project, onChanged, onRunAiScreening }: Props) {
               {purifyResult.skipped.length > 0 && (
                 <div className="space-y-1.5">
                   <p className="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-paper-500)]">
-                    Needs AI screening or manual review
+                    Needs AI judgment or manual review
                   </p>
                   <ul className="space-y-1">
                     {purifyResult.skipped.map((s) => (
@@ -301,25 +304,116 @@ export function CriteriaPanel({ project, onChanged, onRunAiScreening }: Props) {
                 const aiEligible = purifyResult.skipped.filter(
                   (s) => !NON_AI_CRITERION_NUMBERS.has(s.number)
                 );
-                if (aiEligible.length === 0 || !onRunAiScreening) return null;
+                if (aiEligible.length === 0 || !screening) return null;
+                const aiRunning = screening.step === "running";
+                const aiDone = screening.step === "done" && screening.result !== null;
                 return (
-                  <div className="mt-3 pt-3 border-t border-[var(--color-accent-200)] flex items-start justify-between gap-3">
-                    <div className="flex-1 min-w-0">
-                      <p className="text-[12px] text-[var(--color-paper-700)] leading-relaxed">
-                        <strong className="text-[var(--color-ink-900)]">Run AI screening</strong> on the {aiEligible.length} judgment criteria above. Reeves sends each remaining article's title and abstract to the AI raters and applies confident decisions automatically — uncertain cases stay in Pending.
+                  <div className="mt-3 pt-3 border-t border-[var(--color-accent-200)] space-y-3">
+                    {!aiRunning && !aiDone && (
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="flex-1 min-w-0">
+                          <p className="text-[12px] text-[var(--color-paper-700)] leading-relaxed">
+                            <strong className="text-[var(--color-ink-900)]">Apply AI purification</strong> for the {aiEligible.length} judgment criteria above. Reeves checks each remaining article's title and abstract against those criteria and excludes the ones that match — uncertain cases stay for manual review.
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const criteriaStrings = aiEligible.map((s) => `EC${s.number}: ${s.label}`);
+                            void screening.start(criteriaStrings);
+                          }}
+                          className="shrink-0 inline-flex items-center gap-1.5 px-4 py-2 rounded-[var(--radius-sm)] text-[12px] font-semibold text-white bg-[var(--color-ink-800)] hover:bg-[var(--color-ink-900)] active:bg-[var(--color-ink-900)] transition-paper"
+                        >
+                          <Bot size={13} strokeWidth={2} />
+                          Apply AI purification
+                        </button>
+                      </div>
+                    )}
+
+                    {aiRunning && screening.progress && (
+                      <div className="space-y-2">
+                        <div className="flex items-center gap-2">
+                          <Loader2 size={13} className="animate-spin text-[var(--color-ink-700)] shrink-0" />
+                          <span className="text-[12px] font-medium text-[var(--color-ink-800)]">
+                            AI purification running…
+                          </span>
+                          <span className="ml-auto text-[11px] tabular-nums text-[var(--color-paper-600)]">
+                            {screening.progress.done} / {screening.progress.total}
+                          </span>
+                        </div>
+                        <div className="h-1.5 w-full bg-[var(--color-paper-200)] rounded-full overflow-hidden">
+                          <div
+                            className="h-full bg-[var(--color-ink-800)] transition-all duration-300"
+                            style={{
+                              width: `${
+                                screening.progress.total > 0
+                                  ? Math.round((screening.progress.done / screening.progress.total) * 100)
+                                  : 0
+                              }%`,
+                            }}
+                          />
+                        </div>
+                        {screening.progress.article_title && (
+                          <p className="text-[11px] text-[var(--color-paper-500)] truncate">
+                            {screening.progress.article_title}
+                          </p>
+                        )}
+                        <div className="flex items-center gap-2">
+                          {!screening.isPaused ? (
+                            <button
+                              type="button"
+                              onClick={() => void screening.pause()}
+                              className="text-[11px] text-[var(--color-paper-600)] hover:text-[var(--color-ink-700)] underline-offset-2 hover:underline"
+                            >
+                              Pause
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => void screening.resume()}
+                              className="text-[11px] text-[var(--color-paper-600)] hover:text-[var(--color-ink-700)] underline-offset-2 hover:underline"
+                            >
+                              Resume
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => void screening.cancel()}
+                            className="text-[11px] text-[var(--color-warn-600)] hover:text-[var(--color-warn-700)] underline-offset-2 hover:underline"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {aiDone && screening.result && (
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="flex-1 min-w-0 text-[12px] text-[var(--color-ok-700)]">
+                          <p>
+                            ✓ AI purification complete — processed {screening.result.processed},
+                            excluded {screening.result.excluded}, included {screening.result.included},
+                            {" "}{screening.result.uncertain} uncertain (left for manual review).
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            screening.reset();
+                            void handlePurify();
+                          }}
+                          className="shrink-0 text-[11px] text-[var(--color-paper-600)] hover:text-[var(--color-ink-700)] underline-offset-2 hover:underline"
+                        >
+                          Refresh
+                        </button>
+                      </div>
+                    )}
+
+                    {screening.error && !aiRunning && (
+                      <p className="text-[12px] text-[var(--color-warn-700)]">
+                        {screening.error}
                       </p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const criteriaStrings = aiEligible.map((s) => `EC${s.number}: ${s.label}`);
-                        onRunAiScreening(criteriaStrings);
-                      }}
-                      className="shrink-0 inline-flex items-center gap-1.5 px-4 py-2 rounded-[var(--radius-sm)] text-[12px] font-semibold text-white bg-[var(--color-ink-800)] hover:bg-[var(--color-ink-900)] active:bg-[var(--color-ink-900)] transition-paper"
-                    >
-                      <Bot size={13} strokeWidth={2} />
-                      Run AI on remaining
-                    </button>
+                    )}
                   </div>
                 );
               })()}

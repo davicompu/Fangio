@@ -222,11 +222,7 @@ export function ArrangingStage({ project, onLeaveStage, onProjectChanged, lmMode
                   project={project}
                   refreshKey={refreshTick}
                   onChanged={onChanged}
-                  onRunAiScreening={(criteria) => {
-                    // Open the modal first so the user sees progress, then kick off the run.
-                    setAiModalOpen(true);
-                    void screening.start(criteria);
-                  }}
+                  screening={screening}
                 />
               )}
               {tab === "screening" && <ScreeningPanel project={project} refreshKey={refreshTick} onChanged={onChanged} onOpenAiModal={() => setAiModalOpen(true)} />}

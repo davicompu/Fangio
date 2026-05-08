@@ -2205,7 +2205,7 @@ impl ProjectDb {
                     skipped.push(PurificationCriterionSkipped {
                         number: c.number,
                         label: c.label.clone(),
-                        reason: "Cannot be applied automatically — runs through AI screening or manual review.".into(),
+                        reason: "Cannot be applied automatically — needs AI judgment or manual review.".into(),
                     });
                 }
             }
