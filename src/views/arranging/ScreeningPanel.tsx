@@ -610,14 +610,10 @@ function ScreeningCard({
                         </button>
                       </div>
                       <div className="px-5 py-4">
-                        <p className="text-[13px] text-[var(--color-ink-800)] leading-relaxed">
-                          {article.ai_rationale}
-                          {article.ai_confidence !== null && (
-                            <span className="ml-2 text-[11px] text-[var(--color-paper-400)] font-mono">
-                              ({Math.round(article.ai_confidence * 100)}% confidence)
-                            </span>
-                          )}
-                        </p>
+                        <RationaleBody
+                          text={article.ai_rationale ?? ""}
+                          confidence={article.ai_confidence}
+                        />
                       </div>
                     </motion.div>
                   </motion.div>
@@ -718,6 +714,87 @@ function DecisionChip({ decision, criterionNumber }: { decision: string; criteri
     <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold bg-[var(--color-warn-500)]/10 text-[var(--color-warn-600)] border border-[var(--color-warn-500)]/30">
       Uncertain
     </span>
+  );
+}
+
+/** Split a "Rater 1: ... Rater 2: ..." combined rationale string into per-rater
+ *  blocks. Returns one entry per rater label found, in order. If no Rater N
+ *  prefix is present, returns a single anonymous entry. */
+function splitRatersInRationale(text: string): { label: string | null; body: string }[] {
+  const t = text.trim();
+  if (!t) return [];
+  const re = /(^|\n+)\s*Rater\s+(\d+):\s*/g;
+  const sections: { label: string | null; body: string }[] = [];
+  const matches: { idx: number; len: number; label: string }[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(t)) !== null) {
+    matches.push({ idx: m.index + (m[1] ? m[1].length : 0), len: m[0].length - (m[1] ? m[1].length : 0), label: `Rater ${m[2]}` });
+  }
+  if (matches.length === 0) {
+    return [{ label: null, body: t }];
+  }
+  for (let i = 0; i < matches.length; i++) {
+    const start = matches[i].idx + matches[i].len;
+    const end = i + 1 < matches.length ? matches[i + 1].idx : t.length;
+    sections.push({ label: matches[i].label, body: t.slice(start, end).trim() });
+  }
+  return sections;
+}
+
+function RationaleBody({ text, confidence }: { text: string; confidence: number | null }) {
+  const sections = splitRatersInRationale(text);
+  return (
+    <div className="space-y-4">
+      {sections.map((sec, i) => {
+        const rawBody = sec.body;
+        const isWeak = rawBody.startsWith("[weak rationale");
+        const cleanBody = isWeak ? rawBody.replace(/^\[weak rationale[^\]]*\]\s*/, "") : rawBody;
+        const sentences = splitSentences(cleanBody);
+        return (
+          <div key={i} className="relative pl-3 border-l-2 border-[var(--color-accent-300)]">
+            {sec.label && (
+              <div className="text-[10px] font-semibold uppercase tracking-wider text-[var(--color-paper-500)] mb-1.5">
+                {sec.label}
+              </div>
+            )}
+            {isWeak && (
+              <div className="flex items-start gap-1.5 mb-1.5 text-[11px] text-[var(--color-warn-700)]">
+                <AlertTriangle size={11} strokeWidth={2} className="shrink-0 mt-0.5" />
+                <span>Weak rationale — recommend manual review.</span>
+              </div>
+            )}
+            <ul className="text-[13px] text-[var(--color-ink-800)] leading-relaxed divide-y divide-[var(--color-paper-200)]">
+              {sentences.map((s, j) => (
+                <li key={j} className="flex gap-2 py-1.5 first:pt-0 last:pb-0">
+                  <span className="font-mono text-[10px] text-[var(--color-paper-400)] shrink-0 select-none mt-1 tabular-nums">
+                    {j + 1}
+                  </span>
+                  <span className="flex-1">
+                    {extractEvidence(s).map((frag, k) =>
+                      frag.evidence ? (
+                        <span
+                          key={k}
+                          className="font-medium text-[var(--color-ink-900)] bg-[var(--color-accent-50)] border-b border-[var(--color-accent-300)] px-0.5 rounded-sm"
+                        >
+                          "{frag.text}"
+                        </span>
+                      ) : (
+                        <span key={k}>{frag.text}</span>
+                      ),
+                    )}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        );
+      })}
+      {confidence !== null && (
+        <div className="text-[11px] text-[var(--color-paper-500)] font-mono pt-2 border-t border-[var(--color-paper-200)]">
+          {Math.round(confidence * 100)}% confidence
+        </div>
+      )}
+    </div>
   );
 }
 
