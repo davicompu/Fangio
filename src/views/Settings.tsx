@@ -18,6 +18,7 @@ import {
   Radio,
   ShieldCheck,
   Smartphone,
+  Thermometer,
   Users,
   X,
 } from "lucide-react";
@@ -346,6 +347,69 @@ export function Settings({ open: openSetting, onClose, settings, onUpdate, lm, o
                             const v = parseFloat(e.target.value);
                             if (!isNaN(v) && v >= 0.5 && v <= 1) {
                               onUpdate("screening.confidence_threshold", v);
+                            }
+                          }}
+                          className="w-20 px-2.5 py-1.5 text-[13px] font-mono rounded-[var(--radius-xs)] border border-[var(--color-paper-300)] bg-white focus:outline-none focus:ring-1 focus:ring-[var(--color-paper-400)]"
+                        />
+                      </SettingRow>
+
+                      <SettingRow
+                        icon={<Thermometer size={14} strokeWidth={1.75} />}
+                        label="Decision temperature"
+                        description="Sampling for AI judgment calls — screening + coding raters. 0 = fully deterministic; same article → same decision every time."
+                      >
+                        <input
+                          type="number"
+                          min={0}
+                          max={2}
+                          step={0.05}
+                          value={settings["temperature.decisions"]}
+                          onChange={(e) => {
+                            const v = parseFloat(e.target.value);
+                            if (!isNaN(v) && v >= 0 && v <= 2) {
+                              onUpdate("temperature.decisions", v);
+                            }
+                          }}
+                          className="w-20 px-2.5 py-1.5 text-[13px] font-mono rounded-[var(--radius-xs)] border border-[var(--color-paper-300)] bg-white focus:outline-none focus:ring-1 focus:ring-[var(--color-paper-400)]"
+                        />
+                      </SettingRow>
+
+                      <SettingRow
+                        icon={<Thermometer size={14} strokeWidth={1.75} />}
+                        label="Suggestion temperature"
+                        description="Sampling for creative AI assistance — boolean query suggestions, onboarding rewrites, code suggestions. Higher values give more diverse phrasing."
+                      >
+                        <input
+                          type="number"
+                          min={0}
+                          max={2}
+                          step={0.05}
+                          value={settings["temperature.suggestions"]}
+                          onChange={(e) => {
+                            const v = parseFloat(e.target.value);
+                            if (!isNaN(v) && v >= 0 && v <= 2) {
+                              onUpdate("temperature.suggestions", v);
+                            }
+                          }}
+                          className="w-20 px-2.5 py-1.5 text-[13px] font-mono rounded-[var(--radius-xs)] border border-[var(--color-paper-300)] bg-white focus:outline-none focus:ring-1 focus:ring-[var(--color-paper-400)]"
+                        />
+                      </SettingRow>
+
+                      <SettingRow
+                        icon={<Thermometer size={14} strokeWidth={1.75} />}
+                        label="Q&A temperature"
+                        description="Sampling for synthesis answers — Ask the paper, Ask the corpus. Lower keeps answers tight to the retrieved excerpts."
+                      >
+                        <input
+                          type="number"
+                          min={0}
+                          max={2}
+                          step={0.05}
+                          value={settings["temperature.qa"]}
+                          onChange={(e) => {
+                            const v = parseFloat(e.target.value);
+                            if (!isNaN(v) && v >= 0 && v <= 2) {
+                              onUpdate("temperature.qa", v);
                             }
                           }}
                           className="w-20 px-2.5 py-1.5 text-[13px] font-mono rounded-[var(--radius-xs)] border border-[var(--color-paper-300)] bg-white focus:outline-none focus:ring-1 focus:ring-[var(--color-paper-400)]"

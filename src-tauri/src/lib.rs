@@ -77,6 +77,14 @@ fn err<E: std::fmt::Display>(e: E) -> String {
     e.to_string()
 }
 
+fn load_temperature(settings: &serde_json::Value, key: &str, default: f32) -> f32 {
+    settings
+        .get(key)
+        .and_then(|v| v.as_f64())
+        .map(|f| f.clamp(0.0, 2.0) as f32)
+        .unwrap_or(default)
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct OpenProjectArgs {
     path: String,
@@ -1342,6 +1350,7 @@ async fn run_ai_coding(
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
+    let temperature = load_temperature(&settings, "temperature.decisions", 0.2);
 
     // Reset flags from any previous run
     state.coding_paused.store(false, Ordering::SeqCst);
@@ -1552,6 +1561,7 @@ async fn run_ai_coding(
             article.authors.as_deref(),
             &context_text,
             &rater1_profile,
+            temperature,
             api_key.as_deref(),
         )
         .await;
@@ -1591,6 +1601,7 @@ async fn run_ai_coding(
                 article.authors.as_deref(),
                 &context_text,
                 &rater2_profile,
+                temperature,
                 api_key.as_deref(),
             )
             .await
@@ -1738,6 +1749,14 @@ async fn run_ai_screening(
         .get("screening.confidence_threshold")
         .and_then(|v| v.as_f64())
         .unwrap_or(0.90);
+    // Sampling temperature for judgment calls. 0.0 = fully deterministic
+    // (same prompt → same decision); higher values inject sampling noise that
+    // can produce useful disagreement signal between identical-profile raters.
+    let temperature: f32 = settings
+        .get("temperature.decisions")
+        .and_then(|v| v.as_f64())
+        .map(|f| f.clamp(0.0, 2.0) as f32)
+        .unwrap_or(0.0);
     let profile1 = settings
         .get("ai_raters.rater1.profile")
         .and_then(|v| v.as_str())
@@ -1825,6 +1844,7 @@ async fn run_ai_screening(
             &domain,
             &exc_labeled,
             &profile1,
+            temperature,
             api_key.as_deref(),
         )
         .await;
@@ -1880,6 +1900,7 @@ async fn run_ai_screening(
             &domain,
             &exc_labeled,
             &profile2,
+            temperature,
             api_key.as_deref(),
         )
         .await;
@@ -2087,6 +2108,7 @@ async fn suggest_codes(
         .filter_map(|x| x.as_deref())
         .collect();
     let domain = project.domain.clone().unwrap_or_default();
+    let temperature = load_temperature(&settings, "temperature.suggestions", 0.2);
     let result = suggest::suggest_codes(
         &base_url,
         &model,
@@ -2099,6 +2121,7 @@ async fn suggest_codes(
         &article.title,
         article.authors.as_deref(),
         article.abstract_text.as_deref(),
+        temperature,
         api_key.as_deref(),
     )
     .await
@@ -2157,6 +2180,7 @@ async fn suggest_step(
     if model.is_empty() {
         return Err("Pick a chat model in Settings first.".into());
     }
+    let temperature = load_temperature(&settings, "temperature.suggestions", 0.4);
     let (suggestion, rationale) = suggest::suggest_step(
         &base_url,
         &model,
@@ -2167,6 +2191,7 @@ async fn suggest_step(
         project.framework.as_deref().unwrap_or(""),
         project.domain.as_deref().unwrap_or(""),
         args.answers.as_deref(),
+        temperature,
         api_key.as_deref(),
     )
     .await
@@ -2205,6 +2230,7 @@ async fn suggest_step_questions(
     if model.is_empty() {
         return Err("Pick a chat model in Settings first.".into());
     }
+    let temperature = load_temperature(&settings, "temperature.suggestions", 0.4);
     let result = suggest::suggest_step_questions(
         &base_url,
         &model,
@@ -2214,6 +2240,7 @@ async fn suggest_step_questions(
         project.slr_type.as_deref().unwrap_or(""),
         project.framework.as_deref().unwrap_or(""),
         project.domain.as_deref().unwrap_or(""),
+        temperature,
         api_key.as_deref(),
     )
     .await
@@ -2257,6 +2284,7 @@ async fn suggest_boolean_query(
     if model.is_empty() {
         return Err("Pick a chat model in Settings first.".into());
     }
+    let temperature = load_temperature(&settings, "temperature.suggestions", 0.3);
     let result = suggest::suggest_query(
         &base_url,
         &model,
@@ -2269,6 +2297,7 @@ async fn suggest_boolean_query(
         args.existing_query.as_deref(),
         &args.inclusion_criteria,
         &args.exclusion_criteria,
+        temperature,
         api_key.as_deref(),
     )
     .await
@@ -2910,6 +2939,7 @@ async fn ask_corpus(args: AskArgs, state: State<'_, AppState>) -> Result<AskResu
     if chat_model.is_empty() || embed_model.is_empty() {
         return Err("Set both a chat model and an embedding model in Settings.".into());
     }
+    let temperature = load_temperature(&settings, "temperature.qa", 0.2);
     let k = args.top_k.unwrap_or(6);
 
     // Embed the question
@@ -2981,7 +3011,7 @@ IMPORTANT RULES: \
             lmstudio::ChatMessage { role: "system".into(), content: system },
             lmstudio::ChatMessage { role: "user".into(), content: user },
         ],
-        Some(0.2),
+        Some(temperature),
         api_key.as_deref(),
     )
     .await
@@ -3045,6 +3075,7 @@ async fn ask_article(args: AskArticleArgs, state: State<'_, AppState>) -> Result
     if chat_model.is_empty() || embed_model.is_empty() {
         return Err("Set both a chat model and an embedding model in Settings.".into());
     }
+    let temperature = load_temperature(&settings, "temperature.qa", 0.2);
 
     let q_embeddings = lmstudio::embed(&base_url, &embed_model, &[args.question.as_str()], api_key.as_deref())
         .await
@@ -3142,7 +3173,7 @@ When you genuinely cannot answer: \
             lmstudio::ChatMessage { role: "system".into(), content: system },
             lmstudio::ChatMessage { role: "user".into(), content: user },
         ],
-        Some(0.2),
+        Some(temperature),
         api_key.as_deref(),
     )
     .await

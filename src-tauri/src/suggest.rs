@@ -82,6 +82,7 @@ pub async fn suggest_step_questions(
     slr_type: &str,
     framework: &str,
     domain: &str,
+    temperature: f32,
     api_key: Option<&str>,
 ) -> Result<StepQuestionsResult> {
     let system = "You are a systematic literature review expert assisting a researcher \
@@ -162,7 +163,7 @@ unexplored contexts, contradictions to resolve, methodological extensions, or th
         ChatMessage { role: "user".into(), content: user },
     ];
 
-    let result = lmstudio::chat(base_url, model, &messages, Some(0.4), api_key).await?;
+    let result = lmstudio::chat(base_url, model, &messages, Some(temperature), api_key).await?;
 
     let questions = parse_step_questions(&result.content)
         .ok_or_else(|| anyhow!("could not parse clarifying questions from model output"))?;
@@ -192,6 +193,7 @@ pub async fn suggest_step(
     framework: &str,
     domain: &str,
     answers: Option<&[QAndA]>,
+    temperature: f32,
     api_key: Option<&str>,
 ) -> Result<(String, String)> {
     let system = "You are a systematic literature review expert assisting a researcher \
@@ -304,7 +306,7 @@ Return the JSON (suggestion = the refined question)."
         ChatMessage { role: "user".into(), content: user },
     ];
 
-    let result = lmstudio::chat(base_url, model, &messages, Some(0.4), api_key).await?;
+    let result = lmstudio::chat(base_url, model, &messages, Some(temperature), api_key).await?;
 
     // Extract the first JSON object from the response
     let bytes = result.content.as_bytes();
@@ -353,6 +355,7 @@ pub async fn suggest_codes(
     title: &str,
     authors: Option<&str>,
     abstract_text: Option<&str>,
+    temperature: f32,
     api_key: Option<&str>,
 ) -> Result<SuggestResult> {
     let codes_block = if existing_codes.is_empty() {
@@ -407,7 +410,7 @@ Respond ONLY with a JSON array of objects, each with keys: code (string), ration
         ChatMessage { role: "user".into(), content: user },
     ];
 
-    let result = lmstudio::chat(base_url, model, &messages, Some(0.2), api_key).await?;
+    let result = lmstudio::chat(base_url, model, &messages, Some(temperature), api_key).await?;
 
     let suggestions = parse_suggestions(&result.content)
         .ok_or_else(|| anyhow!("could not parse JSON suggestions from model output"))?;
@@ -433,6 +436,7 @@ pub async fn suggest_query(
     existing_query: Option<&str>,
     inclusion_criteria: &[String],
     exclusion_criteria: &[String],
+    temperature: f32,
     api_key: Option<&str>,
 ) -> Result<SuggestQueryResult> {
     let db_list = if selected_databases.is_empty() {
@@ -540,7 +544,7 @@ No prose outside the JSON object."
         ChatMessage { role: "user".into(), content: user },
     ];
 
-    let result = lmstudio::chat(base_url, model, &messages, Some(0.3), api_key).await?;
+    let result = lmstudio::chat(base_url, model, &messages, Some(temperature), api_key).await?;
 
     let (query, rationale) = parse_query_result(&result.content)
         .ok_or_else(|| anyhow!("could not parse JSON query result from model output"))?;
@@ -893,6 +897,9 @@ fn parse_suggestions(s: &str) -> Option<Vec<Suggestion>> {
 /// `journal`, `year`, and `authors` are passed alongside title + abstract so the model can
 /// evaluate criteria that depend on publication metadata (predatory journal, source type,
 /// search period sanity check, etc.).
+/// `temperature` controls sampling — 0.0 makes the model fully deterministic so the same
+/// prompt produces the same decision every call (useful when raters have identical profiles
+/// and you want disagreement to come from profile differences, not sampling noise).
 #[allow(clippy::too_many_arguments)]
 pub async fn screen_article(
     base_url: &str,
@@ -905,6 +912,7 @@ pub async fn screen_article(
     domain: &str,
     exclusion_criteria_labeled: &[(i64, String)], // (criterion_number, label)
     profile: &str,
+    temperature: f32,
     api_key: Option<&str>,
 ) -> Result<ScreeningDecision> {
     let domain_block = if domain.trim().is_empty() {
@@ -988,7 +996,7 @@ pub async fn screen_article(
         ChatMessage { role: "user".into(), content: user },
     ];
 
-    let result = lmstudio::chat(base_url, model, &messages, Some(0.1), api_key).await?;
+    let result = lmstudio::chat(base_url, model, &messages, Some(temperature), api_key).await?;
 
     let mut decision = parse_screening_decision(&result.content)
         .ok_or_else(|| anyhow::anyhow!("could not parse screening decision from model output: {}", result.content))?;
@@ -1014,7 +1022,7 @@ pub async fn screen_article(
                 content: "Your rationale is too short or generic for an audit trail. Rewrite it as 2–4 complete sentences that cite specific evidence from the title, abstract, journal, year, or authors above. Do not change your decision or confidence. Return the same JSON shape with only the rationale rewritten.".into(),
             },
         ];
-        if let Ok(retry) = lmstudio::chat(base_url, model, &retry_messages, Some(0.1), api_key).await {
+        if let Ok(retry) = lmstudio::chat(base_url, model, &retry_messages, Some(temperature), api_key).await {
             if let Some(retried) = parse_screening_decision(&retry.content) {
                 if is_substantive_rationale(&retried.rationale) {
                     decision.rationale = retried.rationale;
@@ -1120,6 +1128,7 @@ pub async fn code_article_for_dimensions(
     authors: Option<&str>,
     context_text: &str,
     profile: &str,
+    temperature: f32,
     api_key: Option<&str>,
 ) -> Result<Vec<DimensionCoding>> {
     let rqs_block = if research_questions.is_empty() {
@@ -1192,7 +1201,7 @@ Return the JSON object now.",
         ChatMessage { role: "user".into(), content: user },
     ];
 
-    let result = lmstudio::chat(base_url, model, &messages, Some(0.2), api_key).await?;
+    let result = lmstudio::chat(base_url, model, &messages, Some(temperature), api_key).await?;
 
     let codings = parse_dimension_codings(&result.content, &dim_names)
         .ok_or_else(|| anyhow::anyhow!("could not parse dimension codings from: {}", &result.content))?;
