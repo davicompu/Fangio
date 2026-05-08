@@ -726,6 +726,12 @@ export const api = {
   embedPdf(pdf_id: number) {
     return invoke<EmbedResult>("embed_pdf", { pdfId: pdf_id });
   },
+  indexArticle(articleId: number) {
+    return invoke<{ chunks: number; embedded: number; text_length: number; model: string }>(
+      "index_article",
+      { articleId }
+    );
+  },
   askCorpus(question: string, top_k?: number) {
     return invoke<AskResult>("ask_corpus", {
       args: { question, top_k: top_k ?? null },

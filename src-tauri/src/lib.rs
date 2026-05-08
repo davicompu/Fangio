@@ -2460,6 +2460,104 @@ async fn embed_pdf(pdf_id: i64, state: State<'_, AppState>) -> Result<EmbedResul
     })
 }
 
+#[derive(Debug, Serialize)]
+struct IndexArticleResult {
+    chunks: usize,
+    embedded: usize,
+    text_length: usize,
+    model: String,
+}
+
+#[tauri::command]
+async fn index_article(
+    article_id: i64,
+    state: State<'_, AppState>,
+) -> Result<IndexArticleResult, String> {
+    let db = state.current().await.ok_or("no project open")?;
+
+    // Find the linked PDF for this article. There can only be one (article_id
+    // is unique enough for our use case).
+    let pdfs = db.list_pdfs().await.map_err(err)?;
+    let pdf_row = pdfs
+        .into_iter()
+        .find(|p| p.article_id == Some(article_id))
+        .ok_or("This article has no linked PDF — attach one before indexing.")?;
+
+    // Step 1: chunk the PDF text if not already chunked.
+    let existing_chunks = db.list_chunks_for_pdf(pdf_row.id).await.map_err(err)?;
+    let (chunks_count, text_length) = if existing_chunks.is_empty() {
+        let extracted = pdf::extract(std::path::Path::new(&pdf_row.stored_path)).map_err(err)?;
+        let chunks = pdf::chunk(&extracted.text);
+        let chunk_records: Vec<(i64, String)> = chunks
+            .iter()
+            .map(|c| (c.index as i64, c.text.clone()))
+            .collect();
+        db.save_pdf_chunks(pdf_row.id, article_id, extracted.text.len() as i64, &chunk_records)
+            .await
+            .map_err(err)?;
+        (chunks.len(), extracted.text.len())
+    } else {
+        (existing_chunks.len(), 0)
+    };
+
+    // Step 2: embed any chunks missing an embedding for the current model.
+    let settings = db.all_settings().await.map_err(err)?;
+    let base_url = settings
+        .get("lmstudio.base_url")
+        .and_then(|v| v.as_str())
+        .unwrap_or("http://127.0.0.1:1234/v1")
+        .to_string();
+    let api_key = settings
+        .get("lmstudio.api_key")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let model = settings
+        .get("lmstudio.embed_model")
+        .and_then(|v| v.as_str())
+        .unwrap_or("text-embedding-embeddinggemma-300m-qat")
+        .to_string();
+    if model.is_empty() {
+        return Err("Pick an embedding model in Settings first.".into());
+    }
+
+    let chunks = db.list_chunks_for_pdf(pdf_row.id).await.map_err(err)?;
+    let batch_size = 16usize;
+    let mut total = 0usize;
+    for batch in chunks.chunks(batch_size) {
+        let texts: Vec<&str> = batch.iter().map(|c| c.text.as_str()).collect();
+        let embeddings = lmstudio::embed(&base_url, &model, &texts, api_key.as_deref())
+            .await
+            .map_err(err)?;
+        for (chunk, emb) in batch.iter().zip(embeddings.iter()) {
+            let bytes = vector::f32s_to_bytes(emb);
+            db.save_chunk_embedding(chunk.id, &bytes, &model)
+                .await
+                .map_err(err)?;
+            total += 1;
+        }
+    }
+    db.mark_pdf_embedded(pdf_row.id).await.map_err(err)?;
+    db.record_telemetry(
+        "article.indexed_on_demand",
+        &serde_json::json!({
+            "article_id": article_id,
+            "pdf_id": pdf_row.id,
+            "chunks": chunks_count,
+            "embedded": total,
+            "model": model,
+        }),
+    )
+    .await
+    .ok();
+
+    Ok(IndexArticleResult {
+        chunks: chunks_count,
+        embedded: total,
+        text_length,
+        model,
+    })
+}
+
 #[derive(Debug, Deserialize)]
 struct AskArgs {
     question: String,
@@ -3538,6 +3636,7 @@ pub fn run() {
             link_pdf,
             index_pdf,
             embed_pdf,
+            index_article,
             cluster_corpus,
             extract_glossary,
             list_glossary_terms,

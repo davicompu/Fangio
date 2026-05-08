@@ -1068,6 +1068,12 @@ function ArticleCodingCard({
                   <FileText size={20} strokeWidth={1.5} />
                   <span className="text-[12px] font-medium">Open PDF</span>
                 </button>
+                {!isIndexed && (
+                  <IndexForChatButton
+                    articleId={article.id}
+                    onIndexed={onChanged}
+                  />
+                )}
                 {isIndexed && (
                   <button
                     onClick={() => { setChatOpen((v) => !v); setTimeout(() => chatInputRef.current?.focus(), 80); }}
@@ -1597,6 +1603,72 @@ function AppliedCode({ coding, onRemove }: { coding: CodingRow; onRemove: () => 
         <X size={10} strokeWidth={2} />
       </button>
     </motion.span>
+  );
+}
+
+// ── IndexForChatButton ─────────────────────────────────────────────────────────
+
+function IndexForChatButton({
+  articleId,
+  onIndexed,
+}: {
+  articleId: number;
+  onIndexed: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleIndex = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.indexArticle(articleId);
+      onIndexed();
+    } catch (e: unknown) {
+      const msg: string = (e as { message?: string })?.message ?? String(e);
+      setError(
+        msg.includes("embedding model")
+          ? "Pick an embedding model in Settings first."
+          : msg.includes("Connection refused") || msg.includes("error sending request")
+          ? "Could not reach LM Studio — check Settings."
+          : msg.includes("no linked PDF")
+          ? "This article has no PDF attached yet."
+          : "Indexing failed — try again.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <button
+        onClick={handleIndex}
+        disabled={busy}
+        title="Chunk and embed this PDF so you can chat with the full text."
+        className={cn(
+          "w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-[var(--radius-sm)] border text-[11px] font-medium transition-paper",
+          busy
+            ? "bg-[var(--color-paper-100)] border-[var(--color-paper-300)] text-[var(--color-paper-500)] cursor-wait"
+            : "bg-[var(--color-paper-50)] border-[var(--color-paper-300)] text-[var(--color-ink-700)] hover:bg-white hover:border-[var(--color-paper-500)]",
+        )}
+      >
+        {busy ? (
+          <>
+            <Loader2 size={12} className="animate-spin" />
+            Indexing…
+          </>
+        ) : (
+          <>
+            <Sparkles size={12} strokeWidth={1.75} />
+            Index for chat
+          </>
+        )}
+      </button>
+      {error && (
+        <p className="text-[10px] text-[var(--color-warn-600)] leading-snug px-1">{error}</p>
+      )}
+    </>
   );
 }
 
