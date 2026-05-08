@@ -2,9 +2,11 @@ import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   Boxes,
+  Check,
   CheckCircle2,
   Compass,
   FolderOpen,
+  Loader2,
   Lock,
   PenLine,
   Pencil,
@@ -713,45 +715,47 @@ function ProjectNameEditor({
           }}
           disabled={busy}
           maxLength={120}
-          className="font-serif text-[32px] tracking-tight text-[var(--color-ink-900)] bg-transparent border-b border-[var(--color-paper-400)] focus:border-[var(--color-ink-700)] focus:outline-none px-0.5 py-0.5 min-w-[20ch] max-w-[60ch] flex-1"
+          aria-label="Project name"
+          className="font-serif text-[32px] tracking-tight text-[var(--color-ink-900)] bg-transparent border-0 outline-none ring-2 ring-[var(--color-accent-400)] rounded-[var(--radius-xs)] px-1.5 py-0.5 min-w-[20ch] max-w-[60ch] flex-1"
         />
         <button
           type="button"
           onClick={() => void commit()}
           disabled={busy}
-          className="text-[12px] font-medium text-[var(--color-accent-600)] hover:text-[var(--color-accent-700)] disabled:opacity-50"
+          className="inline-flex items-center justify-center w-8 h-8 rounded-full bg-[var(--color-accent-600)] text-white hover:bg-[var(--color-accent-700)] disabled:opacity-50 transition-paper"
+          title="Save"
           aria-label="Save project name"
         >
-          {busy ? "Saving…" : "Save"}
+          {busy ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} strokeWidth={2.5} />}
         </button>
         <button
           type="button"
           onClick={() => setEditing(false)}
           disabled={busy}
-          className="text-[12px] text-[var(--color-paper-500)] hover:text-[var(--color-ink-700)] disabled:opacity-50"
+          className="inline-flex items-center justify-center w-8 h-8 rounded-full text-[var(--color-paper-500)] hover:bg-[var(--color-paper-200)] hover:text-[var(--color-ink-700)] disabled:opacity-50 transition-paper"
+          title="Cancel"
           aria-label="Cancel rename"
         >
-          Cancel
+          <X size={14} strokeWidth={2.5} />
         </button>
       </div>
     );
   }
 
   return (
-    <button
-      type="button"
-      onClick={() => setEditing(true)}
-      title="Click to rename"
-      className="no-drag group inline-flex items-center gap-2 mt-1 text-left"
-    >
+    <div className="flex items-center gap-2 mt-1">
       <h1 className="font-serif text-[32px] tracking-tight text-[var(--color-ink-900)]">
         {name}
       </h1>
-      <Pencil
-        size={14}
-        strokeWidth={1.75}
-        className="text-[var(--color-paper-400)] opacity-0 group-hover:opacity-100 transition-paper"
-      />
-    </button>
+      <button
+        type="button"
+        onClick={() => setEditing(true)}
+        title="Rename project"
+        aria-label="Rename project"
+        className="no-drag inline-flex items-center justify-center w-7 h-7 rounded-[var(--radius-xs)] text-[var(--color-paper-400)] hover:text-[var(--color-ink-700)] hover:bg-[var(--color-paper-200)] transition-paper"
+      >
+        <Pencil size={13} strokeWidth={1.75} />
+      </button>
+    </div>
   );
 }
