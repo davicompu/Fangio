@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   Boxes,
@@ -180,9 +180,19 @@ export function StageHub({ project, onOpenSettings, onProjectChanged, onEnterSta
       <div className="drag-region px-6 xl:px-12 pt-10 pb-8 flex items-start justify-between">
         <div>
           <span className="eyebrow">In progress</span>
-          <h1 className="font-serif text-[32px] tracking-tight text-[var(--color-ink-900)] mt-1">
-            {project.name}
-          </h1>
+          <ProjectNameEditor
+            name={project.name}
+            onSave={async (name) => {
+              await api.saveDecision({
+                stage: "onboarding",
+                sub_stage: null,
+                decision_key: "project.name",
+                value_json: JSON.stringify(name),
+                rationale: null,
+              });
+              await onProjectChanged();
+            }}
+          />
           <p className="text-[13px] text-[var(--color-paper-600)] mt-1.5 max-w-2xl">
             {project.framework} framework · {slrTypeLabel(project.slr_type)} review
           </p>
@@ -648,5 +658,100 @@ function RqLine({ label, body }: { label: string; body: string }) {
         {body || <span className="text-[var(--color-paper-400)]">Not yet recorded</span>}
       </p>
     </div>
+  );
+}
+
+function ProjectNameEditor({
+  name,
+  onSave,
+}: {
+  name: string;
+  onSave: (next: string) => Promise<void>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(name);
+  const [busy, setBusy] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (editing) {
+      setDraft(name);
+      setTimeout(() => inputRef.current?.select(), 50);
+    }
+  }, [editing, name]);
+
+  const commit = async () => {
+    const next = draft.trim();
+    if (!next || next === name) {
+      setEditing(false);
+      return;
+    }
+    setBusy(true);
+    try {
+      await onSave(next);
+      setEditing(false);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (editing) {
+    return (
+      <div className="no-drag mt-1 flex items-center gap-2">
+        <input
+          ref={inputRef}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              void commit();
+            } else if (e.key === "Escape") {
+              e.preventDefault();
+              setEditing(false);
+            }
+          }}
+          disabled={busy}
+          maxLength={120}
+          className="font-serif text-[32px] tracking-tight text-[var(--color-ink-900)] bg-transparent border-b border-[var(--color-paper-400)] focus:border-[var(--color-ink-700)] focus:outline-none px-0.5 py-0.5 min-w-[20ch] max-w-[60ch] flex-1"
+        />
+        <button
+          type="button"
+          onClick={() => void commit()}
+          disabled={busy}
+          className="text-[12px] font-medium text-[var(--color-accent-600)] hover:text-[var(--color-accent-700)] disabled:opacity-50"
+          aria-label="Save project name"
+        >
+          {busy ? "Saving…" : "Save"}
+        </button>
+        <button
+          type="button"
+          onClick={() => setEditing(false)}
+          disabled={busy}
+          className="text-[12px] text-[var(--color-paper-500)] hover:text-[var(--color-ink-700)] disabled:opacity-50"
+          aria-label="Cancel rename"
+        >
+          Cancel
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={() => setEditing(true)}
+      title="Click to rename"
+      className="no-drag group inline-flex items-center gap-2 mt-1 text-left"
+    >
+      <h1 className="font-serif text-[32px] tracking-tight text-[var(--color-ink-900)]">
+        {name}
+      </h1>
+      <Pencil
+        size={14}
+        strokeWidth={1.75}
+        className="text-[var(--color-paper-400)] opacity-0 group-hover:opacity-100 transition-paper"
+      />
+    </button>
   );
 }

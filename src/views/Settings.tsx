@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Camera,
@@ -63,11 +63,21 @@ export function Settings({ open: openSetting, onClose, settings, onUpdate, lm, o
   const [companionPasswordMsg, setCompanionPasswordMsg] = useState<string | null>(null);
   const [companionTogglingBusy, setCompanionTogglingBusy] = useState(false);
 
+  // Only sync the in-progress text-field state from saved settings when the
+  // drawer transitions from closed to open. A naive `[settings]` dependency
+  // would clobber the user's typed URL whenever ANY refreshProject elsewhere
+  // in the app produced a fresh settings object — which was reverting the
+  // Server URL field back to whatever was on disk before the user clicked
+  // Test connection.
+  const lastOpenSeen = useRef<boolean | null>(null);
   useEffect(() => {
-    setLocalUrl(settings["lmstudio.base_url"]);
-    setLocalApiKey(settings["lmstudio.api_key"]);
-    setLocalRater1Profile(settings["ai_raters.rater1.profile"]);
-    setLocalRater2Profile(settings["ai_raters.rater2.profile"]);
+    if (openSetting && lastOpenSeen.current !== true) {
+      setLocalUrl(settings["lmstudio.base_url"]);
+      setLocalApiKey(settings["lmstudio.api_key"]);
+      setLocalRater1Profile(settings["ai_raters.rater1.profile"]);
+      setLocalRater2Profile(settings["ai_raters.rater2.profile"]);
+    }
+    lastOpenSeen.current = openSetting;
   }, [settings, openSetting]);
 
   useEffect(() => {
