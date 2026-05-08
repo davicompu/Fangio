@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { BookOpen, Loader2, Plus, RefreshCw, Save, Trash2, X } from "lucide-react";
+import { BookOpen, Filter, Loader2, Plus, RefreshCw, Save, Trash2, X } from "lucide-react";
 import { api, type ExclusionCriterionRow, type ProjectRow } from "../../lib/api";
 import { Card } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
@@ -45,6 +45,9 @@ export function CriteriaPanel({ project, onChanged }: Props) {
   const [jqSaved, setJqSaved] = useState(false);
   const [jqExcluded, setJqExcluded] = useState<number | null>(null);
   const [reApplying, setReApplying] = useState(false);
+
+  const [purifying, setPurifying] = useState(false);
+  const [purifyResult, setPurifyResult] = useState<number | null>(null);
 
   const reload = async () => {
     const c = await api.listCriteria();
@@ -144,6 +147,19 @@ export function CriteriaPanel({ project, onChanged }: Props) {
     onChanged();
   };
 
+  const handlePurify = async () => {
+    setPurifying(true);
+    setPurifyResult(null);
+    try {
+      const count = await api.runPurification();
+      setPurifyResult(count);
+      onChanged();
+      setTimeout(() => setPurifyResult(null), 5000);
+    } finally {
+      setPurifying(false);
+    }
+  };
+
   if (loading) {
     return <div className="text-[13px] text-[var(--color-paper-500)]">Loading criteria…</div>;
   }
@@ -169,6 +185,33 @@ export function CriteriaPanel({ project, onChanged }: Props) {
           <Plus size={13} strokeWidth={2} />
           Add criterion
         </Button>
+      </div>
+
+      {/* ── Run purification ── */}
+      <div className="mb-6 p-4 rounded-[var(--radius-md)] border border-[var(--color-paper-300)] bg-[var(--color-paper-50)]">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h3 className="text-[14px] font-semibold text-[var(--color-ink-900)]">Run purification</h3>
+            <p className="text-[12px] text-[var(--color-paper-600)] leading-relaxed mt-1 max-w-md">
+              Apply the deterministic exclusion criteria (year outside the configured search period)
+              in one click. Articles without a year are left alone.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={handlePurify}
+            disabled={purifying}
+            className="shrink-0 inline-flex items-center gap-1.5 px-3 py-2 rounded-[var(--radius-sm)] text-[12px] font-medium text-[var(--color-accent-700)] border border-[var(--color-accent-300)] bg-[var(--color-accent-50)] hover:bg-[var(--color-accent-100)] transition-paper disabled:opacity-50 disabled:cursor-wait"
+          >
+            {purifying ? <Loader2 size={13} className="animate-spin" /> : <Filter size={13} strokeWidth={2} />}
+            {purifying ? "Applying…" : "Run purification"}
+          </button>
+        </div>
+        {purifyResult !== null && (
+          <p className="mt-3 text-[12px] text-[var(--color-ok-700)]">
+            ✓ Excluded {purifyResult} article{purifyResult === 1 ? "" : "s"} for falling outside the search period.
+          </p>
+        )}
       </div>
 
       {/* ── Journal quality threshold ── */}

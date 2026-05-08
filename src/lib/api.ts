@@ -773,6 +773,9 @@ export const api = {
   applyQualityExclusions(args: { abs_min?: string; abdc_min?: string; if_min?: number }) {
     return invoke<number>("apply_quality_exclusions", { args });
   },
+  runPurification() {
+    return invoke<number>("run_purification");
+  },
   openBrowserPanel(url: string, x: number, y: number, width: number, height: number, sourceDatabase: string) {
     return invoke<void>("open_browser_panel", { url, x, y, width, height, sourceDatabase });
   },

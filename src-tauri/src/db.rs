@@ -1990,6 +1990,84 @@ impl ProjectDb {
         Ok(())
     }
 
+    // ── Purification ─────────────────────────────────────────────────────
+
+    /// Apply deterministic Purification exclusions: any article whose year falls
+    /// outside the project's search_period_start..search_period_end gets excluded
+    /// with criterion 2 ("Outside search period"). Articles already excluded by a
+    /// different criterion are left alone. Returns the count newly excluded.
+    pub async fn run_purification(&self) -> Result<i64> {
+        let now = chrono::Utc::now().to_rfc3339();
+
+        // First reset any articles previously auto-excluded by criterion 2 so
+        // shrinking the date range doesn't leave stale exclusions.
+        sqlx::query(
+            "UPDATE article SET status = 'retrieved', exclusion_criterion = NULL, \
+             exclusion_rationale = NULL, screened_at = NULL, updated_at = ? \
+             WHERE status = 'excluded' AND exclusion_criterion = 2",
+        )
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
+
+        // Load the project's search period
+        use sqlx::Row;
+        let row = sqlx::query("SELECT search_period_start, search_period_end FROM project LIMIT 1")
+            .fetch_optional(&self.pool)
+            .await?;
+        let Some(row) = row else { return Ok(0); };
+        let start_str: Option<String> = row.try_get("search_period_start").ok();
+        let end_str: Option<String> = row.try_get("search_period_end").ok();
+        // Period values are stored as strings (often "YYYY"). Parse to integers when possible.
+        let start_year: Option<i32> = start_str.as_deref().and_then(|s| s.trim().parse().ok());
+        let end_year: Option<i32> = end_str.as_deref().and_then(|s| s.trim().parse().ok());
+
+        if start_year.is_none() && end_year.is_none() {
+            return Ok(0);
+        }
+
+        // Build the exclusion rationale
+        let rationale = match (start_year, end_year) {
+            (Some(a), Some(b)) => format!("Outside search period ({a}–{b})"),
+            (Some(a), None) => format!("Before search period start ({a})"),
+            (None, Some(b)) => format!("After search period end ({b})"),
+            _ => unreachable!(),
+        };
+
+        // Run two updates: articles too early, then articles too late.
+        let mut excluded_total: i64 = 0;
+        if let Some(start) = start_year {
+            let result = sqlx::query(
+                "UPDATE article SET status = 'excluded', exclusion_criterion = 2, \
+                 exclusion_rationale = ?, screened_at = ?, updated_at = ? \
+                 WHERE status = 'retrieved' AND year IS NOT NULL AND year < ?",
+            )
+            .bind(&rationale)
+            .bind(&now)
+            .bind(&now)
+            .bind(start)
+            .execute(&self.pool)
+            .await?;
+            excluded_total += result.rows_affected() as i64;
+        }
+        if let Some(end) = end_year {
+            let result = sqlx::query(
+                "UPDATE article SET status = 'excluded', exclusion_criterion = 2, \
+                 exclusion_rationale = ?, screened_at = ?, updated_at = ? \
+                 WHERE status = 'retrieved' AND year IS NOT NULL AND year > ?",
+            )
+            .bind(&rationale)
+            .bind(&now)
+            .bind(&now)
+            .bind(end)
+            .execute(&self.pool)
+            .await?;
+            excluded_total += result.rows_affected() as i64;
+        }
+
+        Ok(excluded_total)
+    }
+
     // ── Journal scope ─────────────────────────────────────────────────────
 
     /// Auto-exclude articles whose journals fail quality thresholds.
