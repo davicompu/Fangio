@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { BookOpen, Check, Filter, Loader2, Plus, RefreshCw, Save, Sparkles, Trash2, X } from "lucide-react";
+import { BookOpen, Bot, Check, Filter, Loader2, Plus, RefreshCw, Save, Sparkles, Trash2, X } from "lucide-react";
 import { api, type ExclusionCriterionRow, type ProjectRow } from "../../lib/api";
 import { Card } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
@@ -11,7 +11,12 @@ interface Props {
   project: ProjectRow;
   refreshKey: number;
   onChanged: () => void;
+  onRunAiScreening?: (criteria: string[]) => void;
 }
+
+// AI screening looks at title + abstract only; criteria the AI cannot
+// reasonably evaluate from that data are filtered out before chaining.
+const NON_AI_CRITERION_NUMBERS = new Set<number>([1, 7]);
 
 // ABS: 4* > 4 > 3 > 2 > 1  (higher index = higher quality)
 const ABS_LEVELS = ["1", "2", "3", "4", "4*"] as const;
@@ -26,7 +31,7 @@ function parseJournalQuality(raw: string | null) {
   }
 }
 
-export function CriteriaPanel({ project, onChanged }: Props) {
+export function CriteriaPanel({ project, onChanged, onRunAiScreening }: Props) {
   const [criteria, setCriteria] = useState<ExclusionCriterionRow[]>([]);
   const [adding, setAdding] = useState<{ label: string; rationale: string } | null>(null);
   const [editing, setEditing] = useState<number | null>(null);
@@ -291,6 +296,33 @@ export function CriteriaPanel({ project, onChanged }: Props) {
                   </ul>
                 </div>
               )}
+
+              {(() => {
+                const aiEligible = purifyResult.skipped.filter(
+                  (s) => !NON_AI_CRITERION_NUMBERS.has(s.number)
+                );
+                if (aiEligible.length === 0 || !onRunAiScreening) return null;
+                return (
+                  <div className="mt-3 pt-3 border-t border-[var(--color-accent-200)] flex items-start justify-between gap-3">
+                    <div className="flex-1 min-w-0">
+                      <p className="text-[12px] text-[var(--color-paper-700)] leading-relaxed">
+                        <strong className="text-[var(--color-ink-900)]">Run AI screening</strong> on the {aiEligible.length} judgment criteria above. Reeves sends each remaining article's title and abstract to the AI raters and applies confident decisions automatically — uncertain cases stay in Pending.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const criteriaStrings = aiEligible.map((s) => `EC${s.number}: ${s.label}`);
+                        onRunAiScreening(criteriaStrings);
+                      }}
+                      className="shrink-0 inline-flex items-center gap-1.5 px-4 py-2 rounded-[var(--radius-sm)] text-[12px] font-semibold text-white bg-[var(--color-ink-800)] hover:bg-[var(--color-ink-900)] active:bg-[var(--color-ink-900)] transition-paper"
+                    >
+                      <Bot size={13} strokeWidth={2} />
+                      Run AI on remaining
+                    </button>
+                  </div>
+                );
+              })()}
             </div>
           );
         })()}

@@ -217,7 +217,18 @@ export function ArrangingStage({ project, onLeaveStage, onProjectChanged, lmMode
             >
               {tab === "organization" && <OrganizationPanel project={project} refreshKey={refreshTick} onChanged={onChanged} onJumpToCode={handleJumpToCode} />}
               {tab === "coding" && <CodingPanel project={project} refreshKey={refreshTick} onChanged={onChanged} initialCodeFilter={jumpCodeFilter} onCodeFilterConsumed={() => setJumpCodeFilter(null)} lastEditedArticleId={lastEditedArticleId} onArticleEdited={setLastEditedArticleId} onOpenAiCodingModal={() => setAiCodingModalOpen(true)} />}
-              {tab === "criteria" && <CriteriaPanel project={project} refreshKey={refreshTick} onChanged={onChanged} />}
+              {tab === "criteria" && (
+                <CriteriaPanel
+                  project={project}
+                  refreshKey={refreshTick}
+                  onChanged={onChanged}
+                  onRunAiScreening={(criteria) => {
+                    // Open the modal first so the user sees progress, then kick off the run.
+                    setAiModalOpen(true);
+                    void screening.start(criteria);
+                  }}
+                />
+              )}
               {tab === "screening" && <ScreeningPanel project={project} refreshKey={refreshTick} onChanged={onChanged} onOpenAiModal={() => setAiModalOpen(true)} />}
               {tab === "prisma" && <PrismaPanel refreshKey={refreshTick} />}
             </motion.div>
