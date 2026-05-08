@@ -229,6 +229,8 @@ export interface AiScreeningResult {
   included: number;
   excluded: number;
   uncertain: number;
+  /** Per-criterion breakdown of consensus exclusions during this run. */
+  excluded_by_criterion: { number: number; count: number }[];
 }
 
 export interface PrismaState {

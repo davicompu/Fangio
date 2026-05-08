@@ -387,27 +387,56 @@ export function CriteriaPanel({ project, onChanged, screening }: Props) {
                       </div>
                     )}
 
-                    {aiDone && screening.result && (
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="flex-1 min-w-0 text-[12px] text-[var(--color-ok-700)]">
-                          <p>
-                            ✓ AI purification complete — processed {screening.result.processed},
-                            excluded {screening.result.excluded}, included {screening.result.included},
-                            {" "}{screening.result.uncertain} uncertain (left for manual review).
-                          </p>
+                    {aiDone && screening.result && (() => {
+                      const labelByNumber = new Map(aiEligible.map((s) => [s.number, s.label]));
+                      const exclByCrit = screening.result.excluded_by_criterion ?? [];
+                      const totalAttributed = exclByCrit.reduce((s, c) => s + c.count, 0);
+                      return (
+                        <div className="space-y-2">
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="flex-1 min-w-0 text-[12px] text-[var(--color-ok-700)]">
+                              <p>
+                                <strong>✓ AI purification complete</strong> — processed {screening.result.processed},
+                                excluded {screening.result.excluded}, included {screening.result.included},
+                                {" "}{screening.result.uncertain} uncertain (left for manual review).
+                              </p>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                screening.reset();
+                                void handlePurify();
+                              }}
+                              className="shrink-0 text-[11px] text-[var(--color-paper-600)] hover:text-[var(--color-ink-700)] underline-offset-2 hover:underline"
+                            >
+                              Refresh
+                            </button>
+                          </div>
+                          {exclByCrit.length > 0 && (
+                            <ul className="space-y-1">
+                              {exclByCrit.map((c) => (
+                                <li
+                                  key={c.number}
+                                  className="flex items-baseline gap-2 text-[12px] text-[var(--color-ok-700)]"
+                                >
+                                  <Bot size={11} strokeWidth={2.25} className="shrink-0 mt-0.5" />
+                                  <span className="font-mono text-[10px] text-[var(--color-paper-500)] tabular-nums">EC{c.number}</span>
+                                  <span className="flex-1 text-[var(--color-ink-800)]">
+                                    {labelByNumber.get(c.number) ?? "(criterion)"}
+                                  </span>
+                                  <span className="font-mono tabular-nums">{c.count}</span>
+                                </li>
+                              ))}
+                              {screening.result.excluded > totalAttributed && (
+                                <li className="text-[11px] text-[var(--color-paper-500)] pl-5">
+                                  + {screening.result.excluded - totalAttributed} excluded without a recorded criterion number
+                                </li>
+                              )}
+                            </ul>
+                          )}
                         </div>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            screening.reset();
-                            void handlePurify();
-                          }}
-                          className="shrink-0 text-[11px] text-[var(--color-paper-600)] hover:text-[var(--color-ink-700)] underline-offset-2 hover:underline"
-                        >
-                          Refresh
-                        </button>
-                      </div>
-                    )}
+                      );
+                    })()}
 
                     {screening.error && !aiRunning && (
                       <p className="text-[12px] text-[var(--color-warn-700)]">

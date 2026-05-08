@@ -700,11 +700,21 @@ struct AiScreeningProgress {
 }
 
 #[derive(Debug, Serialize)]
+struct CriterionExclusionCount {
+    number: i64,
+    count: usize,
+}
+
+#[derive(Debug, Serialize)]
 struct AiScreeningResult {
     processed: usize,
     included: usize,
     excluded: usize,
     uncertain: usize,
+    /// Per-criterion breakdown of articles excluded by AI consensus during this run.
+    /// Useful for the Purification card to show "EC4 — 12 excluded by AI" alongside
+    /// the deterministic counts.
+    excluded_by_criterion: Vec<CriterionExclusionCount>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1755,6 +1765,8 @@ async fn run_ai_screening(
     let mut included = 0usize;
     let mut excluded = 0usize;
     let mut uncertain = 0usize;
+    let mut excluded_per_criterion: std::collections::HashMap<i64, usize> =
+        std::collections::HashMap::new();
 
     // Build labeled exclusion criteria list
     let exc_labeled: Vec<(i64, String)> = if !args.exclusion_criteria.is_empty() {
@@ -1933,7 +1945,12 @@ async fn run_ai_screening(
                 .map_err(err)?;
                 match decision_str {
                     "include" => included += 1,
-                    "exclude" => excluded += 1,
+                    "exclude" => {
+                        excluded += 1;
+                        if let Some(n) = criterion {
+                            *excluded_per_criterion.entry(n).or_insert(0) += 1;
+                        }
+                    }
                     _ => uncertain += 1,
                 }
                 let _ = app.emit(
@@ -1998,7 +2015,19 @@ async fn run_ai_screening(
     .await
     .ok();
 
-    Ok(AiScreeningResult { processed: total, included, excluded, uncertain })
+    let mut excluded_by_criterion: Vec<CriterionExclusionCount> = excluded_per_criterion
+        .into_iter()
+        .map(|(number, count)| CriterionExclusionCount { number, count })
+        .collect();
+    excluded_by_criterion.sort_by_key(|c| c.number);
+
+    Ok(AiScreeningResult {
+        processed: total,
+        included,
+        excluded,
+        uncertain,
+        excluded_by_criterion,
+    })
 }
 
 #[tauri::command]
