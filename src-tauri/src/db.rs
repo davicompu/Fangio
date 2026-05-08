@@ -167,6 +167,21 @@ pub struct AiCodingCoverage {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AiScreeningProposal {
+    pub id: i64,
+    pub article_id: i64,
+    /// 1 or 2
+    pub rater: i64,
+    pub decision: String,
+    pub criterion_number: Option<i64>,
+    pub rationale: String,
+    pub confidence: f64,
+    pub model_name: Option<String>,
+    pub run_id: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct GlossaryTerm {
     pub id: i64,
     pub term: String,
@@ -2424,6 +2439,137 @@ impl ProjectDb {
             .bind(article_id)
             .execute(&self.pool)
             .await?;
+        Ok(())
+    }
+
+    // ── AI Screening proposals ────────────────────────────────────────────
+
+    pub async fn save_ai_screening_proposal(
+        &self,
+        article_id: i64,
+        rater: i64,
+        decision: &str,
+        criterion_number: Option<i64>,
+        rationale: &str,
+        confidence: f64,
+        model_name: Option<&str>,
+        run_id: &str,
+    ) -> Result<i64> {
+        let now = chrono::Utc::now().to_rfc3339();
+        let result = sqlx::query(
+            "INSERT INTO ai_screening_proposal \
+             (article_id, rater, decision, criterion_number, rationale, confidence, model_name, run_id, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(article_id)
+        .bind(rater)
+        .bind(decision)
+        .bind(criterion_number)
+        .bind(rationale)
+        .bind(confidence)
+        .bind(model_name)
+        .bind(run_id)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.last_insert_rowid())
+    }
+
+    pub async fn get_ai_screening_proposal_by_id(
+        &self,
+        id: i64,
+    ) -> Result<Option<AiScreeningProposal>> {
+        let row = sqlx::query(
+            "SELECT id, article_id, rater, decision, criterion_number, rationale, confidence, model_name, run_id, created_at \
+             FROM ai_screening_proposal WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|r| AiScreeningProposal {
+            id: r.get("id"),
+            article_id: r.get("article_id"),
+            rater: r.get("rater"),
+            decision: r.get("decision"),
+            criterion_number: r.get("criterion_number"),
+            rationale: r.get("rationale"),
+            confidence: r.get("confidence"),
+            model_name: r.get("model_name"),
+            run_id: r.get("run_id"),
+            created_at: r.get("created_at"),
+        }))
+    }
+
+    pub async fn list_ai_screening_proposals_for_article(
+        &self,
+        article_id: i64,
+    ) -> Result<Vec<AiScreeningProposal>> {
+        let rows = sqlx::query(
+            "SELECT id, article_id, rater, decision, criterion_number, rationale, confidence, model_name, run_id, created_at \
+             FROM ai_screening_proposal WHERE article_id = ? ORDER BY rater",
+        )
+        .bind(article_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(|r| AiScreeningProposal {
+            id: r.get("id"),
+            article_id: r.get("article_id"),
+            rater: r.get("rater"),
+            decision: r.get("decision"),
+            criterion_number: r.get("criterion_number"),
+            rationale: r.get("rationale"),
+            confidence: r.get("confidence"),
+            model_name: r.get("model_name"),
+            run_id: r.get("run_id"),
+            created_at: r.get("created_at"),
+        }).collect())
+    }
+
+    pub async fn list_ai_screening_proposals_for_articles(
+        &self,
+        article_ids: &[i64],
+    ) -> Result<Vec<AiScreeningProposal>> {
+        if article_ids.is_empty() {
+            return Ok(vec![]);
+        }
+        let placeholders: String = std::iter::repeat("?")
+            .take(article_ids.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "SELECT id, article_id, rater, decision, criterion_number, rationale, confidence, model_name, run_id, created_at \
+             FROM ai_screening_proposal WHERE article_id IN ({}) ORDER BY article_id, rater",
+            placeholders
+        );
+        let mut q = sqlx::query(&sql);
+        for id in article_ids {
+            q = q.bind(*id);
+        }
+        let rows = q.fetch_all(&self.pool).await?;
+        Ok(rows.into_iter().map(|r| AiScreeningProposal {
+            id: r.get("id"),
+            article_id: r.get("article_id"),
+            rater: r.get("rater"),
+            decision: r.get("decision"),
+            criterion_number: r.get("criterion_number"),
+            rationale: r.get("rationale"),
+            confidence: r.get("confidence"),
+            model_name: r.get("model_name"),
+            run_id: r.get("run_id"),
+            created_at: r.get("created_at"),
+        }).collect())
+    }
+
+    pub async fn set_ai_disagreement(&self, article_id: i64, rationale: &str) -> Result<()> {
+        let now = chrono::Utc::now().to_rfc3339();
+        sqlx::query(
+            "UPDATE article SET ai_rationale = ?, ai_confidence = 0.0, updated_at = ? WHERE id = ?",
+        )
+        .bind(rationale)
+        .bind(&now)
+        .bind(article_id)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 

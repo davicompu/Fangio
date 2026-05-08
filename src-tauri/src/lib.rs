@@ -1246,6 +1246,59 @@ async fn reject_all_ai_coding_proposals_for_article(
     Ok(())
 }
 
+// ── AI Screening proposal commands ───────────────────────────────────────────
+
+#[tauri::command]
+async fn list_ai_screening_proposals_for_article(
+    article_id: i64,
+    state: State<'_, AppState>,
+) -> Result<Vec<db::AiScreeningProposal>, String> {
+    let db = state.current().await.ok_or("no project open")?;
+    db.list_ai_screening_proposals_for_article(article_id).await.map_err(err)
+}
+
+#[tauri::command]
+async fn list_ai_screening_proposals_for_articles(
+    article_ids: Vec<i64>,
+    state: State<'_, AppState>,
+) -> Result<Vec<db::AiScreeningProposal>, String> {
+    let db = state.current().await.ok_or("no project open")?;
+    db.list_ai_screening_proposals_for_articles(&article_ids).await.map_err(err)
+}
+
+#[tauri::command]
+async fn accept_ai_screening_proposal(
+    proposal_id: i64,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let db = state.current().await.ok_or("no project open")?;
+    let proposal = db
+        .get_ai_screening_proposal_by_id(proposal_id)
+        .await
+        .map_err(err)?
+        .ok_or("screening proposal not found")?;
+    db.apply_ai_outcome(
+        proposal.article_id,
+        &proposal.decision,
+        proposal.criterion_number,
+        &proposal.rationale,
+        proposal.confidence,
+    )
+    .await
+    .map_err(err)?;
+    db.record_telemetry(
+        "screen.proposal_accepted",
+        &serde_json::json!({
+            "article_id": proposal.article_id,
+            "rater": proposal.rater,
+            "decision": proposal.decision,
+        }),
+    )
+    .await
+    .ok();
+    Ok(())
+}
+
 #[tauri::command]
 async fn run_ai_coding(
     args: RunAiCodingArgs,
@@ -1268,6 +1321,16 @@ async fn run_ai_coding(
         .get("lmstudio.embed_model")
         .and_then(|v| v.as_str())
         .unwrap_or("text-embedding-embeddinggemma-300m-qat")
+        .to_string();
+    let rater1_profile = settings
+        .get("ai_raters.rater1.profile")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let rater2_profile = settings
+        .get("ai_raters.rater2.profile")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
         .to_string();
 
     // Reset flags from any previous run
@@ -1478,6 +1541,7 @@ async fn run_ai_coding(
             &article.title,
             article.authors.as_deref(),
             &context_text,
+            &rater1_profile,
             api_key.as_deref(),
         )
         .await;
@@ -1516,6 +1580,7 @@ async fn run_ai_coding(
                 &article.title,
                 article.authors.as_deref(),
                 &context_text,
+                &rater2_profile,
                 api_key.as_deref(),
             )
             .await
@@ -1663,6 +1728,16 @@ async fn run_ai_screening(
         .get("screening.confidence_threshold")
         .and_then(|v| v.as_f64())
         .unwrap_or(0.90);
+    let profile1 = settings
+        .get("ai_raters.rater1.profile")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let profile2 = settings
+        .get("ai_raters.rater2.profile")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
 
     // Reset pause/cancel flags from any previous run
     state.screening_paused.store(false, Ordering::SeqCst);
@@ -1697,6 +1772,9 @@ async fn run_ai_screening(
             .collect()
     };
 
+    // Generate one run_id for this batch
+    let run_id = chrono::Utc::now().timestamp_millis().to_string();
+
     for (i, article) in pending.iter().enumerate() {
         // Cancel: exit loop early, return partial result
         if cancelled.load(Ordering::SeqCst) {
@@ -1723,61 +1801,23 @@ async fn run_ai_screening(
             },
         );
 
-        let result = suggest::screen_article(
+        // ── Rater 1 ───────────────────────────────────────────────────────
+        let result1 = suggest::screen_article(
             &base_url,
             &model,
             &article.title,
             article.abstract_text.as_deref(),
             &domain,
             &exc_labeled,
+            &profile1,
             api_key.as_deref(),
         )
         .await;
 
-        match result {
-            Ok(decision) => {
-                let applies = decision.confidence >= threshold && decision.decision != "uncertain";
-                let decision_str = decision.decision.clone();
-                if applies {
-                    db.apply_ai_outcome(
-                        article.id,
-                        &decision.decision,
-                        decision.criterion_number,
-                        &decision.rationale,
-                        decision.confidence,
-                    )
-                    .await
-                    .map_err(err)?;
-                    match decision.decision.as_str() {
-                        "include" => included += 1,
-                        "exclude" => excluded += 1,
-                        _ => uncertain += 1,
-                    }
-                } else {
-                    // Below threshold or explicit uncertain — store but don't apply
-                    db.apply_ai_outcome(
-                        article.id,
-                        "uncertain",
-                        None,
-                        &decision.rationale,
-                        decision.confidence,
-                    )
-                    .await
-                    .map_err(err)?;
-                    uncertain += 1;
-                }
-                let _ = app.emit(
-                    "screen:progress",
-                    AiScreeningProgress {
-                        done: i + 1,
-                        total,
-                        article_title: article.title.clone(),
-                        decision: if applies { decision_str } else { "uncertain".into() },
-                    },
-                );
-            }
+        let decision1 = match result1 {
+            Ok(d) => d,
             Err(e) => {
-                eprintln!("AI screening error for article {}: {e}", article.id);
+                eprintln!("AI screening rater 1 error for article {}: {e}", article.id);
                 let _ = app.emit(
                     "screen:progress",
                     AiScreeningProgress {
@@ -1787,7 +1827,155 @@ async fn run_ai_screening(
                         decision: "error".into(),
                     },
                 );
+                continue;
             }
+        };
+
+        // Save rater 1 proposal
+        let _ = db.save_ai_screening_proposal(
+            article.id,
+            1,
+            &decision1.decision,
+            decision1.criterion_number,
+            &decision1.rationale,
+            decision1.confidence,
+            Some(&model),
+            &run_id,
+        ).await;
+
+        let _ = app.emit(
+            "screen:progress",
+            AiScreeningProgress {
+                done: i,
+                total,
+                article_title: article.title.clone(),
+                decision: decision1.decision.clone(),
+            },
+        );
+
+        // ── Rater 2 ───────────────────────────────────────────────────────
+        let result2 = suggest::screen_article(
+            &base_url,
+            &model,
+            &article.title,
+            article.abstract_text.as_deref(),
+            &domain,
+            &exc_labeled,
+            &profile2,
+            api_key.as_deref(),
+        )
+        .await;
+
+        let decision2 = match result2 {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("AI screening rater 2 error for article {}: {e}", article.id);
+                let _ = app.emit(
+                    "screen:progress",
+                    AiScreeningProgress {
+                        done: i + 1,
+                        total,
+                        article_title: article.title.clone(),
+                        decision: "error".into(),
+                    },
+                );
+                continue;
+            }
+        };
+
+        // Save rater 2 proposal
+        let _ = db.save_ai_screening_proposal(
+            article.id,
+            2,
+            &decision2.decision,
+            decision2.criterion_number,
+            &decision2.rationale,
+            decision2.confidence,
+            Some(&model),
+            &run_id,
+        ).await;
+
+        // ── Consensus logic ───────────────────────────────────────────────
+        let consensus = if decision1.decision == "include" && decision2.decision == "include" {
+            Some(("include", None::<i64>, format!(
+                "Rater 1: {}\n\nRater 2: {}",
+                decision1.rationale, decision2.rationale
+            ), f64::min(decision1.confidence, decision2.confidence)))
+        } else if decision1.decision == "exclude"
+            && decision2.decision == "exclude"
+            && decision1.criterion_number == decision2.criterion_number
+        {
+            Some(("exclude", decision1.criterion_number, format!(
+                "Rater 1: {}\n\nRater 2: {}",
+                decision1.rationale, decision2.rationale
+            ), f64::min(decision1.confidence, decision2.confidence)))
+        } else {
+            None
+        };
+
+        if let Some((decision_str, criterion, rationale, confidence)) = consensus {
+            let applies = confidence >= threshold && decision_str != "uncertain";
+            if applies {
+                db.apply_ai_outcome(
+                    article.id,
+                    decision_str,
+                    criterion,
+                    &rationale,
+                    confidence,
+                )
+                .await
+                .map_err(err)?;
+                match decision_str {
+                    "include" => included += 1,
+                    "exclude" => excluded += 1,
+                    _ => uncertain += 1,
+                }
+                let _ = app.emit(
+                    "screen:progress",
+                    AiScreeningProgress {
+                        done: i + 1,
+                        total,
+                        article_title: article.title.clone(),
+                        decision: decision_str.to_string(),
+                    },
+                );
+            } else {
+                // Consensus but below threshold — flag as uncertain
+                db.set_ai_disagreement(
+                    article.id,
+                    "AI raters disagree — see proposals",
+                )
+                .await
+                .map_err(err)?;
+                uncertain += 1;
+                let _ = app.emit(
+                    "screen:progress",
+                    AiScreeningProgress {
+                        done: i + 1,
+                        total,
+                        article_title: article.title.clone(),
+                        decision: "uncertain".into(),
+                    },
+                );
+            }
+        } else {
+            // Disagreement — leave in 'retrieved' for manual resolution
+            db.set_ai_disagreement(
+                article.id,
+                "AI raters disagree — see proposals",
+            )
+            .await
+            .map_err(err)?;
+            uncertain += 1;
+            let _ = app.emit(
+                "screen:progress",
+                AiScreeningProgress {
+                    done: i + 1,
+                    total,
+                    article_title: article.title.clone(),
+                    decision: "uncertain".into(),
+                },
+            );
         }
     }
 
@@ -3336,6 +3524,9 @@ pub fn run() {
             accept_ai_coding_proposal,
             reject_ai_coding_proposal,
             reject_all_ai_coding_proposals_for_article,
+            list_ai_screening_proposals_for_article,
+            list_ai_screening_proposals_for_articles,
+            accept_ai_screening_proposal,
             get_prisma_state,
             suggest_codes,
             suggest_step,

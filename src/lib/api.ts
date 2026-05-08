@@ -295,6 +295,20 @@ export interface AiCodingCoverage {
   no_pdf: number;
 }
 
+export interface AiScreeningProposal {
+  id: number;
+  article_id: number;
+  /** 1 or 2 */
+  rater: number;
+  decision: "include" | "exclude" | "uncertain";
+  criterion_number: number | null;
+  rationale: string;
+  confidence: number;
+  model_name: string | null;
+  run_id: string;
+  created_at: string;
+}
+
 export interface AiCodingProgress {
   done: number;
   total: number;
@@ -621,6 +635,15 @@ export const api = {
   pauseAiScreening() { return invoke<void>("pause_ai_screening"); },
   resumeAiScreening() { return invoke<void>("resume_ai_screening"); },
   cancelAiScreening() { return invoke<void>("cancel_ai_screening"); },
+  listAiScreeningProposalsForArticle(articleId: number) {
+    return invoke<AiScreeningProposal[]>("list_ai_screening_proposals_for_article", { articleId });
+  },
+  listAiScreeningProposalsForArticles(articleIds: number[]) {
+    return invoke<AiScreeningProposal[]>("list_ai_screening_proposals_for_articles", { articleIds });
+  },
+  acceptAiScreeningProposal(proposalId: number) {
+    return invoke<void>("accept_ai_screening_proposal", { proposalId });
+  },
   runAiCoding(args: { rater1_model: string; rater2_model: string | null; dimensions: string[]; run_id: string }) {
     return invoke<AiCodingResult>("run_ai_coding", { args });
   },

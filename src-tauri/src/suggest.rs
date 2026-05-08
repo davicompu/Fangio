@@ -889,6 +889,8 @@ fn parse_suggestions(s: &str) -> Option<Vec<Suggestion>> {
 
 /// Screen a single article against the review's domain scope and exclusion criteria.
 /// Returns a ScreeningDecision with decision, optional criterion, rationale, and confidence.
+/// `profile` is prepended to the system prompt when non-empty, shaping how the rater evaluates.
+#[allow(clippy::too_many_arguments)]
 pub async fn screen_article(
     base_url: &str,
     model: &str,
@@ -896,6 +898,7 @@ pub async fn screen_article(
     abstract_text: Option<&str>,
     domain: &str,
     exclusion_criteria_labeled: &[(i64, String)], // (criterion_number, label)
+    profile: &str,
     api_key: Option<&str>,
 ) -> Result<ScreeningDecision> {
     let domain_block = if domain.trim().is_empty() {
@@ -914,8 +917,17 @@ pub async fn screen_article(
             .join("\n")
     };
 
+    let profile_block = if profile.trim().is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\n\nRater profile (read carefully — this shapes how YOU evaluate this article):\n{}\n",
+            profile.trim()
+        )
+    };
+
     let system = format!(
-        "You are a systematic literature review screener applying title and abstract screening.\n\
+        "You are a systematic literature review screener applying title and abstract screening.{profile_block}\n\
          You decide whether each article should be included, excluded, or flagged as uncertain.\n\n\
          Domain scope of this review:\n{domain_block}\n\n\
          Exclusion criteria (exclude the article if it meets ANY of these):\n{exc_block}\n\n\
@@ -1003,6 +1015,7 @@ pub async fn code_article_for_dimensions(
     title: &str,
     authors: Option<&str>,
     context_text: &str,
+    profile: &str,
     api_key: Option<&str>,
 ) -> Result<Vec<DimensionCoding>> {
     let rqs_block = if research_questions.is_empty() {
@@ -1043,9 +1056,18 @@ pub async fn code_article_for_dimensions(
         truncated.to_string()
     };
 
+    let coding_profile_block = if profile.trim().is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\n\nRater profile (read carefully — this shapes how YOU evaluate this article):\n{}\n",
+            profile.trim()
+        )
+    };
+
     let system = format!(
         "You are a meticulous research assistant helping a scholar code articles for a systematic \
-literature review. You suggest codes — you do not make decisions. The researcher always has final say.\n\n\
+literature review. You suggest codes — you do not make decisions. The researcher always has final say.{coding_profile_block}\n\n\
 Review domain: {domain}\nOrganising framework: {framework}\nResearch questions:\n{rqs_block}\n\n\
 For each dimension you will suggest 1–3 short noun-phrase codes (2–5 words each). \
 Reuse an existing code when it fits; only mark is_new=true when no existing code is appropriate.\n\n\

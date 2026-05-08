@@ -18,6 +18,7 @@ import { listen } from "@tauri-apps/api/event";
 import {
   api,
   type AiScreeningProgress,
+  type AiScreeningProposal,
   type AiScreeningResult,
   type ArticleRow,
   type ExclusionCriterionRow,
@@ -161,6 +162,7 @@ export function ScreeningPanel({ project, refreshKey, onChanged, onOpenAiModal }
   const [offset, setOffset] = useState(0);
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const [loading, setLoading] = useState(true);
+  const [screeningProposals, setScreeningProposals] = useState<AiScreeningProposal[]>([]);
 
   const jq = parseJournalQuality(project.journal_quality);
 
@@ -179,6 +181,13 @@ export function ScreeningPanel({ project, refreshKey, onChanged, onOpenAiModal }
     setTotal(tab === "pending" ? cntPending : tab === "included" ? cntIncluded : cntExcluded);
     setCriteria(crits.filter((c) => c.number > 1));
     setJournals(jList);
+    // Fetch proposals for pending articles
+    if (tab === "pending" && arts.length > 0) {
+      const ids = arts.map((a) => a.id);
+      api.listAiScreeningProposalsForArticles(ids).then(setScreeningProposals).catch(() => {});
+    } else {
+      setScreeningProposals([]);
+    }
     setLoading(false);
   };
 
@@ -200,6 +209,15 @@ export function ScreeningPanel({ project, refreshKey, onChanged, onOpenAiModal }
       setTotal(activeTab === "pending" ? cntPending : activeTab === "included" ? cntIncluded : cntExcluded);
       setCriteria(crits.filter((c) => c.number > 1));
       setJournals(jList);
+      // Fetch proposals for pending articles
+      if (activeTab === "pending" && arts.length > 0) {
+        const ids = arts.map((a) => a.id);
+        api.listAiScreeningProposalsForArticles(ids).then((ps) => {
+          if (!cancelled) setScreeningProposals(ps);
+        }).catch(() => {});
+      } else if (!cancelled) {
+        setScreeningProposals([]);
+      }
       setLoading(false);
     }).catch(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
@@ -345,6 +363,7 @@ export function ScreeningPanel({ project, refreshKey, onChanged, onOpenAiModal }
             journalMatch={lookupJournal(a.journal)}
             jq={jq}
             expanded={expanded.has(a.id)}
+            proposals={screeningProposals.filter((p) => p.article_id === a.id)}
             onToggle={() => {
               setExpanded((s) => {
                 const n = new Set(s);
@@ -375,6 +394,7 @@ function ScreeningCard({
   journalMatch,
   jq,
   expanded,
+  proposals,
   onToggle,
   onDecision,
 }: {
@@ -383,6 +403,7 @@ function ScreeningCard({
   journalMatch: JournalRow | null;
   jq: { abs_min?: string; abdc_min?: string; if_min?: number };
   expanded: boolean;
+  proposals: AiScreeningProposal[];
   onToggle: () => void;
   onDecision: () => Promise<void>;
 }) {
@@ -397,6 +418,27 @@ function ScreeningCard({
   const abdcFails = jq.abdc_min && !meetsAbdcThreshold(journalMatch?.abdc_rating, jq.abdc_min);
   const ifFails = jq.if_min != null && !meetsIfThreshold(journalMatch?.impact_factor, jq.if_min);
   const qualityFlagged = absFails || abdcFails || ifFails;
+
+  // Disagreement detection
+  const p1 = proposals.find((p) => p.rater === 1);
+  const p2 = proposals.find((p) => p.rater === 2);
+  const hasDisagreement =
+    !isDecided &&
+    article.status === "retrieved" &&
+    p1 !== undefined &&
+    p2 !== undefined &&
+    (p1.decision !== p2.decision ||
+      (p1.decision === "exclude" && p2.decision === "exclude" && p1.criterion_number !== p2.criterion_number));
+
+  const acceptProposal = async (proposal: AiScreeningProposal) => {
+    setBusy(true);
+    try {
+      await api.acceptAiScreeningProposal(proposal.id);
+      await onDecision();
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const keep = async () => {
     setBusy(true);
@@ -436,6 +478,17 @@ function ScreeningCard({
         qualityFlagged && !isDecided && article.status !== "included" && "border-[var(--color-warn-500)]/40",
       )}
     >
+      {/* Disagreement banner — shown above article content when raters disagree */}
+      {hasDisagreement && p1 && p2 && (
+        <DisagreementBanner
+          p1={p1}
+          p2={p2}
+          busy={busy}
+          onAccept={acceptProposal}
+          onDecideManually={keep}
+        />
+      )}
+
       <div className="flex items-start gap-4">
         <div className="font-mono text-[10px] text-[var(--color-paper-500)] tabular-nums w-8 text-right shrink-0 mt-1">
           #{article.id}
@@ -641,6 +694,113 @@ function ScreeningCard({
         )}
       </div>
     </Card>
+  );
+}
+
+// ── Disagreement UI ──────────────────────────────────────────────────────────
+
+function DecisionChip({ decision, criterionNumber }: { decision: string; criterionNumber: number | null }) {
+  if (decision === "include") {
+    return (
+      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold bg-[var(--color-ok-100)] text-[var(--color-ok-700)] border border-[var(--color-ok-300)]">
+        Include
+      </span>
+    );
+  }
+  if (decision === "exclude") {
+    return (
+      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold bg-[var(--color-error-500)]/10 text-[var(--color-error-500)] border border-[var(--color-error-500)]/30">
+        Exclude{criterionNumber != null ? ` EC${criterionNumber}` : ""}
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold bg-[var(--color-warn-500)]/10 text-[var(--color-warn-600)] border border-[var(--color-warn-500)]/30">
+      Uncertain
+    </span>
+  );
+}
+
+function RaterCard({
+  label,
+  proposal,
+  busy,
+  onAccept,
+}: {
+  label: string;
+  proposal: AiScreeningProposal;
+  busy: boolean;
+  onAccept: () => void;
+}) {
+  return (
+    <div className="flex flex-col gap-2 p-3 rounded-[var(--radius-xs)] bg-white/70 border border-[var(--color-accent-200)]">
+      <div className="flex items-center gap-2 flex-wrap">
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--color-paper-500)]">
+          {label}
+        </span>
+        <DecisionChip decision={proposal.decision} criterionNumber={proposal.criterion_number} />
+        <span className="text-[11px] font-mono tabular-nums text-[var(--color-paper-400)]">
+          {Math.round(proposal.confidence * 100)}%
+        </span>
+      </div>
+      <p className="text-[12px] text-[var(--color-ink-800)] leading-relaxed italic">
+        {proposal.rationale}
+      </p>
+      <button
+        onClick={onAccept}
+        disabled={busy}
+        className="mt-1 self-start px-3 py-1 rounded-[var(--radius-xs)] text-[11px] font-semibold bg-[var(--color-accent-600)] text-white hover:bg-[var(--color-accent-700)] disabled:opacity-40 transition-paper"
+      >
+        Accept this
+      </button>
+    </div>
+  );
+}
+
+function DisagreementBanner({
+  p1,
+  p2,
+  busy,
+  onAccept,
+  onDecideManually,
+}: {
+  p1: AiScreeningProposal;
+  p2: AiScreeningProposal;
+  busy: boolean;
+  onAccept: (p: AiScreeningProposal) => void;
+  onDecideManually: () => void;
+}) {
+  return (
+    <div className="mb-3 p-3 rounded-[var(--radius-sm)] bg-[var(--color-accent-50)] border border-[var(--color-accent-200)]">
+      <div className="flex items-center gap-2 mb-2.5">
+        <AlertTriangle size={13} className="text-[var(--color-warn-600)]" />
+        <span className="text-[12px] font-semibold text-[var(--color-ink-800)]">AI raters disagree</span>
+        <span className="text-[11px] text-[var(--color-paper-500)]">— pick one or decide manually</span>
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        <RaterCard
+          label="Rater 1"
+          proposal={p1}
+          busy={busy}
+          onAccept={() => onAccept(p1)}
+        />
+        <RaterCard
+          label="Rater 2"
+          proposal={p2}
+          busy={busy}
+          onAccept={() => onAccept(p2)}
+        />
+      </div>
+      <div className="mt-2 flex justify-end">
+        <button
+          onClick={onDecideManually}
+          disabled={busy}
+          className="text-[11px] text-[var(--color-paper-500)] hover:text-[var(--color-ink-700)] disabled:opacity-40 transition-paper"
+        >
+          Decide manually
+        </button>
+      </div>
+    </div>
   );
 }
 
