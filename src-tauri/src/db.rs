@@ -561,6 +561,36 @@ impl ProjectDb {
             .collect())
     }
 
+    pub async fn get_article_by_id(&self, id: i64) -> Result<Option<ArticleRow>> {
+        let row = sqlx::query(
+            "SELECT id, title, authors, year, journal, abstract AS abstract_text, doi, url, \
+             source_databases, status, dedup_group_id, exclusion_criterion, created_at, \
+             screened_at, ai_rationale, ai_confidence \
+             FROM article WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|r| ArticleRow {
+            id: r.get("id"),
+            title: r.get("title"),
+            authors: r.get("authors"),
+            year: r.get("year"),
+            journal: r.get("journal"),
+            abstract_text: r.get("abstract_text"),
+            doi: r.get("doi"),
+            url: r.get("url"),
+            source_databases: r.get("source_databases"),
+            status: r.get("status"),
+            dedup_group_id: r.get("dedup_group_id"),
+            exclusion_criterion: r.get("exclusion_criterion"),
+            created_at: r.get("created_at"),
+            screened_at: r.get("screened_at"),
+            ai_rationale: r.get("ai_rationale"),
+            ai_confidence: r.get("ai_confidence"),
+        }))
+    }
+
     pub async fn list_articles_for_dedup(&self) -> Result<Vec<crate::dedup::DedupCandidate>> {
         let rows = sqlx::query(
             "SELECT id, title, year, doi, authors, journal FROM article \

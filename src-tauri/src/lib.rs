@@ -2729,37 +2729,58 @@ async fn ask_article(args: AskArticleArgs, state: State<'_, AppState>) -> Result
         .ok_or("embedding model returned no vectors")?;
 
     let all = db.embedded_chunks_for_article(args.article_id).await.map_err(err)?;
-    if all.is_empty() {
-        return Err("This article has no indexed chunks. Build the RAG index first.".into());
-    }
-    let scored = vector::top_k(
-        all.into_iter()
-            .map(|(id, art_id, title, ci, text, bytes)| {
-                ((id, art_id, title, ci, text), vector::bytes_to_f32s(&bytes))
-            })
-            .collect(),
-        &q_emb,
-        6,
-    );
+    let (context, citations) = if all.is_empty() {
+        // No indexed chunks — fall back to the article's title + abstract.
+        let article = db
+            .get_article_by_id(args.article_id)
+            .await
+            .map_err(err)?
+            .ok_or("article not found")?;
+        let abstract_text = article.abstract_text.as_deref().unwrap_or("(no abstract recorded for this article)");
+        let context = format!(
+            "Title: {}\n\nAbstract: {}\n\n[Note: this article has not been indexed. Only title and abstract are available — full text is not in scope for this answer.]",
+            article.title,
+            abstract_text,
+        );
+        let citations = vec![AskCitation {
+            article_id: args.article_id,
+            article_title: article.title.clone(),
+            chunk_index: 0,
+            text: format!("(title + abstract only) {}", abstract_text),
+            score: 1.0,
+        }];
+        (context, citations)
+    } else {
+        let scored = vector::top_k(
+            all.into_iter()
+                .map(|(id, art_id, title, ci, text, bytes)| {
+                    ((id, art_id, title, ci, text), vector::bytes_to_f32s(&bytes))
+                })
+                .collect(),
+            &q_emb,
+            6,
+        );
 
-    let mut context = String::new();
-    let mut citations = Vec::new();
-    for (i, s) in scored.iter().enumerate() {
-        let (id, art_id, title, ci, text) = &s.item;
-        context.push_str(&format!(
-            "[{}] (chunk {ci}, score {:.2})\n{text}\n\n",
-            i + 1,
-            s.score,
-        ));
-        citations.push(AskCitation {
-            article_id: *art_id,
-            article_title: title.clone(),
-            chunk_index: *ci,
-            text: text.clone(),
-            score: s.score,
-        });
-        let _ = id;
-    }
+        let mut context = String::new();
+        let mut citations = Vec::new();
+        for (i, s) in scored.iter().enumerate() {
+            let (id, art_id, title, ci, text) = &s.item;
+            context.push_str(&format!(
+                "[{}] (chunk {ci}, score {:.2})\n{text}\n\n",
+                i + 1,
+                s.score,
+            ));
+            citations.push(AskCitation {
+                article_id: *art_id,
+                article_title: title.clone(),
+                chunk_index: *ci,
+                text: text.clone(),
+                score: s.score,
+            });
+            let _ = id;
+        }
+        (context, citations)
+    };
 
     let system = "You are a senior academic colleague who has read excerpts of a paper and is helping a fellow researcher understand it. \
 Speak like a knowledgeable peer — direct, clear, substantive. Never hedge unless the information genuinely is not there. \
