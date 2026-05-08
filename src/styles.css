@@ -62,8 +62,20 @@
   --color-accent-800: #92400e;
 
   /* Status colors — desaturated to coexist with paper */
+  --color-ok-50:     #ecf3ed;
+  --color-ok-100:    #d6e6d8;
+  --color-ok-200:    #a9c7ad;
+  --color-ok-300:    #7ea884;
   --color-ok-500:    #4f7a55;
+  --color-ok-600:    #3f6244;
+  --color-ok-700:    #2f4a33;
+  --color-warn-50:   #fbf3df;
+  --color-warn-100:  #f6e3b6;
+  --color-warn-200:  #ecc875;
+  --color-warn-300:  #d6ac4c;
   --color-warn-500:  #b08a2e;
+  --color-warn-600:  #8a6d24;
+  --color-warn-700:  #65501a;
   --color-error-500: #a64141;
 
   /* Radius — generally generous; this is a calm interface */
