@@ -803,7 +803,7 @@ export const api = {
     return invoke<number>("apply_quality_exclusions", { args });
   },
   runPurification() {
-    return invoke<number>("run_purification");
+    return invoke<{ excluded_year: number; excluded_quality: number }>("run_purification");
   },
   openBrowserPanel(url: string, x: number, y: number, width: number, height: number, sourceDatabase: string) {
     return invoke<void>("open_browser_panel", { url, x, y, width, height, sourceDatabase });

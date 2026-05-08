@@ -2294,16 +2294,19 @@ async fn apply_quality_exclusions(
 }
 
 #[tauri::command]
-async fn run_purification(state: State<'_, AppState>) -> Result<i64, String> {
+async fn run_purification(state: State<'_, AppState>) -> Result<db::PurificationResult, String> {
     let db = state.current().await.ok_or("no project open")?;
-    let count = db.run_purification().await.map_err(err)?;
+    let result = db.run_purification().await.map_err(err)?;
     db.record_telemetry(
         "purification.executed",
-        &serde_json::json!({ "excluded_count": count }),
+        &serde_json::json!({
+            "excluded_year": result.excluded_year,
+            "excluded_quality": result.excluded_quality,
+        }),
     )
     .await
     .ok();
-    Ok(count)
+    Ok(result)
 }
 
 // ── Assessing stage commands ──────────────────────────────────────────────

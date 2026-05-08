@@ -47,7 +47,7 @@ export function CriteriaPanel({ project, onChanged }: Props) {
   const [reApplying, setReApplying] = useState(false);
 
   const [purifying, setPurifying] = useState(false);
-  const [purifyResult, setPurifyResult] = useState<number | null>(null);
+  const [purifyResult, setPurifyResult] = useState<{ excluded_year: number; excluded_quality: number } | null>(null);
 
   const reload = async () => {
     const c = await api.listCriteria();
@@ -151,10 +151,10 @@ export function CriteriaPanel({ project, onChanged }: Props) {
     setPurifying(true);
     setPurifyResult(null);
     try {
-      const count = await api.runPurification();
-      setPurifyResult(count);
+      const result = await api.runPurification();
+      setPurifyResult(result);
       onChanged();
-      setTimeout(() => setPurifyResult(null), 5000);
+      setTimeout(() => setPurifyResult(null), 6000);
     } finally {
       setPurifying(false);
     }
@@ -207,11 +207,28 @@ export function CriteriaPanel({ project, onChanged }: Props) {
             {purifying ? "Applying…" : "Run purification"}
           </button>
         </div>
-        {purifyResult !== null && (
-          <p className="mt-3 text-[12px] text-[var(--color-ok-700)]">
-            ✓ Excluded {purifyResult} article{purifyResult === 1 ? "" : "s"} for falling outside the search period.
-          </p>
-        )}
+        {purifyResult !== null && (() => {
+          const total = purifyResult.excluded_year + purifyResult.excluded_quality;
+          if (total === 0) {
+            return (
+              <p className="mt-3 text-[12px] text-[var(--color-paper-600)]">
+                No articles matched any auto-applicable criterion. (Set a search period or journal quality threshold to enable more rules.)
+              </p>
+            );
+          }
+          const parts: string[] = [];
+          if (purifyResult.excluded_year > 0) {
+            parts.push(`${purifyResult.excluded_year} for falling outside the search period`);
+          }
+          if (purifyResult.excluded_quality > 0) {
+            parts.push(`${purifyResult.excluded_quality} for failing the journal quality threshold`);
+          }
+          return (
+            <p className="mt-3 text-[12px] text-[var(--color-ok-700)]">
+              ✓ Excluded {total} article{total === 1 ? "" : "s"} — {parts.join(", ")}.
+            </p>
+          );
+        })()}
       </div>
 
       {/* ── Journal quality threshold ── */}
