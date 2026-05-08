@@ -668,10 +668,21 @@ function ScreeningCard({
           </>
         ) : (
           <>
-            <Button onClick={keep} variant="primary" size="sm" disabled={busy}>
-              <Check size={13} strokeWidth={2} />
+            <button
+              onClick={keep}
+              disabled={busy}
+              className={cn(
+                "inline-flex items-center gap-1.5 px-3.5 py-2 rounded-[var(--radius-sm)] text-[12px] font-semibold transition-paper",
+                "border border-[var(--color-ok-300)] bg-[var(--color-ok-50)] text-[var(--color-ok-700)]",
+                "hover:bg-[var(--color-ok-500)] hover:text-white hover:border-[var(--color-ok-500)]",
+                "active:bg-[var(--color-ok-700)] active:border-[var(--color-ok-700)]",
+                "disabled:opacity-50 disabled:cursor-not-allowed",
+              )}
+              title="Click to include this article in the corpus"
+            >
+              <Check size={13} strokeWidth={2.25} />
               Include
-            </Button>
+            </button>
             <span className="text-[11px] text-[var(--color-paper-500)] mx-2">or exclude with…</span>
             <div className="flex flex-wrap gap-1.5">
               {criteria.map((c) => (
@@ -679,7 +690,13 @@ function ScreeningCard({
                   key={c.id}
                   onClick={() => exclude(c.number)}
                   disabled={busy}
-                  className="px-2.5 py-1 text-[11px] rounded-full border border-[var(--color-paper-300)] bg-[var(--color-paper-50)] hover:bg-[var(--color-error-500)]/5 hover:border-[var(--color-error-500)]/40 hover:text-[var(--color-error-500)] text-[var(--color-paper-700)] transition-paper"
+                  className={cn(
+                    "px-2.5 py-1 text-[11px] rounded-full border transition-paper",
+                    "border-[var(--color-warn-300)] bg-[var(--color-warn-50)] text-[var(--color-warn-700)]",
+                    "hover:bg-[var(--color-warn-500)] hover:text-white hover:border-[var(--color-warn-500)]",
+                    "active:bg-[var(--color-warn-700)] active:border-[var(--color-warn-700)]",
+                    "disabled:opacity-50 disabled:cursor-not-allowed",
+                  )}
                   title={c.rationale ?? c.label}
                 >
                   #{c.number} {c.label}
