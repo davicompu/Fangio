@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { Brain, Database, Gauge, Radio, WifiOff } from "lucide-react";
-import { getVersion } from "@tauri-apps/api/app";
 import { cn } from "../lib/utils";
+import { useVersion } from "../lib/useVersion";
 
 interface StatusBarProps {
   serverReachable: boolean | null;
@@ -40,14 +40,6 @@ function Dot({ state }: { state: "ok" | "warn" | "error" | "idle" }) {
       )}
     </span>
   );
-}
-
-function useVersion() {
-  const [version, setVersion] = useState<string | null>(null);
-  useEffect(() => {
-    getVersion().then(setVersion).catch(() => {});
-  }, []);
-  return version;
 }
 
 function useClock() {
