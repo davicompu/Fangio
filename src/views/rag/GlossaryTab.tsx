@@ -1,22 +1,49 @@
 import { useCallback, useEffect, useState } from "react";
-import { listen } from "@tauri-apps/api/event";
-import { BookOpen, Loader2, RefreshCw, Search, Trash2, X } from "lucide-react";
-import { api, type GlossaryProgress, type GlossaryTerm } from "../../lib/api";
+import { BookOpen, Loader2, Plus, RefreshCw, Search, Trash2, X } from "lucide-react";
+import { api, type ArticleRow, type GlossaryTerm } from "../../lib/api";
+import { startGlossaryExtract, useGlossaryTask } from "../../lib/bgTasks";
 
 export function GlossaryTab() {
   const [terms, setTerms] = useState<GlossaryTerm[]>([]);
   const [loading, setLoading] = useState(false);
-  const [extracting, setExtracting] = useState(false);
-  const [progress, setProgress] = useState<GlossaryProgress | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const task = useGlossaryTask();
+  const extracting = task.running;
+  const progress = task.progress;
+  // Local error state — for non-extract failures like deletes. Extraction
+  // errors come from the bg task store and we surface whichever is freshest.
+  const [localError, setLocalError] = useState<string | null>(null);
+  const error = task.error || localError;
   const [query, setQuery] = useState("");
   const [expandedId, setExpandedId] = useState<number | null>(null);
+  const [articlesById, setArticlesById] = useState<Map<number, ArticleRow>>(new Map());
+  const [pdfPaths, setPdfPaths] = useState<Map<number, string>>(new Map());
+  // termId of the row whose article-list popover is open. Independent from
+  // `expandedId` so the user can peek at sources without expanding the
+  // definition (and vice versa).
+  const [openArticlesFor, setOpenArticlesFor] = useState<number | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const t = await api.listGlossaryTerms();
+      const [t, arts] = await Promise.all([
+        api.listGlossaryTerms(),
+        api.listArticles().catch(() => [] as ArticleRow[]),
+      ]);
       setTerms(t);
+      setArticlesById(new Map(arts.map((a) => [a.id, a])));
+      // Look up which articles have PDFs so the title can be a link.
+      if (arts.length > 0) {
+        api
+          .pdfPathsForArticles(arts.map((a) => a.id))
+          .then((map) => {
+            const next = new Map<number, string>();
+            for (const [k, v] of Object.entries(map)) {
+              next.set(Number(k), v);
+            }
+            setPdfPaths(next);
+          })
+          .catch(() => setPdfPaths(new Map()));
+      }
     } catch {
       // ignore
     } finally {
@@ -26,26 +53,17 @@ export function GlossaryTab() {
 
   useEffect(() => { load(); }, [load]);
 
-  const extract = useCallback(async () => {
-    setExtracting(true);
-    setError(null);
-    setProgress(null);
+  const extract = useCallback((mode: "rebuild" | "update") => {
+    startGlossaryExtract(mode);
+  }, []);
 
-    const unlisten = await listen<GlossaryProgress>("glossary:progress", (e) => {
-      setProgress(e.payload);
-    });
-
-    try {
-      await api.extractGlossary();
-      await load();
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      unlisten();
-      setExtracting(false);
-      setProgress(null);
+  // Reload the term list whenever an extraction run finishes, regardless of
+  // whether the user was on this tab when it completed.
+  useEffect(() => {
+    if (task.finishedAt) {
+      void load();
     }
-  }, [load]);
+  }, [task.finishedAt, load]);
 
   const deleteTerm = async (id: number) => {
     try {
@@ -53,14 +71,21 @@ export function GlossaryTab() {
       setTerms((prev) => prev.filter((t) => t.id !== id));
       if (expandedId === id) setExpandedId(null);
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : String(e));
+      setLocalError(e instanceof Error ? e.message : String(e));
     }
   };
 
-  const filtered = terms.filter((t) =>
-    t.term.toLowerCase().includes(query.toLowerCase()) ||
-    t.definition.toLowerCase().includes(query.toLowerCase()),
-  );
+  const filtered = terms.filter((t) => {
+    const q = query.toLowerCase();
+    if (t.term.toLowerCase().includes(q)) return true;
+    if (t.definition.toLowerCase().includes(q)) return true;
+    try {
+      const aliases: string[] = JSON.parse(t.aliases || "[]");
+      return aliases.some((a) => a.toLowerCase().includes(q));
+    } catch {
+      return false;
+    }
+  });
 
   return (
     <div className="h-full flex flex-col">
@@ -83,10 +108,24 @@ export function GlossaryTab() {
         <span className="text-[11px] text-[var(--color-paper-400)] shrink-0">
           {terms.length} term{terms.length !== 1 ? "s" : ""}
         </span>
+        {terms.length > 0 && (
+          <button
+            onClick={() => extract("update")}
+            disabled={extracting}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-[var(--radius-sm)] bg-white border border-[var(--color-paper-300)] text-[var(--color-ink-800)] text-[11px] font-semibold hover:bg-[var(--color-paper-100)] disabled:opacity-50 transition-paper shrink-0"
+            title="Extract terms only for articles not yet processed"
+          >
+            {extracting
+              ? <Loader2 size={11} className="animate-spin" />
+              : <Plus size={11} strokeWidth={2.25} />}
+            Update
+          </button>
+        )}
         <button
-          onClick={extract}
+          onClick={() => extract("rebuild")}
           disabled={extracting}
           className="flex items-center gap-1.5 px-3 py-1.5 rounded-[var(--radius-sm)] bg-[var(--color-ink-800)] text-white text-[11px] font-semibold hover:bg-[var(--color-ink-700)] disabled:opacity-50 transition-paper shrink-0"
+          title={terms.length > 0 ? "Discard everything and rebuild from scratch" : "Run the first extraction"}
         >
           {extracting
             ? <Loader2 size={11} className="animate-spin" />
@@ -120,7 +159,7 @@ export function GlossaryTab() {
       )}
 
       {/* Term list */}
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 overflow-y-auto pb-12">
         {loading && (
           <div className="flex items-center justify-center py-16">
             <Loader2 size={20} className="animate-spin text-[var(--color-paper-400)]" />
@@ -151,22 +190,92 @@ export function GlossaryTab() {
               })();
               const isExpanded = expandedId === term.id;
 
+              const articleIds: number[] = (() => {
+                try { return JSON.parse(term.article_ids); } catch { return []; }
+              })();
+              const sources: ArticleRow[] = articleIds
+                .map((id) => articlesById.get(id))
+                .filter((a): a is ArticleRow => !!a);
+              const isShowingSources = openArticlesFor === term.id;
               return (
                 <div key={term.id} className="group px-5 py-3 hover:bg-[var(--color-paper-50)] transition-paper">
                   <div className="flex items-start gap-2">
-                    <div
-                      className="flex-1 min-w-0 cursor-pointer"
-                      onClick={() => setExpandedId(isExpanded ? null : term.id)}
-                    >
-                      <div className="flex items-center gap-2 mb-0.5">
-                        <span className="text-[13px] font-semibold text-[var(--color-ink-900)]">{term.term}</span>
-                        <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-[var(--color-paper-100)] text-[var(--color-paper-500)]">
-                          {articleCount} article{articleCount !== 1 ? "s" : ""}
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 mb-0.5 flex-wrap">
+                        <span
+                          className="text-[13px] font-semibold text-[var(--color-ink-900)] cursor-pointer"
+                          onClick={() => setExpandedId(isExpanded ? null : term.id)}
+                        >
+                          {term.term}
                         </span>
+                        {(() => {
+                          let aliases: string[] = [];
+                          try { aliases = JSON.parse(term.aliases || "[]"); } catch { /* noop */ }
+                          if (aliases.length === 0) return null;
+                          return (
+                            <span className="text-[11px] text-[var(--color-paper-500)] italic">
+                              also known as {aliases.join(", ")}
+                            </span>
+                          );
+                        })()}
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setOpenArticlesFor(isShowingSources ? null : term.id);
+                          }}
+                          className={
+                            "text-[10px] font-medium px-1.5 py-0.5 rounded-full transition-paper " +
+                            (isShowingSources
+                              ? "bg-[var(--color-accent-100)] text-[var(--color-accent-700)]"
+                              : "bg-[var(--color-paper-100)] text-[var(--color-paper-500)] hover:bg-[var(--color-paper-200)] hover:text-[var(--color-ink-700)]")
+                          }
+                          title="Show source articles"
+                        >
+                          {articleCount} article{articleCount !== 1 ? "s" : ""}
+                        </button>
                       </div>
-                      <p className={`text-[12px] text-[var(--color-paper-600)] leading-relaxed ${isExpanded ? "" : "line-clamp-2"}`}>
+                      <p
+                        className={`text-[12px] text-[var(--color-paper-600)] leading-relaxed cursor-pointer ${isExpanded ? "" : "line-clamp-2"}`}
+                        onClick={() => setExpandedId(isExpanded ? null : term.id)}
+                      >
                         {term.definition}
                       </p>
+                      {isShowingSources && (
+                        <div className="mt-2 rounded-[var(--radius-xs)] border border-[var(--color-paper-200)] bg-white divide-y divide-[var(--color-paper-100)]">
+                          {sources.length === 0 ? (
+                            <p className="px-3 py-2 text-[11px] text-[var(--color-paper-400)] italic">
+                              {articleIds.length} source{articleIds.length === 1 ? "" : "s"} recorded but no matching article found in the project.
+                            </p>
+                          ) : (
+                            sources.map((a) => {
+                              const pdfPath = pdfPaths.get(a.id);
+                              return (
+                                <div key={a.id} className="px-3 py-2 text-[12px]">
+                                  {pdfPath ? (
+                                    <button
+                                      type="button"
+                                      onClick={() => api.openPdfPath(pdfPath).catch(() => {})}
+                                      className="font-medium text-[var(--color-accent-700)] hover:text-[var(--color-accent-800)] hover:underline leading-snug text-left"
+                                      title={`Open ${pdfPath.split("/").pop() ?? "PDF"}`}
+                                    >
+                                      {a.title}
+                                    </button>
+                                  ) : (
+                                    <div className="font-medium text-[var(--color-ink-800)] leading-snug">{a.title}</div>
+                                  )}
+                                  <div className="text-[11px] text-[var(--color-paper-500)] mt-0.5">
+                                    {[a.authors, a.year, a.journal].filter(Boolean).join(" · ") || "—"}
+                                    {!pdfPath && (
+                                      <span className="ml-2 italic text-[var(--color-paper-400)]">no PDF attached</span>
+                                    )}
+                                  </div>
+                                </div>
+                              );
+                            })
+                          )}
+                        </div>
+                      )}
                     </div>
                     <button
                       onClick={() => deleteTerm(term.id)}

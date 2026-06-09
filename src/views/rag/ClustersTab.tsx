@@ -1,5 +1,4 @@
-import { useCallback, useState } from "react";
-import { listen } from "@tauri-apps/api/event";
+import { useEffect } from "react";
 import {
   ReactFlow,
   Background,
@@ -14,7 +13,8 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { Loader2, Network, RefreshCw } from "lucide-react";
-import { api, type ClusterArticle, type ClusterNode, type ClusterProgress } from "../../lib/api";
+import { type ClusterArticle, type ClusterNode } from "../../lib/api";
+import { startClusterBuild, useClusterTask } from "../../lib/bgTasks";
 
 // ── Custom node types ─────────────────────────────────────────────────────────
 
@@ -134,33 +134,25 @@ function buildGraph(clusters: ClusterNode[]): { nodes: Node[]; edges: Edge[] } {
 export function ClustersTab() {
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
-  const [loading, setLoading] = useState(false);
-  const [progress, setProgress] = useState<ClusterProgress | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [hasData, setHasData] = useState(false);
+  const task = useClusterTask();
+  const loading = task.running;
+  const progress = task.progress;
+  const error = task.error;
+  const hasData = nodes.length > 0;
 
-  const run = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    setProgress(null);
-
-    const unlisten = await listen<ClusterProgress>("clusters:progress", (e) => {
-      setProgress(e.payload);
-    });
-
-    try {
-      const clusters = await api.clusterCorpus();
-      const { nodes: n, edges: e } = buildGraph(clusters);
+  // Whenever a fresh result lands in the store (whether the user kicked it
+  // off from this tab or the run completed while they were elsewhere),
+  // rebuild the graph. The dependency on `task.finishedAt` makes sure we
+  // only react to actual completions, not every store update.
+  useEffect(() => {
+    if (task.result) {
+      const { nodes: n, edges: e } = buildGraph(task.result);
       setNodes(n);
       setEdges(e);
-      setHasData(true);
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      unlisten();
-      setLoading(false);
     }
-  }, [setNodes, setEdges]);
+  }, [task.finishedAt, task.result, setNodes, setEdges]);
+
+  const run = () => startClusterBuild();
 
   if (!hasData && !loading) {
     return (

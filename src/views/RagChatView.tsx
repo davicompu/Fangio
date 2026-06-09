@@ -1,22 +1,23 @@
 import { useState } from "react";
-import { motion, AnimatePresence } from "framer-motion";
-import { ArrowLeft, MessageSquare, Network, BookOpen } from "lucide-react";
+import { ArrowLeft, MessageSquare, Network, BookOpen, Share2 } from "lucide-react";
 import { cn } from "../lib/utils";
 import { ChatTab } from "./rag/ChatTab";
 import { ClustersTab } from "./rag/ClustersTab";
 import { GlossaryTab } from "./rag/GlossaryTab";
+import { ConceptMapTab } from "./rag/ConceptMapTab";
 
 interface Props {
   onBack: () => void;
   onOpenSettings: () => void;
 }
 
-type Tab = "chat" | "clusters" | "glossary";
+type Tab = "chat" | "clusters" | "glossary" | "map";
 
 const TABS: { id: Tab; label: string; Icon: React.ElementType }[] = [
-  { id: "chat",     label: "Chat",     Icon: MessageSquare },
-  { id: "clusters", label: "Clusters", Icon: Network },
-  { id: "glossary", label: "Glossary", Icon: BookOpen },
+  { id: "chat",     label: "Chat",         Icon: MessageSquare },
+  { id: "clusters", label: "Clusters",     Icon: Network },
+  { id: "glossary", label: "Glossary",     Icon: BookOpen },
+  { id: "map",      label: "Concept map",  Icon: Share2 },
 ];
 
 export function RagChatView({ onBack, onOpenSettings }: Props) {
@@ -55,24 +56,26 @@ export function RagChatView({ onBack, onOpenSettings }: Props) {
       </div>
 
       {/* ── Tab content ── */}
-      <div className="flex-1 min-h-0">
-        <AnimatePresence mode="wait">
-          {tab === "chat" && (
-            <motion.div key="chat" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.15 }} className="h-full">
-              <ChatTab onOpenSettings={onOpenSettings} />
-            </motion.div>
-          )}
-          {tab === "clusters" && (
-            <motion.div key="clusters" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.15 }} className="h-full">
-              <ClustersTab />
-            </motion.div>
-          )}
-          {tab === "glossary" && (
-            <motion.div key="glossary" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.15 }} className="h-full">
-              <GlossaryTab />
-            </motion.div>
-          )}
-        </AnimatePresence>
+      {/*
+        All four tabs stay mounted so that long-running work (cluster build,
+        glossary extract, concept-map layout, in-flight chat questions)
+        continues even when the user switches tabs. We use display:none on
+        the inactive tabs rather than unmounting them. State is preserved
+        on switch.
+      */}
+      <div className="flex-1 min-h-0 relative">
+        <div className={cn("absolute inset-0", tab === "chat" ? "" : "hidden")}>
+          <ChatTab onOpenSettings={onOpenSettings} />
+        </div>
+        <div className={cn("absolute inset-0", tab === "clusters" ? "" : "hidden")}>
+          <ClustersTab />
+        </div>
+        <div className={cn("absolute inset-0", tab === "glossary" ? "" : "hidden")}>
+          <GlossaryTab />
+        </div>
+        <div className={cn("absolute inset-0", tab === "map" ? "" : "hidden")}>
+          <ConceptMapTab />
+        </div>
       </div>
     </div>
   );

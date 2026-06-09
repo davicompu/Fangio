@@ -1,5 +1,4 @@
 import { useState, useEffect, useRef } from "react";
-import { listen } from "@tauri-apps/api/event";
 import { motion, AnimatePresence } from "framer-motion";
 import { Markdown } from "../../components/Markdown";
 import {
@@ -14,8 +13,9 @@ import {
   Settings as SettingsIcon,
   Sparkles,
 } from "lucide-react";
-import { api, type AskCitation, type BuildRagProgress, type RagStatus } from "../../lib/api";
+import { api, type AskCitation, type RagStatus } from "../../lib/api";
 import { cn } from "../../lib/utils";
+import { startRagBuild, useRagBuildTask } from "../../lib/bgTasks";
 
 interface Props {
   onOpenSettings: () => void;
@@ -28,14 +28,34 @@ interface ChatMessage {
   model?: string | null;
 }
 
+// In-memory cache of the chat session. Persists across mount/unmount of the
+// RAG view so the user's conversation survives navigating away and back.
+// Cleared only when the app is closed (no localStorage by design — chat
+// content can be sensitive and shouldn't sit on disk).
+let chatSessionCache: { messages: ChatMessage[]; input: string } = { messages: [], input: "" };
+
 export function ChatTab({ onOpenSettings }: Props) {
   const [status, setStatus] = useState<RagStatus | null>(null);
-  const [building, setBuilding] = useState(false);
-  const [progress, setProgress] = useState<BuildRagProgress | null>(null);
-  const [buildError, setBuildError] = useState<string | null>(null);
+  const buildTask = useRagBuildTask();
+  const building = buildTask.running;
+  const progress = buildTask.progress;
+  // Friendlier error mapping happens here rather than in the store so the
+  // raw backend message is still available to anyone else subscribing.
+  const buildError = (() => {
+    const msg = buildTask.error;
+    if (!msg) return null;
+    if (msg.includes("embedding model")) return "Pick an embedding model in Settings → AI models first.";
+    if (msg.includes("Connection refused") || msg.includes("error sending request"))
+      return "Could not reach LM Studio — make sure it's running.";
+    return msg;
+  })();
   const [confirmForceRebuild, setConfirmForceRebuild] = useState(false);
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [input, setInput] = useState("");
+  const [messages, setMessages] = useState<ChatMessage[]>(() => chatSessionCache.messages);
+  const [input, setInput] = useState(() => chatSessionCache.input);
+  // Mirror the live state into the module-level cache on every change so a
+  // remount picks up the latest history. (Cheap — message arrays are tiny.)
+  useEffect(() => { chatSessionCache.messages = messages; }, [messages]);
+  useEffect(() => { chatSessionCache.input = input; }, [input]);
   const [asking, setAsking] = useState(false);
   const [askError, setAskError] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -58,33 +78,19 @@ export function ChatTab({ onOpenSettings }: Props) {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, asking]);
 
-  const handleBuild = async () => {
-    setBuildError(null);
-    setBuilding(true);
-    setProgress(null);
-
-    const unlisten = await listen<BuildRagProgress>("rag:progress", (e) => {
-      setProgress(e.payload);
-    });
-
-    try {
-      await api.buildRagIndex();
-      await loadStatus();
-    } catch (e: any) {
-      const msg: string = e?.message ?? String(e);
-      setBuildError(
-        msg.includes("embedding model")
-          ? "Pick an embedding model in Settings → AI models first."
-          : msg.includes("Connection refused") || msg.includes("error sending request")
-          ? "Could not reach LM Studio — make sure it's running."
-          : msg,
-      );
-    } finally {
-      unlisten();
-      setBuilding(false);
-      setProgress(null);
-    }
+  const handleBuild = () => {
+    startRagBuild();
   };
+
+  // Refresh status whenever a build run finishes (regardless of which view
+  // the user is currently on).
+  useEffect(() => {
+    if (buildTask.finishedAt) {
+      void loadStatus();
+    }
+    // loadStatus is stable for our purposes; intentionally not in deps.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [buildTask.finishedAt]);
 
   const handleAsk = async () => {
     const q = input.trim();
@@ -107,13 +113,15 @@ export function ChatTab({ onOpenSettings }: Props) {
     } catch (e: any) {
       const msg: string = e?.message ?? String(e);
       setAskError(
-        msg.includes("chat model") || msg.includes("embedding model")
-          ? "Set both a chat model and an embedding model in Settings → AI models."
+        msg.includes("Set both a reasoning model")
+          ? "Set both a reasoning model and an embedding model in Settings → AI models."
           : msg.includes("No embedded chunks")
           ? "Build the index first — no embedded documents yet."
+          : msg.includes("may not be loaded in LM Studio")
+          ? msg.replace(/^Error\s*:?\s*/i, "")
           : msg.includes("Connection refused") || msg.includes("error sending request")
           ? "Could not reach LM Studio — make sure it's running."
-          : "Unexpected error — try again.",
+          : msg || "Unexpected error — try again.",
       );
     } finally {
       setAsking(false);

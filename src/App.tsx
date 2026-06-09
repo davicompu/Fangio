@@ -43,6 +43,18 @@ function App() {
     }
   }, [settingsOpen]);
 
+  // Register Tauri progress listeners for the long-running RAG operations
+  // ONCE at App level, so cluster build / glossary extract / index build
+  // continue updating the global bgTasks store even when the user navigates
+  // away from "Ask the Literature".
+  useEffect(() => {
+    let unlisteners: (() => void)[] = [];
+    import("./lib/bgTasks").then(({ bootstrapBgTaskListeners }) => {
+      bootstrapBgTaskListeners().then((fns) => { unlisteners = fns; }).catch(() => {});
+    });
+    return () => { for (const fn of unlisteners) fn(); };
+  }, []);
+
   // Belt-and-suspenders JS drag — handles cases where CSS -webkit-app-region
   // is stripped by the CSS processor or not honoured by WKWebView.
   useEffect(() => {
