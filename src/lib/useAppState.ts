@@ -19,15 +19,31 @@ export const DEFAULT_DATABASES: DatabaseEntry[] = [
   { id: "sciencedirect",label: "ScienceDirect",                 note: "Elsevier journals",                                  url: "" },
 ];
 
+export interface LmEndpoint {
+  name: string;
+  base_url: string;
+  api_key: string;
+}
+
 export interface AppSettings {
   "lmstudio.base_url": string;
   "lmstudio.api_key": string;
+  /** Saved endpoint profiles — switching writes the chosen one back into base_url + api_key. */
+  "lmstudio.endpoints": LmEndpoint[];
+  /** Name of the active endpoint in `lmstudio.endpoints`. */
+  "lmstudio.active_endpoint": string;
   "lmstudio.chat_model": string;
   "lmstudio.embed_model": string;
   "telemetry.enabled": boolean;
   "telemetry.log_reasoning": boolean;
   /** AI screening confidence threshold 0–1; decisions below this are flagged for manual review */
   "screening.confidence_threshold": number;
+  /** Sampling temperature for AI judgment calls (screening, coding). 0 = deterministic. */
+  "temperature.decisions": number;
+  /** Sampling temperature for AI suggestions (boolean query, onboarding assistant, code suggestions). */
+  "temperature.suggestions": number;
+  /** Sampling temperature for AI Q&A / synthesis (Ask the paper, Ask the corpus). */
+  "temperature.qa": number;
   /** Full database configuration — replaces the old per-database.*.url keys */
   "databases.config": DatabaseEntry[];
   /** Rater profiles for dual-rater AI screening and coding */
@@ -38,11 +54,16 @@ export interface AppSettings {
 const DEFAULTS: AppSettings = {
   "lmstudio.base_url": "http://127.0.0.1:1234/v1",
   "lmstudio.api_key": "",
+  "lmstudio.endpoints": [],
+  "lmstudio.active_endpoint": "",
   "lmstudio.chat_model": "google/gemma-4-e2b",
   "lmstudio.embed_model": "text-embedding-embeddinggemma-300m-qat",
   "telemetry.enabled": true,
   "telemetry.log_reasoning": false,
   "screening.confidence_threshold": 0.9,
+  "temperature.decisions": 0.0,
+  "temperature.suggestions": 0.3,
+  "temperature.qa": 0.2,
   "databases.config": DEFAULT_DATABASES,
   "ai_raters.rater1.profile": "",
   "ai_raters.rater2.profile": "",

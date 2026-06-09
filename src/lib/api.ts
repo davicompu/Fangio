@@ -352,6 +352,8 @@ export interface GlossaryTerm {
   definition: string;
   /** JSON string like "[1,3,7]" */
   article_ids: string;
+  /** JSON string like '["CT","CRT"]' — alternate spellings/abbreviations. */
+  aliases: string;
   created_at: string;
   updated_at: string;
 }
@@ -569,6 +571,10 @@ export const api = {
   openPdfPath(path: string) {
     return invoke<void>("open_pdf_path", { path });
   },
+  /** Returns a record of `articleId → absolute pdf path` for the given IDs. Articles without a PDF are absent from the map. */
+  pdfPathsForArticles(ids: number[]) {
+    return invoke<Record<number, string>>("pdf_paths_for_articles", { ids });
+  },
   saveCoding(args: {
     article_id: number;
     dimension: string;
@@ -653,7 +659,10 @@ export const api = {
   resumeAiCoding() { return invoke<void>("resume_ai_coding"); },
   cancelAiCoding() { return invoke<void>("cancel_ai_coding"); },
   clusterCorpus() { return invoke<ClusterNode[]>("cluster_corpus"); },
-  extractGlossary() { return invoke<number>("extract_glossary"); },
+  /** mode "rebuild" (default) clears and re-extracts everything; "update" only adds terms from articles not yet covered. */
+  extractGlossary(mode: "rebuild" | "update" = "rebuild") {
+    return invoke<number>("extract_glossary", { mode });
+  },
   listGlossaryTerms() { return invoke<GlossaryTerm[]>("list_glossary_terms"); },
   deleteGlossaryTerm(id: number) { return invoke<void>("delete_glossary_term", { id }); },
   getAiCodingCoverage() {
@@ -785,6 +794,10 @@ export const api = {
   },
   exportPrismaSvg() {
     return invoke<string>("export_prisma_svg");
+  },
+  /** Returns the PRISMA SVG as a string for in-browser preview / download. */
+  getPrismaSvg() {
+    return invoke<string>("get_prisma_svg");
   },
   saveDraft(content: string) {
     return invoke<string>("save_draft", { args: { content } });

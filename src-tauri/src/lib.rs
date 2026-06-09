@@ -77,12 +77,64 @@ fn err<E: std::fmt::Display>(e: E) -> String {
     e.to_string()
 }
 
+/// Trim a user-supplied question and reject it if empty. Shared by the
+/// `ask_corpus` / `ask_article` commands so the rule stays in one place.
+fn validate_question(raw: &str) -> Result<&str, String> {
+    let q = raw.trim();
+    if q.is_empty() {
+        return Err("Type a question first.".into());
+    }
+    Ok(q)
+}
+
 fn load_temperature(settings: &serde_json::Value, key: &str, default: f32) -> f32 {
     settings
         .get(key)
         .and_then(|v| v.as_f64())
         .map(|f| f.clamp(0.0, 2.0) as f32)
         .unwrap_or(default)
+}
+
+/// Detect obvious greetings / courtesies so `ask_corpus` can skip retrieval
+/// for messages like "hi" or "thanks" that aren't real corpus questions.
+fn is_smalltalk(question: &str) -> bool {
+    let q = question.trim().to_lowercase();
+    let q = q.trim_end_matches(|c: char| matches!(c, '.' | '?' | '!' | ',' | ' '));
+    matches!(
+        q,
+        "hi" | "hii" | "hiii" | "hello" | "hey" | "heyy" | "yo" | "howdy" | "sup"
+            | "thanks" | "thank you" | "ty" | "thx" | "cheers"
+            | "ok" | "okay" | "k" | "kk" | "cool" | "nice" | "great" | "awesome"
+            | "bye" | "goodbye" | "see you" | "cya" | "later"
+            | "test" | "testing" | "ping"
+    ) || q.starts_with("how are you")
+        || q.starts_with("what's up")
+        || q.starts_with("whats up")
+        || q.starts_with("good morning")
+        || q.starts_with("good afternoon")
+        || q.starts_with("good evening")
+        || q.starts_with("good night")
+}
+
+#[cfg(test)]
+mod smalltalk_tests {
+    use super::is_smalltalk;
+
+    #[test]
+    fn detects_greetings() {
+        assert!(is_smalltalk("hi"));
+        assert!(is_smalltalk("Hello!"));
+        assert!(is_smalltalk("Good morning"));
+        assert!(is_smalltalk("how are you?"));
+        assert!(is_smalltalk("thanks"));
+    }
+
+    #[test]
+    fn ignores_real_questions() {
+        assert!(!is_smalltalk("Tell me about cognitive presence"));
+        assert!(!is_smalltalk("What does the literature say about AI tutoring?"));
+        assert!(!is_smalltalk("hi can you summarise paper 3"));
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -753,6 +805,18 @@ async fn list_coding_batch(
     let codings = db.list_codings_for_articles(&ids).await.map_err(err)?;
     let pdf_map = db.get_pdf_paths_for_articles(&ids).await.map_err(err)?;
     Ok(CodingBatchResult { articles, codings, pdf_map })
+}
+
+/// Look up PDF paths for a batch of article IDs. Returns a map of article id
+/// → absolute pdf path. Articles without an attached PDF are simply absent
+/// from the map.
+#[tauri::command]
+async fn pdf_paths_for_articles(
+    ids: Vec<i64>,
+    state: State<'_, AppState>,
+) -> Result<std::collections::HashMap<i64, String>, String> {
+    let db = state.current().await.ok_or("no project open")?;
+    db.get_pdf_paths_for_articles(&ids).await.map_err(err)
 }
 
 /// Open a file with the system default application (macOS `open` command).
@@ -1743,7 +1807,7 @@ async fn run_ai_screening(
         .unwrap_or("google/gemma-4-e2b")
         .to_string();
     if model.is_empty() {
-        return Err("Pick a chat model in Settings first.".into());
+        return Err("Pick a reasoning model in Settings first.".into());
     }
     let threshold: f64 = settings
         .get("screening.confidence_threshold")
@@ -2086,7 +2150,7 @@ async fn suggest_codes(
         .unwrap_or("google/gemma-4-e2b")
         .to_string();
     if model.is_empty() {
-        return Err("Pick a chat model in Settings first.".into());
+        return Err("Pick a reasoning model in Settings first.".into());
     }
     let framework_str = project.framework.unwrap_or_default();
     let dim_hint = framework::description_for(&framework_str, &args.dimension);
@@ -2178,7 +2242,7 @@ async fn suggest_step(
         .unwrap_or("google/gemma-4-e2b")
         .to_string();
     if model.is_empty() {
-        return Err("Pick a chat model in Settings first.".into());
+        return Err("Pick a reasoning model in Settings first.".into());
     }
     let temperature = load_temperature(&settings, "temperature.suggestions", 0.4);
     let (suggestion, rationale) = suggest::suggest_step(
@@ -2228,7 +2292,7 @@ async fn suggest_step_questions(
         .unwrap_or("google/gemma-4-e2b")
         .to_string();
     if model.is_empty() {
-        return Err("Pick a chat model in Settings first.".into());
+        return Err("Pick a reasoning model in Settings first.".into());
     }
     let temperature = load_temperature(&settings, "temperature.suggestions", 0.4);
     let result = suggest::suggest_step_questions(
@@ -2282,7 +2346,7 @@ async fn suggest_boolean_query(
         .unwrap_or("google/gemma-4-e2b")
         .to_string();
     if model.is_empty() {
-        return Err("Pick a chat model in Settings first.".into());
+        return Err("Pick a reasoning model in Settings first.".into());
     }
     let temperature = load_temperature(&settings, "temperature.suggestions", 0.3);
     let result = suggest::suggest_query(
@@ -2695,19 +2759,46 @@ async fn delete_glossary_term(id: i64, state: State<'_, AppState>) -> Result<(),
     db.delete_glossary_term(id).await.map_err(err)
 }
 
+/// Glossary extraction strategy passed from the frontend (serde lowercase:
+/// `"rebuild"` / `"update"`).
+#[derive(serde::Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+enum GlossaryMode {
+    Rebuild,
+    Update,
+}
+
 #[tauri::command]
-async fn extract_glossary(app: tauri::AppHandle<tauri::Wry>, state: State<'_, AppState>) -> Result<usize, String> {
+async fn extract_glossary(
+    app: tauri::AppHandle<tauri::Wry>,
+    state: State<'_, AppState>,
+    mode: Option<GlossaryMode>,
+) -> Result<usize, String> {
+    // Rebuild (default) clears all terms first, Update only processes
+    // articles not yet covered by an existing term.
+    let mode = mode.unwrap_or(GlossaryMode::Rebuild);
     let db = state.current().await.ok_or("no project open")?;
     let settings = db.all_settings().await.map_err(err)?;
     let base_url = settings.get("lmstudio.base_url").and_then(|v| v.as_str()).unwrap_or("http://127.0.0.1:1234/v1").to_string();
     let api_key = settings.get("lmstudio.api_key").and_then(|v| v.as_str()).map(|s| s.to_string());
     let chat_model = settings.get("lmstudio.chat_model").and_then(|v| v.as_str()).unwrap_or("google/gemma-4-e2b").to_string();
 
-    db.clear_glossary().await.map_err(err)?;
+    if mode == GlossaryMode::Rebuild {
+        db.clear_glossary().await.map_err(err)?;
+    }
 
-    let articles = db.articles_with_chunks().await.map_err(err)?;
+    let mut articles = db.articles_with_chunks().await.map_err(err)?;
+    if mode == GlossaryMode::Update {
+        let already = db.glossary_covered_article_ids().await.map_err(err)?;
+        articles.retain(|(aid, _, _)| !already.contains(aid));
+    }
     let total = articles.len();
     if total == 0 {
+        if mode == GlossaryMode::Update {
+            // Nothing to do is not an error here — surface the current count.
+            let count = db.glossary_term_count().await.map_err(err)?;
+            return Ok(count as usize);
+        }
         return Err("No indexed articles. Index and embed PDFs first.".into());
     }
 
@@ -2769,6 +2860,11 @@ async fn extract_glossary(app: tauri::AppHandle<tauri::Wry>, state: State<'_, Ap
             }
         }
     }
+
+    // Collapse any cross-row aliases that survived the per-article inserts
+    // (e.g. one article wrote "CT" alone before another wrote "Critical
+    // Thinking (CT)"). Failures here aren't fatal — log-and-continue.
+    let _ = db.coalesce_glossary_aliases().await;
 
     let _ = app.emit("glossary:progress", GlossaryProgress {
         done: total,
@@ -2937,13 +3033,41 @@ async fn ask_corpus(args: AskArgs, state: State<'_, AppState>) -> Result<AskResu
         .unwrap_or("text-embedding-embeddinggemma-300m-qat")
         .to_string();
     if chat_model.is_empty() || embed_model.is_empty() {
-        return Err("Set both a chat model and an embedding model in Settings.".into());
+        return Err("Set both a reasoning model and an embedding model in Settings.".into());
     }
     let temperature = load_temperature(&settings, "temperature.qa", 0.2);
     let k = args.top_k.unwrap_or(6);
 
+    let question = validate_question(&args.question)?;
+
+    // Greetings / courtesies don't need retrieval. Skip the embed + RAG step
+    // and just have the model respond conversationally so "hi" doesn't return
+    // a citation list.
+    if is_smalltalk(question) {
+        let prompt = format!(
+            "You are a friendly research assistant for a systematic literature review tool. \
+             The user just said: \"{question}\". Respond warmly in one or two short sentences. \
+             Do NOT cite any sources. End by gently inviting them to ask a question about the literature corpus.",
+        );
+        let chat = lmstudio::chat(
+            &base_url,
+            &chat_model,
+            &[lmstudio::ChatMessage { role: "user".into(), content: prompt }],
+            Some(temperature),
+            api_key.as_deref(),
+        )
+        .await
+        .map_err(err)?;
+        return Ok(AskResult {
+            answer: chat.content,
+            citations: vec![],
+            model: chat.model,
+            embed_model,
+        });
+    }
+
     // Embed the question
-    let q_embeddings = lmstudio::embed(&base_url, &embed_model, &[args.question.as_str()], api_key.as_deref())
+    let q_embeddings = lmstudio::embed(&base_url, &embed_model, &[question], api_key.as_deref())
         .await
         .map_err(err)?;
     let q_emb = q_embeddings
@@ -3073,11 +3197,13 @@ async fn ask_article(args: AskArticleArgs, state: State<'_, AppState>) -> Result
         .unwrap_or("text-embedding-embeddinggemma-300m-qat")
         .to_string();
     if chat_model.is_empty() || embed_model.is_empty() {
-        return Err("Set both a chat model and an embedding model in Settings.".into());
+        return Err("Set both a reasoning model and an embedding model in Settings.".into());
     }
     let temperature = load_temperature(&settings, "temperature.qa", 0.2);
 
-    let q_embeddings = lmstudio::embed(&base_url, &embed_model, &[args.question.as_str()], api_key.as_deref())
+    let question = validate_question(&args.question)?;
+
+    let q_embeddings = lmstudio::embed(&base_url, &embed_model, &[question], api_key.as_deref())
         .await
         .map_err(err)?;
     let q_emb = q_embeddings
@@ -3420,6 +3546,17 @@ async fn export_prisma_svg(state: State<'_, AppState>) -> Result<String, String>
     Ok(path.to_string_lossy().into_owned())
 }
 
+/// Render the PRISMA SVG and return it as a string. Lets the frontend show a
+/// live preview AND drive a browser-side download (Save-As dialog) without
+/// touching the workspace directory.
+#[tauri::command]
+async fn get_prisma_svg(state: State<'_, AppState>) -> Result<String, String> {
+    let db = state.current().await.ok_or("no project open")?;
+    let project = db.get_project().await.map_err(err)?;
+    let prisma = db.prisma_state().await.map_err(err)?;
+    Ok(svg::render(&prisma, &project.name))
+}
+
 #[derive(Debug, Deserialize)]
 struct SaveDraftArgs {
     content: String,
@@ -3581,13 +3718,15 @@ fn find_companion_dist() -> Option<std::path::PathBuf> {
 /// Safe to call from any context — does not require an existing Tokio runtime.
 fn spawn_companion_server(state: Arc<server::CompanionState>, port: u16) {
     let static_dir = find_companion_dist();
+    state.mark_running();
     std::thread::Builder::new()
         .name("companion-server".into())
         .spawn(move || {
             let rt = tokio::runtime::Runtime::new()
                 .expect("failed to create companion tokio runtime");
             rt.block_on(async move {
-                server::start(state, port, static_dir).await;
+                server::start(state.clone(), port, static_dir).await;
+                state.mark_stopped();
             });
         })
         .expect("failed to spawn companion server thread");
@@ -3727,6 +3866,7 @@ pub fn run() {
             export_bibtex,
             export_prisma_checklist,
             export_prisma_svg,
+            get_prisma_svg,
             save_draft,
             regenerate_draft,
             open_browser_panel,
@@ -3735,6 +3875,7 @@ pub fn run() {
             scan_workspace_pdfs,
             drop_pdf_for_article,
             open_pdf_path,
+            pdf_paths_for_articles,
             replace_article_pdf,
             list_journals,
             save_journal,

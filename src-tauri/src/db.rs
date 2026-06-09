@@ -208,6 +208,8 @@ pub struct GlossaryTerm {
     pub definition: String,
     /// JSON array string of article IDs, e.g. "[1,3,7]"
     pub article_ids: String,
+    /// JSON array string of alternate spellings/abbreviations, e.g. ["CT","CRT"]
+    pub aliases: String,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -2731,7 +2733,7 @@ impl ProjectDb {
     /// Return all glossary terms sorted alphabetically.
     pub async fn list_glossary_terms(&self) -> Result<Vec<GlossaryTerm>> {
         let rows = sqlx::query(
-            "SELECT id, term, definition, article_ids, created_at, updated_at \
+            "SELECT id, term, definition, article_ids, aliases, created_at, updated_at \
              FROM glossary_term ORDER BY lower(term)",
         )
         .fetch_all(&self.pool)
@@ -2743,61 +2745,89 @@ impl ProjectDb {
                 term: r.get("term"),
                 definition: r.get("definition"),
                 article_ids: r.get("article_ids"),
+                aliases: r.get("aliases"),
                 created_at: r.get("created_at"),
                 updated_at: r.get("updated_at"),
             })
             .collect())
     }
 
-    /// Insert or merge a term. If a term with the same text (case-insensitive)
-    /// already exists, the new article_id is merged into its article_ids list
-    /// and the definition is updated. Returns the row id.
+    /// Insert or merge a term, treating `(abbreviation)` parentheticals as
+    /// aliases of one canonical entry. "Critical Thinking" and
+    /// "Critical Thinking (CT)" become one row with aliases=["CT"].
     pub async fn upsert_glossary_term(
         &self,
-        term: &str,
+        raw_term: &str,
         definition: &str,
         article_id: i64,
     ) -> Result<i64> {
+        let (canonical, alias_opt) = canonicalize_glossary_term(raw_term);
+        if canonical.is_empty() {
+            return Ok(0);
+        }
         let mut tx = self.pool.begin().await?;
 
-        // SELECT inside the transaction to prevent TOCTOU race
-        let existing: Option<(i64, String)> = sqlx::query(
-            "SELECT id, article_ids FROM glossary_term WHERE lower(term) = lower(?)",
+        // 1) Direct canonical match (most common case).
+        let direct: Option<(i64, String, String, String)> = sqlx::query(
+            "SELECT id, term, article_ids, aliases FROM glossary_term \
+             WHERE lower(term) = lower(?)",
         )
-        .bind(term)
+        .bind(&canonical)
         .fetch_optional(&mut *tx)
         .await?
-        .map(|r| (r.get("id"), r.get("article_ids")));
+        .map(|r| (r.get("id"), r.get("term"), r.get("article_ids"), r.get("aliases")));
 
-        let row_id = if let Some((id, ids_json)) = existing {
-            // Merge article_id into the existing JSON array
-            let mut ids: Vec<i64> = serde_json::from_str(&ids_json).unwrap_or_default();
-            if !ids.contains(&article_id) {
-                ids.push(article_id);
-            }
-            let new_json = serde_json::to_string(&ids).unwrap_or_else(|_| ids_json);
+        let row_id = if let Some((id, _existing_term, ids_json, aliases_json)) = direct {
+            let new_ids = merge_id(&ids_json, article_id);
+            let new_aliases = match alias_opt.as_deref() {
+                Some(a) => merge_alias(&aliases_json, a),
+                None => aliases_json,
+            };
             sqlx::query(
-                "UPDATE glossary_term SET definition = ?, article_ids = ?, updated_at = datetime('now') \
-                 WHERE id = ?",
+                "UPDATE glossary_term SET definition = ?, article_ids = ?, aliases = ?, \
+                 updated_at = datetime('now') WHERE id = ?",
             )
             .bind(definition)
-            .bind(&new_json)
+            .bind(&new_ids)
+            .bind(&new_aliases)
             .bind(id)
             .execute(&mut *tx)
             .await?;
             id
-        } else {
-            let ids_json = serde_json::to_string(&[article_id]).unwrap_or_else(|_| "[]".into());
-            sqlx::query(
-                "INSERT INTO glossary_term (term, definition, article_ids, created_at, updated_at) \
-                 VALUES (?, ?, ?, datetime('now'), datetime('now'))",
+        } else if let Some(alias) = alias_opt.as_deref() {
+            // 2) Reverse match: an existing row uses what we'd call an alias as
+            //    its canonical (e.g. existing "CT" while we're inserting
+            //    "Critical Thinking (CT)"). Promote the existing row to the
+            //    longer canonical and demote the original to an alias.
+            let reverse: Option<(i64, String, String, String)> = sqlx::query(
+                "SELECT id, term, article_ids, aliases FROM glossary_term \
+                 WHERE lower(term) = lower(?)",
             )
-            .bind(term)
-            .bind(definition)
-            .bind(&ids_json)
-            .execute(&mut *tx)
+            .bind(alias)
+            .fetch_optional(&mut *tx)
             .await?
-            .last_insert_rowid()
+            .map(|r| (r.get("id"), r.get("term"), r.get("article_ids"), r.get("aliases")));
+
+            if let Some((id, existing_term, ids_json, aliases_json)) = reverse {
+                let new_ids = merge_id(&ids_json, article_id);
+                let new_aliases = merge_alias(&aliases_json, &existing_term);
+                sqlx::query(
+                    "UPDATE glossary_term SET term = ?, definition = ?, article_ids = ?, \
+                     aliases = ?, updated_at = datetime('now') WHERE id = ?",
+                )
+                .bind(&canonical)
+                .bind(definition)
+                .bind(&new_ids)
+                .bind(&new_aliases)
+                .bind(id)
+                .execute(&mut *tx)
+                .await?;
+                id
+            } else {
+                insert_new_term(&mut *tx, &canonical, definition, article_id, alias_opt.as_deref()).await?
+            }
+        } else {
+            insert_new_term(&mut *tx, &canonical, definition, article_id, None).await?
         };
 
         tx.commit().await?;
@@ -2829,6 +2859,162 @@ impl ProjectDb {
         Ok(row.get("n"))
     }
 
+    /// Return the set of article IDs that already appear in at least one
+    /// glossary term's article_ids list. Used by the "Update glossary"
+    /// action to skip articles that have already been processed.
+    pub async fn glossary_covered_article_ids(&self) -> Result<std::collections::HashSet<i64>> {
+        let rows = sqlx::query("SELECT article_ids FROM glossary_term")
+            .fetch_all(&self.pool)
+            .await?;
+        let mut covered = std::collections::HashSet::new();
+        for r in rows {
+            let json: String = r.get("article_ids");
+            if let Ok(ids) = serde_json::from_str::<Vec<i64>>(&json) {
+                for id in ids {
+                    covered.insert(id);
+                }
+            }
+        }
+        Ok(covered)
+    }
+
+    /// Collapse glossary rows that refer to the same concept. Two rows merge
+    /// if they share any name (term or alias) under case-insensitive,
+    /// whitespace-collapsed comparison. The "winner" is the row with the most
+    /// articles (ties broken by lowest id); the loser's term and aliases all
+    /// become aliases on the winner. Called at the end of an extraction run.
+    pub async fn coalesce_glossary_aliases(&self) -> Result<()> {
+        // Single fetch: load every row once, group rows that share a name into
+        // connected components (union-find), then merge each component in one
+        // pass. Avoids re-querying + re-normalising the whole table per merge.
+        let rows = sqlx::query(
+            "SELECT id, term, article_ids, aliases FROM glossary_term",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        struct Row {
+            id: i64,
+            term: String,
+            ids_json: String,
+            aliases: Vec<String>,
+            /// term + aliases, normalised — the keys other rows match against.
+            names: Vec<String>,
+            article_count: usize,
+        }
+        let data: Vec<Row> = rows
+            .into_iter()
+            .map(|r| {
+                let term: String = r.get("term");
+                let ids_json: String = r.get("article_ids");
+                let aliases_json: String = r.get("aliases");
+                let aliases: Vec<String> = serde_json::from_str(&aliases_json).unwrap_or_default();
+                let articles: Vec<i64> = serde_json::from_str(&ids_json).unwrap_or_default();
+                let mut names = vec![normalize_glossary_name(&term)];
+                for a in &aliases {
+                    names.push(normalize_glossary_name(a));
+                }
+                Row { id: r.get("id"), term, ids_json, aliases, names, article_count: articles.len() }
+            })
+            .collect();
+
+        // Union-find: rows sharing a non-empty normalised name join one group.
+        let mut parent: Vec<usize> = (0..data.len()).collect();
+        fn find(parent: &mut [usize], mut x: usize) -> usize {
+            while parent[x] != x {
+                parent[x] = parent[parent[x]];
+                x = parent[x];
+            }
+            x
+        }
+        let mut by_name: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+        for (i, row) in data.iter().enumerate() {
+            for n in &row.names {
+                if n.is_empty() {
+                    continue;
+                }
+                match by_name.get(n.as_str()) {
+                    Some(&j) => {
+                        let (ri, rj) = (find(&mut parent, i), find(&mut parent, j));
+                        if ri != rj {
+                            parent[ri] = rj;
+                        }
+                    }
+                    None => {
+                        by_name.insert(n.as_str(), i);
+                    }
+                }
+            }
+        }
+        drop(by_name);
+
+        let mut groups: std::collections::HashMap<usize, Vec<usize>> = std::collections::HashMap::new();
+        for i in 0..data.len() {
+            let root = find(&mut parent, i);
+            groups.entry(root).or_default().push(i);
+        }
+
+        for members in groups.into_values() {
+            if members.len() < 2 {
+                continue;
+            }
+            // Winner = most articles, ties broken by lowest id.
+            let winner_idx = *members
+                .iter()
+                .max_by(|&&a, &&b| {
+                    data[a]
+                        .article_count
+                        .cmp(&data[b].article_count)
+                        .then_with(|| data[b].id.cmp(&data[a].id))
+                })
+                .unwrap();
+
+            let winner = &data[winner_idx];
+            let winner_term_norm = normalize_glossary_name(&winner.term);
+            let mut new_ids = winner.ids_json.clone();
+            let mut new_aliases_json = json_or(&winner.aliases, "[]");
+            let mut loser_ids: Vec<i64> = Vec::new();
+
+            for &m in &members {
+                if m == winner_idx {
+                    continue;
+                }
+                let loser = &data[m];
+                loser_ids.push(loser.id);
+                let loser_articles: Vec<i64> = serde_json::from_str(&loser.ids_json).unwrap_or_default();
+                for art in loser_articles {
+                    new_ids = merge_id(&new_ids, art);
+                }
+                // The loser's term + aliases become aliases on the winner,
+                // unless they already match the winner's term.
+                if normalize_glossary_name(&loser.term) != winner_term_norm {
+                    new_aliases_json = merge_alias(&new_aliases_json, &loser.term);
+                }
+                for a in &loser.aliases {
+                    if normalize_glossary_name(a) != winner_term_norm {
+                        new_aliases_json = merge_alias(&new_aliases_json, a);
+                    }
+                }
+            }
+
+            sqlx::query(
+                "UPDATE glossary_term SET article_ids = ?, aliases = ?, updated_at = datetime('now') WHERE id = ?",
+            )
+            .bind(&new_ids)
+            .bind(&new_aliases_json)
+            .bind(data[winner_idx].id)
+            .execute(&self.pool)
+            .await?;
+            for lid in loser_ids {
+                sqlx::query("DELETE FROM glossary_term WHERE id = ?")
+                    .bind(lid)
+                    .execute(&self.pool)
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
     /// Return all articles that have at least one embedded chunk.
     /// Returns (article_id, article_title, Vec<chunk_text>).
     pub async fn articles_with_chunks(&self) -> Result<Vec<(i64, String, Vec<String>)>> {
@@ -2858,5 +3044,144 @@ impl ProjectDb {
             }
         }
         Ok(result)
+    }
+}
+
+// ── Glossary helpers ────────────────────────────────────────────────────────
+
+/// Split a raw term like `"Critical Thinking (CT)"` into `("Critical Thinking",
+/// Some("CT"))`. The longer side is treated as the canonical name on the
+/// assumption that abbreviations are shorter than their expansions.
+fn canonicalize_glossary_term(raw: &str) -> (String, Option<String>) {
+    let trimmed = raw.trim();
+    if let Some(open) = trimmed.rfind('(') {
+        if let Some(close_offset) = trimmed[open..].find(')') {
+            let close = open + close_offset;
+            let main = trimmed[..open].trim();
+            let inner = trimmed[open + 1..close].trim();
+            let trailing = trimmed[close + 1..].trim();
+            if !main.is_empty() && !inner.is_empty() && trailing.is_empty() {
+                let (canon, alias) = if main.len() >= inner.len() {
+                    (main.to_string(), inner.to_string())
+                } else {
+                    (inner.to_string(), main.to_string())
+                };
+                return (canon, Some(alias));
+            }
+        }
+    }
+    (trimmed.to_string(), None)
+}
+
+/// Normalise a term/alias for cross-row equality: lowercase, ASCII-only
+/// alphanumerics, single-space-separated. So "Generative AI", "generative ai",
+/// "Generative-AI" and "generative  AI" all collapse to the same key.
+fn normalize_glossary_name(s: &str) -> String {
+    s.chars()
+        .map(|c| if c.is_alphanumeric() { c.to_ascii_lowercase() } else { ' ' })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Serialize to a JSON string, falling back to `fallback` on the (practically
+/// impossible) serialization error rather than panicking or silently losing data.
+fn json_or<T: serde::Serialize>(value: &T, fallback: &str) -> String {
+    serde_json::to_string(value).unwrap_or_else(|_| fallback.to_string())
+}
+
+fn merge_id(ids_json: &str, article_id: i64) -> String {
+    let mut ids: Vec<i64> = serde_json::from_str(ids_json).unwrap_or_default();
+    if !ids.contains(&article_id) {
+        ids.push(article_id);
+    }
+    json_or(&ids, ids_json)
+}
+
+fn merge_alias(aliases_json: &str, alias: &str) -> String {
+    let mut aliases: Vec<String> = serde_json::from_str(aliases_json).unwrap_or_default();
+    let alias = alias.trim();
+    // Dedup on the same normalised key that `coalesce_glossary_aliases` uses, so
+    // "Generative-AI" and "Generative AI" never both land in one alias list.
+    let norm = normalize_glossary_name(alias);
+    if norm.is_empty() {
+        return aliases_json.to_string();
+    }
+    if !aliases.iter().any(|a| normalize_glossary_name(a) == norm) {
+        aliases.push(alias.to_string());
+    }
+    json_or(&aliases, aliases_json)
+}
+
+async fn insert_new_term<'e, E>(
+    executor: E,
+    canonical: &str,
+    definition: &str,
+    article_id: i64,
+    alias_opt: Option<&str>,
+) -> Result<i64>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+{
+    let ids_json = json_or(&[article_id], "[]");
+    let aliases_json = match alias_opt {
+        Some(a) if !a.trim().is_empty() => json_or(&[a.trim()], "[]"),
+        _ => "[]".to_string(),
+    };
+    let id = sqlx::query(
+        "INSERT INTO glossary_term (term, definition, article_ids, aliases, created_at, updated_at) \
+         VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))",
+    )
+    .bind(canonical)
+    .bind(definition)
+    .bind(&ids_json)
+    .bind(&aliases_json)
+    .execute(executor)
+    .await?
+    .last_insert_rowid();
+    Ok(id)
+}
+
+#[cfg(test)]
+mod glossary_tests {
+    use super::canonicalize_glossary_term;
+
+    #[test]
+    fn extracts_parenthetical_abbreviation() {
+        let (c, a) = canonicalize_glossary_term("Critical Thinking (CT)");
+        assert_eq!(c, "Critical Thinking");
+        assert_eq!(a.as_deref(), Some("CT"));
+    }
+
+    #[test]
+    fn handles_inverted_form() {
+        let (c, a) = canonicalize_glossary_term("CT (Critical Thinking)");
+        assert_eq!(c, "Critical Thinking");
+        assert_eq!(a.as_deref(), Some("CT"));
+    }
+
+    #[test]
+    fn passes_through_plain_term() {
+        let (c, a) = canonicalize_glossary_term("Bloom's Revised Taxonomy");
+        assert_eq!(c, "Bloom's Revised Taxonomy");
+        assert!(a.is_none());
+    }
+
+    #[test]
+    fn ignores_internal_parens() {
+        let (c, a) = canonicalize_glossary_term("Process (with details) ongoing");
+        assert_eq!(c, "Process (with details) ongoing");
+        assert!(a.is_none());
+    }
+
+    use super::normalize_glossary_name;
+
+    #[test]
+    fn normalize_collapses_case_and_punctuation() {
+        assert_eq!(normalize_glossary_name("Generative AI"), normalize_glossary_name("generative ai"));
+        assert_eq!(normalize_glossary_name("Generative-AI"), normalize_glossary_name("generative ai"));
+        assert_eq!(normalize_glossary_name("  generative   AI  "), normalize_glossary_name("Generative AI"));
+        assert_ne!(normalize_glossary_name("Generative AI"), normalize_glossary_name("Generative Artificial Intelligence"));
     }
 }

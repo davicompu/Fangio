@@ -213,7 +213,20 @@ pub async fn embed(base_url: &str, model: &str, inputs: &[&str], api_key: Option
     };
     let resp = apply_auth(client.post(url).json(&body), api_key).send().await?;
     if !resp.status().is_success() {
-        return Err(anyhow!("embeddings returned {}", resp.status()));
+        let status = resp.status();
+        let detail = resp.text().await.unwrap_or_default();
+        let trimmed = detail.trim();
+        // 400 from LM Studio is almost always "model not loaded" — give the
+        // user a concrete next step rather than a bare status code.
+        if status.as_u16() == 400 {
+            return Err(anyhow!(
+                "embeddings returned 400: model '{model}' may not be loaded in LM Studio. \
+                 Open LM Studio → load this embedding model, then try again. \
+                 Server said: {}",
+                if trimmed.is_empty() { "(no body)" } else { trimmed }
+            ));
+        }
+        return Err(anyhow!("embeddings returned {status}: {}", if trimmed.is_empty() { "(no body)" } else { trimmed }));
     }
     let parsed: EmbedResponse = resp.json().await?;
     let mut out = vec![Vec::new(); inputs.len()];

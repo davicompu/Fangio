@@ -5,6 +5,7 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::watch;
@@ -74,6 +75,12 @@ pub struct CompanionState {
     pub current_path: RwLock<Option<PathBuf>>,
     sessions: RwLock<HashMap<String, Instant>>,
     pub password_hash: RwLock<String>,
+    /// True while the Axum server task is alive. Flipped to true in
+    /// `mark_running()` (called by the spawn helper) and back to false in
+    /// `stop()`. We can't derive this from the watch channel alone — the
+    /// channel starts at `false` (no shutdown signalled) before the server
+    /// has been spawned, which would cause `is_running()` to lie.
+    running: AtomicBool,
     /// Shutdown signal — send `true` to stop the running server.
     shutdown_tx: watch::Sender<bool>,
     /// Receiver cloned into the server task for graceful shutdown.
@@ -87,19 +94,33 @@ impl CompanionState {
             current_path: RwLock::new(None),
             sessions: RwLock::new(HashMap::new()),
             password_hash: RwLock::new(password_hash),
+            running: AtomicBool::new(false),
             shutdown_tx,
             shutdown_rx,
         })
     }
 
-    /// Returns true if the server is currently running (shutdown not yet signalled).
+    /// Returns true while the server task is live.
     pub fn is_running(&self) -> bool {
-        !*self.shutdown_rx.borrow()
+        self.running.load(Ordering::SeqCst)
+    }
+
+    /// Mark the server as running. Called by the spawn helper just before
+    /// it hands control to Axum's `serve` loop.
+    pub fn mark_running(&self) {
+        self.running.store(true, Ordering::SeqCst);
+    }
+
+    /// Mark the server as stopped. Called by the spawn helper after the
+    /// `serve` loop returns (clean shutdown or panic).
+    pub fn mark_stopped(&self) {
+        self.running.store(false, Ordering::SeqCst);
     }
 
     /// Signal the running server to shut down.
     pub fn stop(&self) {
         let _ = self.shutdown_tx.send(true);
+        self.running.store(false, Ordering::SeqCst);
     }
 
     /// Reset the shutdown channel so the server can be started again.
