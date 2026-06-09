@@ -114,7 +114,7 @@ export function OnboardingWizard({ project, onComplete }: OnboardingWizardProps)
 
   const errorMessage = (e: unknown): string => {
     const msg: string = (e as { message?: string })?.message ?? String(e);
-    if (msg.includes("chat model")) return "Pick a chat model in Settings first.";
+    if (msg.includes("reasoning model")) return "Pick a reasoning model in Settings first.";
     if (msg.includes("Connection refused") || msg.includes("error sending request") || msg.includes("connect error")) {
       return "Could not reach LM Studio — check Settings.";
     }

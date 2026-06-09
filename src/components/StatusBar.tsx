@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
-import { Database, Gauge, MessageSquare, Radio, Smartphone, WifiOff } from "lucide-react";
+import { Brain, Database, Gauge, Radio, Smartphone, WifiOff } from "lucide-react";
 import { getVersion } from "@tauri-apps/api/app";
 import { cn } from "../lib/utils";
 
@@ -206,7 +206,7 @@ function ModelsBadge({ chatModel, embedModel }: { chatModel: string | null; embe
         className="inline-flex items-center gap-1.5 px-2 h-6 rounded-[var(--radius-xs)] hover:bg-[var(--color-paper-200)] transition-paper"
         title={ready ? "Hover or click to see model identifiers" : "Pick chat + embed models in Settings"}
       >
-        <MessageSquare size={11} strokeWidth={1.75} className="text-[var(--color-paper-500)]" />
+        <Brain size={11} strokeWidth={1.75} className="text-[var(--color-paper-500)]" />
         <span className="eyebrow text-[var(--color-paper-500)]">Models</span>
         <span
           className={
@@ -226,7 +226,7 @@ function ModelsBadge({ chatModel, embedModel }: { chatModel: string | null; embe
       >
         <div className="space-y-1.5 text-[11px]">
           <div className="flex items-baseline gap-2">
-            <span className="eyebrow text-[var(--color-paper-500)] w-12 shrink-0">Chat</span>
+            <span className="eyebrow text-[var(--color-paper-500)] w-12 shrink-0">Reason</span>
             <span className="font-mono text-[var(--color-ink-800)] break-all">
               {chatModel || "— not set —"}
             </span>

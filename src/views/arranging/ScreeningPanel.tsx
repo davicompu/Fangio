@@ -109,8 +109,8 @@ export function useAiScreening(): AiScreeningHook {
     } catch (e: any) {
       const msg: string = e?.message ?? String(e);
       setError(
-        msg.includes("chat model")
-          ? "Pick a chat model in Settings first."
+        msg.includes("reasoning model")
+          ? "Pick a reasoning model in Settings first."
           : msg.includes("Connection refused") || msg.includes("error sending request")
           ? "Could not reach LM Studio — check Settings."
           : msg,
@@ -191,12 +191,19 @@ export function ScreeningPanel({ project, refreshKey, onChanged, onOpenAiModal }
     setLoading(false);
   };
 
+  // Reset to page 1 whenever the user switches tabs.
   useEffect(() => {
     setOffset(0);
+  }, [activeTab]);
+
+  // Fetch articles for the current page. Depends on offset so Prev/Next
+  // actually triggers a reload, and on activeTab + refreshKey so external
+  // changes (decisions, parent refresh) bring in the right slice.
+  useEffect(() => {
     let cancelled = false;
     setLoading(true);
     Promise.all([
-      api.listScreeningTab(activeTab, 0, BATCH_SIZE),
+      api.listScreeningTab(activeTab, offset, BATCH_SIZE),
       api.countScreeningTab("pending"),
       api.countScreeningTab("included"),
       api.countScreeningTab("excluded"),
@@ -221,7 +228,7 @@ export function ScreeningPanel({ project, refreshKey, onChanged, onOpenAiModal }
       setLoading(false);
     }).catch(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [refreshKey, activeTab]);
+  }, [refreshKey, activeTab, offset]);
 
   const journalMap = useMemo(() => {
     const m = new Map<string, JournalRow>();

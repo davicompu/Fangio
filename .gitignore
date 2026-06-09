@@ -26,3 +26,5 @@ companion/node_modules
 *.sw?
 /.playwright-cli
 .worktrees/
+.superpowers/
+memory/

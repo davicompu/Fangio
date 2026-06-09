@@ -140,8 +140,8 @@ export function AcquisitionForm({ project, settings, onSaved, onOpenSettings }: 
     } catch (e: any) {
       const msg: string = e?.message ?? String(e);
       setSuggestError(
-        msg.includes("chat model")
-          ? "Pick a chat model in Settings first."
+        msg.includes("reasoning model")
+          ? "Pick a reasoning model in Settings first."
           : msg.includes("Connection refused") || msg.includes("error sending request") || msg.includes("connect error")
           ? "Could not reach LM Studio — check Settings."
           : `Model error: ${msg}`,

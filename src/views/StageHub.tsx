@@ -91,8 +91,8 @@ export function StageHub({ project, onOpenSettings, onProjectChanged, onEnterSta
       const msg: string = e instanceof Error ? e.message : String(e);
       setFieldErrors((prev) => ({
         ...prev,
-        [fieldId]: msg.includes("chat model")
-          ? "Pick a chat model in Settings first."
+        [fieldId]: msg.includes("reasoning model")
+          ? "Pick a reasoning model in Settings first."
           : msg.includes("Connection refused") || msg.includes("error sending request")
           ? "Could not reach LM Studio — check Settings."
           : "Unexpected error. Try again.",
