@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
-import { ArrowRight, Download, GitBranch, Loader2 } from "lucide-react";
-import { toPng } from "html-to-image";
+import { ArrowRight, Download, FileImage, GitBranch, Loader2 } from "lucide-react";
 import { api, type PrismaState } from "../../lib/api";
+import { downloadBlob, svgToPngBlob } from "../../lib/export";
 import { Card } from "../../components/ui/Card";
 
 interface Props {
@@ -11,36 +11,46 @@ interface Props {
 
 export function PrismaPanel({ refreshKey }: Props) {
   const [state, setState] = useState<PrismaState | null>(null);
+  const [svg, setSvg] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [exporting, setExporting] = useState(false);
-  const diagramRef = useRef<HTMLDivElement>(null);
+  const [exporting, setExporting] = useState<"svg" | "png" | null>(null);
+  const [exportError, setExportError] = useState<string | null>(null);
 
   useEffect(() => {
     setLoading(true);
-    api.getPrismaState().then((s) => {
+    Promise.all([api.getPrismaState(), api.getPrismaSvg().catch(() => null)]).then(([s, x]) => {
       setState(s);
+      setSvg(x);
       setLoading(false);
     });
   }, [refreshKey]);
 
-  const handleExport = async () => {
-    if (!diagramRef.current) return;
-    setExporting(true);
+  const stamp = () => new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+
+  const handleExportSvg = async () => {
+    setExporting("svg");
+    setExportError(null);
     try {
-      const dataUrl = await toPng(diagramRef.current, {
-        cacheBust: true,
-        pixelRatio: 2,
-        backgroundColor: "#ffffff",
-      });
-      const a = document.createElement("a");
-      const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-      a.download = `prisma-flow-${stamp}.png`;
-      a.href = dataUrl;
-      a.click();
-    } catch (e) {
-      console.error("PRISMA export failed:", e);
+      const text = svg ?? (await api.getPrismaSvg());
+      downloadBlob(`prisma-flow-${stamp()}.svg`, new Blob([text], { type: "image/svg+xml;charset=utf-8" }));
+    } catch (e: unknown) {
+      setExportError(e instanceof Error ? e.message : String(e));
     } finally {
-      setExporting(false);
+      setExporting(null);
+    }
+  };
+
+  const handleExportPng = async () => {
+    setExporting("png");
+    setExportError(null);
+    try {
+      const text = svg ?? (await api.getPrismaSvg());
+      const png = await svgToPngBlob(text, 2);
+      downloadBlob(`prisma-flow-${stamp()}.png`, png);
+    } catch (e: unknown) {
+      setExportError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setExporting(null);
     }
   };
 
@@ -71,19 +81,34 @@ export function PrismaPanel({ refreshKey }: Props) {
             would compute themselves from your CSVs.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={handleExport}
-          disabled={exporting}
-          className="shrink-0 inline-flex items-center gap-1.5 px-3 py-2 rounded-[var(--radius-sm)] text-[12px] font-medium text-[var(--color-accent-700)] border border-[var(--color-accent-300)] bg-[var(--color-accent-50)] hover:bg-[var(--color-accent-100)] transition-paper disabled:opacity-50 disabled:cursor-wait"
-          title="Download the diagram as a PNG image (2× DPI)"
-        >
-          {exporting ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} strokeWidth={2} />}
-          {exporting ? "Exporting…" : "Export PNG"}
-        </button>
+        <div className="shrink-0 flex items-center gap-2">
+          <button
+            type="button"
+            onClick={handleExportSvg}
+            disabled={exporting !== null}
+            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-[var(--radius-sm)] text-[12px] font-medium text-[var(--color-accent-700)] border border-[var(--color-accent-300)] bg-[var(--color-accent-50)] hover:bg-[var(--color-accent-100)] transition-paper disabled:opacity-50 disabled:cursor-wait"
+            title="Vector SVG — sharpest for papers, scales without pixelation"
+          >
+            {exporting === "svg" ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} strokeWidth={2} />}
+            {exporting === "svg" ? "Exporting…" : "Export SVG"}
+          </button>
+          <button
+            type="button"
+            onClick={handleExportPng}
+            disabled={exporting !== null}
+            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-[var(--radius-sm)] text-[12px] font-medium text-[var(--color-paper-600)] border border-[var(--color-paper-300)] bg-white hover:bg-[var(--color-paper-100)] transition-paper disabled:opacity-50 disabled:cursor-wait"
+            title="PNG image rasterised from the SVG at 2× DPI"
+          >
+            {exporting === "png" ? <Loader2 size={13} className="animate-spin" /> : <FileImage size={13} strokeWidth={2} />}
+            {exporting === "png" ? "Exporting…" : "Export PNG"}
+          </button>
+        </div>
       </div>
+      {exportError && (
+        <p className="mb-3 text-[12px] text-[var(--color-error-600)]">{exportError}</p>
+      )}
 
-      <div ref={diagramRef}>
+      <div>
       <Card className="paper-grain p-10">
         {/* PRISMA layout — three vertical lanes */}
         <div className="space-y-10">
@@ -148,6 +173,23 @@ export function PrismaPanel({ refreshKey }: Props) {
         </div>
       </Card>
       </div>
+
+      {svg && (
+        <div className="mt-8">
+          <div className="eyebrow text-[var(--color-paper-500)] mb-2">Exported diagram preview</div>
+          <p className="text-[12px] text-[var(--color-paper-600)] mb-3 max-w-2xl leading-relaxed">
+            This is exactly what gets saved when you click Export — clean vector geometry, no UI chrome.
+            Pixel-identical at any zoom level and copy-paste-able into your manuscript.
+          </p>
+          <div
+            className="rounded-[var(--radius-md)] border border-[var(--color-paper-300)] bg-[var(--color-paper-50)] p-4 overflow-auto"
+            // The Rust renderer escapes user-supplied strings (project name,
+            // criterion labels) before assembling the SVG, so injecting the
+            // markup here is safe.
+            dangerouslySetInnerHTML={{ __html: svg }}
+          />
+        </div>
+      )}
 
       <p className="mt-4 text-[11px] text-[var(--color-paper-500)] italic">
         Compatible with the PRISMA 2020 flow template (Page et al., 2021).
