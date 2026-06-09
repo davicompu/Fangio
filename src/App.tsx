@@ -29,19 +29,11 @@ function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [route, setRoute] = useState<Route>("hub");
   const [ragReturn, setRagReturn] = useState<Route>("hub");
-  const [companionRunning, setCompanionRunning] = useState(false);
 
   const openRag = (from: Route) => {
     setRagReturn(from);
     setRoute("rag");
   };
-
-  // Refresh companion status on mount and whenever settings panel closes
-  useEffect(() => {
-    if (!settingsOpen) {
-      api.getCompanionStatus().then((s) => setCompanionRunning(s.running)).catch(() => {});
-    }
-  }, [settingsOpen]);
 
   // Register Tauri progress listeners for the long-running RAG operations
   // ONCE at App level, so cluster build / glossary extract / index build
@@ -223,7 +215,6 @@ function App() {
           latencyMs={lm.latencyMs}
           telemetryOn={settings["telemetry.enabled"]}
           projectName={project.name}
-          companionRunning={companionRunning}
           onOpenSettings={() => setSettingsOpen(true)}
         />
       )}
