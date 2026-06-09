@@ -2837,10 +2837,14 @@ async fn extract_glossary(
             Err(_) => continue,
         };
 
-        // Extract JSON array from response
+        // Extract JSON array from response. Guard s < e: an LLM reply with a
+        // ']' before the first '[' would otherwise panic on the slice below.
         let json_start = response.find('[');
         let json_end = response.rfind(']');
         if let (Some(s), Some(e)) = (json_start, json_end) {
+            if s >= e {
+                continue;
+            }
             let json_str = &response[s..=e];
             if let Ok(terms) = serde_json::from_str::<Vec<serde_json::Value>>(json_str) {
                 for t in terms {
