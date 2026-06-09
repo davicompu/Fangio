@@ -10,6 +10,7 @@ import {
   Filter,
   GripVertical,
   HardDrive,
+  Info,
   Loader2,
   Pencil,
   Plus,
@@ -25,6 +26,10 @@ import { TextField, TextArea } from "../components/ui/TextField";
 import { Select } from "../components/ui/Select";
 import type { AppSettings, DatabaseEntry, LmEndpoint, LmState } from "../lib/useAppState";
 import { cn, formatRelative } from "../lib/utils";
+import { Markdown } from "../components/Markdown";
+import { useVersion } from "../lib/useVersion";
+import cartaMark from "../assets/carta_mark.png";
+import changelog from "../../CHANGELOG.md?raw";
 
 interface SettingsProps {
   open: boolean;
@@ -36,8 +41,9 @@ interface SettingsProps {
 }
 
 export function Settings({ open: openSetting, onClose, settings, onUpdate, lm, onTest }: SettingsProps) {
-  type SettingsTab = "models" | "project" | "privacy";
+  type SettingsTab = "models" | "project" | "privacy" | "about";
   const [tab, setTab] = useState<SettingsTab>("models");
+  const version = useVersion();
   const [localUrl, setLocalUrl] = useState(settings["lmstudio.base_url"]);
   const [localApiKey, setLocalApiKey] = useState(settings["lmstudio.api_key"]);
   const [localRater1Profile, setLocalRater1Profile] = useState(settings["ai_raters.rater1.profile"]);
@@ -172,11 +178,12 @@ export function Settings({ open: openSetting, onClose, settings, onUpdate, lm, o
             </header>
 
             <nav className="px-7 pt-3 pb-0 border-b border-[var(--color-paper-200)] flex items-end gap-1">
-              {(["models", "project", "privacy"] as const).map((t) => {
+              {(["models", "project", "privacy", "about"] as const).map((t) => {
                 const labels: Record<SettingsTab, string> = {
                   models: "Models",
                   project: "Project",
                   privacy: "Privacy",
+                  about: "About",
                 };
                 const active = tab === t;
                 return (
@@ -426,6 +433,42 @@ export function Settings({ open: openSetting, onClose, settings, onUpdate, lm, o
                     checked={settings["telemetry.log_reasoning"]}
                     onChange={(v) => onUpdate("telemetry.log_reasoning", v)}
                   />
+                </div>
+              </section>
+              )}
+
+              {/* ── About ────────────────────────────────────────────────── */}
+              {tab === "about" && (
+              <section>
+                <SectionHeader
+                  icon={<Info size={14} strokeWidth={1.75} />}
+                  title="About Reeves"
+                  description="Systematic literature reviews, conducted with rigor and on your own machine."
+                />
+
+                <div className="mt-5 space-y-5">
+                  <div className="flex items-center gap-3">
+                    <img
+                      src={cartaMark}
+                      alt="Reeves"
+                      className="w-10 h-10 rounded-[var(--radius-xs)]"
+                    />
+                    <div>
+                      <p className="text-[15px] font-medium text-[var(--color-ink-800)]">Reeves</p>
+                      {version && (
+                        <p className="font-mono text-[12px] text-[var(--color-paper-500)]">
+                          Version {version}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+
+                  <div>
+                    <p className="eyebrow text-[var(--color-paper-500)] mb-2">What&rsquo;s new</p>
+                    <div className="max-h-[340px] overflow-y-auto rounded-[var(--radius-xs)] border border-[var(--color-paper-200)] bg-white p-4">
+                      <Markdown className="markdown-sm">{changelog}</Markdown>
+                    </div>
+                  </div>
                 </div>
               </section>
               )}
