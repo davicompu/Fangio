@@ -16,7 +16,6 @@ import {
   Pencil,
   Plus,
   Radio,
-  ShieldCheck,
   Smartphone,
   Thermometer,
   Users,
@@ -27,7 +26,7 @@ import { api, type BackupInfo } from "../lib/api";
 import { Button } from "../components/ui/Button";
 import { TextField, TextArea } from "../components/ui/TextField";
 import { Select } from "../components/ui/Select";
-import type { AppSettings, DatabaseEntry, LmState } from "../lib/useAppState";
+import type { AppSettings, DatabaseEntry, LmEndpoint, LmState } from "../lib/useAppState";
 import { cn, formatRelative } from "../lib/utils";
 
 interface SettingsProps {
@@ -264,35 +263,28 @@ export function Settings({ open: openSetting, onClose, settings, onUpdate, lm, o
                 />
 
                 <div className="space-y-4 mt-5">
-                  <TextField
-                    label="Server URL"
-                    value={localUrl}
-                    mono
-                    onChange={(e) => setLocalUrl(e.target.value)}
-                    placeholder="http://127.0.0.1:1234/v1"
-                    hint="Any OpenAI-compatible server — local (LM Studio, Ollama) or remote."
+                  <EndpointManager
+                    settings={settings}
+                    onUpdate={onUpdate}
+                    onTest={onTest}
+                    lm={lm}
+                    testing={testing}
+                    setTesting={setTesting}
+                    activeUrl={localUrl}
+                    activeApiKey={localApiKey}
+                    onActiveChange={(url, key) => {
+                      setLocalUrl(url);
+                      setLocalApiKey(key);
+                    }}
                   />
-
-                  <TextField
-                    label="API key"
-                    value={localApiKey}
-                    mono
-                    type="password"
-                    autoComplete="off"
-                    onChange={(e) => setLocalApiKey(e.target.value)}
-                    onBlur={() => onUpdate("lmstudio.api_key", localApiKey)}
-                    placeholder="Optional — leave blank if your server doesn't require one"
-                    hint="Sent as a Bearer token. Most local servers (LM Studio, Ollama) don't need this."
-                  />
-
-                  <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-3 pt-1">
                     <Button onClick={handleTest} variant="primary" size="sm" disabled={testing}>
                       {testing ? (
                         <>
                           <Loader2 size={13} className="animate-spin" /> Testing
                         </>
                       ) : (
-                        <>Test connection</>
+                        <>Test active endpoint</>
                       )}
                     </Button>
                     <ConnectionPill lm={lm} />
@@ -306,7 +298,7 @@ export function Settings({ open: openSetting, onClose, settings, onUpdate, lm, o
                       className="space-y-4 pt-2"
                     >
                       <Select
-                        label="Default chat model"
+                        label="Default reasoning model"
                         value={settings["lmstudio.chat_model"]}
                         onChange={(e) => onUpdate("lmstudio.chat_model", e.target.value)}
                       >
@@ -635,25 +627,6 @@ export function Settings({ open: openSetting, onClose, settings, onUpdate, lm, o
               </section>
               )}
 
-              {/* Network sovereignty */}
-              {tab === "privacy" && (
-              <section>
-                <SectionHeader
-                  icon={<ShieldCheck size={14} strokeWidth={1.75} />}
-                  title="Network sovereignty"
-                  description="Reeves refuses to talk to anything except hosts in this allowlist."
-                />
-                <div className="mt-4 rounded-[var(--radius-sm)] border border-[var(--color-paper-300)] bg-[var(--color-paper-100)] divide-y divide-[var(--color-paper-200)]">
-                  <AllowedHost host="http://127.0.0.1:*" reason="LM Studio (default)" />
-                  <AllowedHost host="http://localhost:*" reason="LM Studio (default)" />
-                </div>
-                <p className="mt-3 text-[12px] text-[var(--color-paper-500)] leading-relaxed">
-                  Database connectors (Web of Science, EBSCO, Scopus) are off by default. Enabling
-                  one will add exactly its host to this list and store the API key in your OS keychain.
-                  This is opt-in only and not part of the current release.
-                </p>
-              </section>
-              )}
             </div>
           </motion.aside>
 
@@ -722,6 +695,303 @@ export function Settings({ open: openSetting, onClose, settings, onUpdate, lm, o
         </>
       )}
     </AnimatePresence>
+  );
+}
+
+// ── Endpoint manager ────────────────────────────────────────────────────────
+//
+// Lets the user save multiple LM Studio / OpenAI-compatible endpoints under
+// names like "Home", "Work", "Phone". Switching one to active writes its
+// base_url + api_key into `lmstudio.base_url` / `lmstudio.api_key` so all the
+// existing Rust commands keep reading from those keys without any refactor.
+
+function EndpointManager({
+  settings,
+  onUpdate,
+  onTest,
+  lm,
+  testing,
+  setTesting,
+  activeUrl,
+  activeApiKey,
+  onActiveChange,
+}: {
+  settings: AppSettings;
+  onUpdate: <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => Promise<void>;
+  onTest: (baseUrl?: string) => Promise<unknown>;
+  lm: LmState;
+  testing: boolean;
+  setTesting: (b: boolean) => void;
+  activeUrl: string;
+  activeApiKey: string;
+  onActiveChange: (url: string, apiKey: string) => void;
+}) {
+  const endpoints = settings["lmstudio.endpoints"];
+  const activeName = settings["lmstudio.active_endpoint"];
+  const [adding, setAdding] = useState(false);
+  const [editingName, setEditingName] = useState<string | null>(null);
+  const [draft, setDraft] = useState<LmEndpoint>({ name: "", base_url: "", api_key: "" });
+  const seededRef = useRef(false);
+
+  // Seed: when there are no saved endpoints but the user already has a
+  // base_url from before this feature shipped, create a default profile so
+  // they don't lose their config.
+  useEffect(() => {
+    if (seededRef.current) return;
+    if (endpoints.length === 0 && (settings["lmstudio.base_url"] || "").trim().length > 0) {
+      const seeded: LmEndpoint = {
+        name: "Default",
+        base_url: settings["lmstudio.base_url"],
+        api_key: settings["lmstudio.api_key"] || "",
+      };
+      void onUpdate("lmstudio.endpoints", [seeded]);
+      void onUpdate("lmstudio.active_endpoint", seeded.name);
+      seededRef.current = true;
+    }
+  }, [endpoints, settings, onUpdate]);
+
+  const startAdd = () => {
+    setEditingName(null);
+    setDraft({ name: "", base_url: "http://127.0.0.1:1234/v1", api_key: "" });
+    setAdding(true);
+  };
+
+  const startEdit = (ep: LmEndpoint) => {
+    setAdding(false);
+    setEditingName(ep.name);
+    setDraft({ ...ep });
+  };
+
+  const cancel = () => {
+    setAdding(false);
+    setEditingName(null);
+  };
+
+  const save = async () => {
+    const name = draft.name.trim();
+    const url = draft.base_url.trim();
+    if (!name || !url) return;
+
+    let next: LmEndpoint[];
+    if (editingName !== null) {
+      next = endpoints.map((e) => (e.name === editingName ? { ...draft, name, base_url: url } : e));
+    } else {
+      if (endpoints.some((e) => e.name === name)) {
+        // Don't overwrite silently — append a numeric suffix.
+        let n = 2;
+        while (endpoints.some((e) => e.name === `${name} (${n})`)) n++;
+        next = [...endpoints, { ...draft, name: `${name} (${n})`, base_url: url }];
+      } else {
+        next = [...endpoints, { ...draft, name, base_url: url }];
+      }
+    }
+    await onUpdate("lmstudio.endpoints", next);
+
+    // If the renamed endpoint was the active one, keep the active pointer in
+    // sync. Also, if no active endpoint exists yet, make the just-added one
+    // active so the rest of the app picks it up.
+    if (editingName !== null && editingName === activeName) {
+      await onUpdate("lmstudio.active_endpoint", name);
+      await onUpdate("lmstudio.base_url", url);
+      await onUpdate("lmstudio.api_key", draft.api_key);
+      onActiveChange(url, draft.api_key);
+    } else if (!activeName) {
+      const justAdded = next[next.length - 1];
+      await onUpdate("lmstudio.active_endpoint", justAdded.name);
+      await onUpdate("lmstudio.base_url", justAdded.base_url);
+      await onUpdate("lmstudio.api_key", justAdded.api_key);
+      onActiveChange(justAdded.base_url, justAdded.api_key);
+    }
+    cancel();
+  };
+
+  const remove = async (name: string) => {
+    const next = endpoints.filter((e) => e.name !== name);
+    await onUpdate("lmstudio.endpoints", next);
+    if (name === activeName) {
+      const replacement = next[0];
+      if (replacement) {
+        await onUpdate("lmstudio.active_endpoint", replacement.name);
+        await onUpdate("lmstudio.base_url", replacement.base_url);
+        await onUpdate("lmstudio.api_key", replacement.api_key);
+        onActiveChange(replacement.base_url, replacement.api_key);
+      } else {
+        await onUpdate("lmstudio.active_endpoint", "");
+      }
+    }
+  };
+
+  const activate = async (ep: LmEndpoint) => {
+    await onUpdate("lmstudio.active_endpoint", ep.name);
+    await onUpdate("lmstudio.base_url", ep.base_url);
+    await onUpdate("lmstudio.api_key", ep.api_key);
+    onActiveChange(ep.base_url, ep.api_key);
+    // Re-test the connection against the freshly-activated endpoint so the
+    // status bar updates without the user having to click Test.
+    setTesting(true);
+    try {
+      await onTest(ep.base_url);
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  const sameAsActive = (ep: LmEndpoint) =>
+    ep.base_url === activeUrl && ep.api_key === activeApiKey;
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-[12px] font-semibold text-[var(--color-ink-800)]">Endpoints</span>
+        {!adding && editingName === null && (
+          <button
+            type="button"
+            onClick={startAdd}
+            className="inline-flex items-center gap-1 text-[11px] font-semibold text-[var(--color-accent-700)] hover:text-[var(--color-accent-800)]"
+          >
+            <Plus size={11} strokeWidth={2.25} /> Add endpoint
+          </button>
+        )}
+      </div>
+
+      {endpoints.length === 0 && !adding && (
+        <p className="text-[12px] text-[var(--color-paper-500)] leading-relaxed py-3 px-3 rounded-[var(--radius-xs)] bg-[var(--color-paper-100)] border border-dashed border-[var(--color-paper-300)]">
+          No endpoints saved yet. Add one for each environment you switch between (e.g. Home, Work, Phone hotspot).
+        </p>
+      )}
+
+      {endpoints.length > 0 && (
+        <div className="rounded-[var(--radius-sm)] border border-[var(--color-paper-300)] bg-white divide-y divide-[var(--color-paper-200)]">
+          {endpoints.map((ep) => {
+            const isActive = ep.name === activeName || (!activeName && sameAsActive(ep));
+            const isEditing = editingName === ep.name;
+            if (isEditing) {
+              return (
+                <div key={ep.name} className="px-3 py-3">
+                  <EndpointForm draft={draft} setDraft={setDraft} onSave={save} onCancel={cancel} testing={testing} />
+                </div>
+              );
+            }
+            return (
+              <div
+                key={ep.name}
+                className={cn(
+                  "px-3 py-2.5 flex items-center gap-3 text-[12px]",
+                  isActive ? "bg-[var(--color-accent-50)]" : "",
+                )}
+              >
+                <button
+                  type="button"
+                  onClick={() => activate(ep)}
+                  disabled={isActive}
+                  className={cn(
+                    "shrink-0 w-3.5 h-3.5 rounded-full border flex items-center justify-center",
+                    isActive
+                      ? "border-[var(--color-accent-600)] bg-[var(--color-accent-600)]"
+                      : "border-[var(--color-paper-400)] hover:border-[var(--color-accent-500)]",
+                  )}
+                  title={isActive ? "Active" : "Make active"}
+                >
+                  {isActive && <span className="w-1.5 h-1.5 rounded-full bg-white" />}
+                </button>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="font-semibold text-[var(--color-ink-900)] truncate">{ep.name}</span>
+                    {isActive && (
+                      <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-[var(--color-accent-100)] text-[var(--color-accent-700)]">
+                        Active
+                      </span>
+                    )}
+                  </div>
+                  <div className="font-mono text-[11px] text-[var(--color-paper-600)] truncate">{ep.base_url}</div>
+                  {ep.api_key && (
+                    <div className="font-mono text-[11px] text-[var(--color-paper-400)] truncate">key set</div>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => startEdit(ep)}
+                  className="p-1 rounded-[var(--radius-xs)] text-[var(--color-paper-400)] hover:text-[var(--color-ink-700)] hover:bg-[var(--color-paper-100)]"
+                  title="Edit endpoint"
+                >
+                  <Pencil size={12} strokeWidth={1.75} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => remove(ep.name)}
+                  className="p-1 rounded-[var(--radius-xs)] text-[var(--color-paper-400)] hover:text-[var(--color-error-600)] hover:bg-[var(--color-error-50)]"
+                  title="Delete endpoint"
+                >
+                  <X size={12} strokeWidth={1.75} />
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {adding && (
+        <div className="mt-3 p-3 rounded-[var(--radius-sm)] border border-[var(--color-accent-200)] bg-[var(--color-accent-50)]">
+          <EndpointForm draft={draft} setDraft={setDraft} onSave={save} onCancel={cancel} testing={testing} />
+        </div>
+      )}
+
+      <p className="mt-2 text-[11px] text-[var(--color-paper-500)] leading-relaxed">
+        Reeves uses the <span className="font-semibold">active</span> endpoint for every model call. Switching here updates the status bar URL immediately.
+      </p>
+
+      {/* Hide unused imports flag */}
+      {false && lm.reachable}
+    </div>
+  );
+}
+
+function EndpointForm({
+  draft,
+  setDraft,
+  onSave,
+  onCancel,
+  testing,
+}: {
+  draft: LmEndpoint;
+  setDraft: (d: LmEndpoint) => void;
+  onSave: () => void;
+  onCancel: () => void;
+  testing: boolean;
+}) {
+  return (
+    <div className="space-y-3">
+      <TextField
+        label="Name"
+        value={draft.name}
+        onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+        placeholder="Home, Work, Phone hotspot…"
+      />
+      <TextField
+        label="Server URL"
+        value={draft.base_url}
+        mono
+        onChange={(e) => setDraft({ ...draft, base_url: e.target.value })}
+        placeholder="http://127.0.0.1:1234/v1"
+      />
+      <TextField
+        label="API key (optional)"
+        value={draft.api_key}
+        mono
+        type="password"
+        autoComplete="off"
+        onChange={(e) => setDraft({ ...draft, api_key: e.target.value })}
+        placeholder="Leave blank for local servers"
+      />
+      <div className="flex items-center gap-2">
+        <Button onClick={onSave} variant="primary" size="sm" disabled={testing || !draft.name.trim() || !draft.base_url.trim()}>
+          Save endpoint
+        </Button>
+        <Button onClick={onCancel} variant="ghost" size="sm">
+          Cancel
+        </Button>
+      </div>
+    </div>
   );
 }
 
@@ -840,16 +1110,6 @@ function SettingRow({
         )}
       </div>
       <div className="shrink-0">{children}</div>
-    </div>
-  );
-}
-
-function AllowedHost({ host, reason }: { host: string; reason: string }) {
-  return (
-    <div className="px-3.5 py-2.5 flex items-center gap-3">
-      <Lock size={12} strokeWidth={1.75} className="text-[var(--color-ok-500)]" />
-      <code className="font-mono text-[12px] text-[var(--color-ink-800)] flex-1">{host}</code>
-      <span className="text-[11px] text-[var(--color-paper-500)]">{reason}</span>
     </div>
   );
 }
