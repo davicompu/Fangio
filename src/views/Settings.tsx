@@ -466,7 +466,7 @@ export function Settings({ open: openSetting, onClose, settings, onUpdate, lm, o
                   <div>
                     <p className="eyebrow text-[var(--color-paper-500)] mb-2">What&rsquo;s new</p>
                     <div className="max-h-[340px] overflow-y-auto rounded-[var(--radius-xs)] border border-[var(--color-paper-200)] bg-white p-4">
-                      <Markdown className="markdown-sm">{changelog}</Markdown>
+                      <Markdown className="markdown-sm">{changelog.slice(changelog.indexOf("## "))}</Markdown>
                     </div>
                   </div>
                 </div>
