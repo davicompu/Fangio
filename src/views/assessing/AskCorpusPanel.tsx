@@ -8,6 +8,7 @@ import {
   Sparkles,
 } from "lucide-react";
 import { api, type AskResult } from "../../lib/api";
+import { Markdown } from "../../components/Markdown";
 import { Card } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
 import { TextArea } from "../../components/ui/TextField";
@@ -107,9 +108,9 @@ export function AskCorpusPanel() {
                     </span>
                   )}
                 </div>
-                <div className="prose-editorial text-[14px] leading-[1.7] text-[var(--color-ink-800)] whitespace-pre-wrap">
+                <Markdown className="prose-editorial text-[14px] leading-[1.7] text-[var(--color-ink-800)]">
                   {result.answer}
-                </div>
+                </Markdown>
 
                 {result.citations.length > 0 && (
                   <>

@@ -3488,6 +3488,35 @@ async fn ask_corpus(args: AskArgs, state: State<'_, AppState>) -> Result<AskResu
         k,
     );
 
+    // Themes the researcher coded for the cited articles — gives the model the
+    // framework structure (TCM/ADO codes), not just raw chunk text, so it can
+    // organise the synthesis by theme and relate articles that share codes.
+    let mut art_ids: Vec<i64> = scored.iter().map(|s| s.item.1).collect();
+    art_ids.sort_unstable();
+    art_ids.dedup();
+    let codings = db.list_codings_for_articles(&art_ids).await.unwrap_or_default();
+    let mut themes_by_article: std::collections::HashMap<i64, std::collections::BTreeMap<String, Vec<String>>> =
+        std::collections::HashMap::new();
+    for c in &codings {
+        let dims = themes_by_article.entry(c.article_id).or_default();
+        let codes = dims.entry(c.dimension.clone()).or_default();
+        if !codes.contains(&c.code) {
+            codes.push(c.code.clone());
+        }
+    }
+    let theme_line = |art_id: i64| -> String {
+        match themes_by_article.get(&art_id) {
+            Some(dims) if !dims.is_empty() => {
+                let parts: Vec<String> = dims
+                    .iter()
+                    .map(|(d, cs)| format!("{d}: {}", cs.join(", ")))
+                    .collect();
+                format!(" — coded themes → {}", parts.join("; "))
+            }
+            _ => String::new(),
+        }
+    };
+
     // Build a citation block + ask the chat model
     let mut context = String::new();
     let mut source_list = String::from("Sources used in this answer:\n");
@@ -3495,8 +3524,9 @@ async fn ask_corpus(args: AskArgs, state: State<'_, AppState>) -> Result<AskResu
     for (i, s) in scored.iter().enumerate() {
         let (id, art_id, title, ci, text) = &s.item;
         context.push_str(&format!(
-            "--- Source [{}]: {title} ---\n{text}\n\n",
+            "--- Source [{}]: {title}{} ---\n{text}\n\n",
             i + 1,
+            theme_line(*art_id),
         ));
         source_list.push_str(&format!("  [{}] {title}\n", i + 1));
         citations.push(AskCitation {
