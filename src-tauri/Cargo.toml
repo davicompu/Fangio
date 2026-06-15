@@ -46,6 +46,7 @@ strsim = "0.11"
 unicode-normalization = "0.1"
 pdf-extract = "0.7"
 bytemuck = "1"
+docx-rs = "0.4"
 
 [features]
 # default to a network configuration where ONLY localhost reqwest calls are

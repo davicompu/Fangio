@@ -827,6 +827,9 @@ export const api = {
   generateSynthesis() {
     return invoke<string>("generate_synthesis");
   },
+  exportDocx() {
+    return invoke<string>("export_docx");
+  },
   exportCsvs() {
     return invoke<ExportSummary>("export_csvs");
   },

@@ -5,6 +5,7 @@ import {
   CheckCircle2,
   Download,
   FileSpreadsheet,
+  FileText,
   FolderOpen,
   GitBranch,
   ListChecks,
@@ -16,6 +17,7 @@ import { Button } from "../../components/ui/Button";
 import { cn } from "../../lib/utils";
 
 type Job =
+  | "docx"
   | "csv"
   | "bibtex"
   | "checklist"
@@ -32,7 +34,8 @@ export function ExportPanel() {
     setError(null);
     try {
       let files: string[] = [];
-      if (kind === "csv") files = (await api.exportCsvs()).files;
+      if (kind === "docx") files = [await api.exportDocx()];
+      else if (kind === "csv") files = (await api.exportCsvs()).files;
       else if (kind === "bibtex") files = [await api.exportBibtex()];
       else if (kind === "checklist") files = [await api.exportPrismaChecklist()];
       else if (kind === "svg") files = [await api.exportPrismaSvg()];
@@ -55,6 +58,17 @@ export function ExportPanel() {
           Regenerate the SPAR-4-SLR + PRISMA 2020 artifacts from the live database. Hand the
           workspace folder to a journal reviewer and they have everything.
         </p>
+      </div>
+
+      <div className="mb-4">
+        <ExportCard
+          icon={<FileText size={20} strokeWidth={1.5} />}
+          title="Full report (DOCX)"
+          description="The whole manuscript in one Word document — abstract, method, PRISMA flow, results & synthesis, future agenda, limitations and funding, references — plus a Findings-by-dimension table and the PRISMA 2020 checklist as real Word tables."
+          path="drafts/full-report.docx"
+          busy={busy === "docx"}
+          onRun={() => run("docx")}
+        />
       </div>
 
       <div className="grid grid-cols-2 gap-4">

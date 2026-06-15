@@ -84,6 +84,13 @@ pub async fn generate(db: &ProjectDb) -> Result<String> {
         prisma.records_excluded,
         prisma.records_included,
     ));
+    // Flow as a compact table so it reads cleanly in the draft and the DOCX.
+    s.push_str("| PRISMA stage | Records |\n|---|---|\n");
+    s.push_str(&format!("| Identified (databases) | {} |\n", prisma.identified_databases));
+    s.push_str(&format!("| Duplicates removed | {} |\n", prisma.duplicates_removed));
+    s.push_str(&format!("| Screened | {} |\n", prisma.identified_databases - prisma.duplicates_removed));
+    s.push_str(&format!("| Excluded | {} |\n", prisma.records_excluded));
+    s.push_str(&format!("| Included | {} |\n\n", prisma.records_included));
     if !prisma.by_criterion.is_empty() {
         s.push_str("**Exclusions by criterion:**\n\n");
         for (label, n) in &prisma.by_criterion {
@@ -306,4 +313,115 @@ pub fn write_checklist_to_workspace(
     let path = dir.join("prisma_checklist.md");
     std::fs::write(&path, content)?;
     Ok(path)
+}
+
+// ── DOCX export ─────────────────────────────────────────────────────────────
+// Convert the manuscript markdown subset (headings, paragraphs, bullets, bold,
+// italic, and pipe tables) into a Word document so PRISMA and findings tables
+// render as real tables rather than raw markdown.
+
+use docx_rs::{Docx, Paragraph, Run, Table, TableCell, TableRow, WidthType};
+
+/// Split inline markdown into (text, bold, italic) runs. Handles **bold**,
+/// *italic*/_italic_, and drops backticks.
+fn parse_runs(text: &str) -> Vec<(String, bool, bool)> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut runs: Vec<(String, bool, bool)> = Vec::new();
+    let mut buf = String::new();
+    let (mut bold, mut italic) = (false, false);
+    let mut i = 0;
+    while i < chars.len() {
+        if i + 1 < chars.len() && chars[i] == '*' && chars[i + 1] == '*' {
+            if !buf.is_empty() { runs.push((std::mem::take(&mut buf), bold, italic)); }
+            bold = !bold;
+            i += 2;
+            continue;
+        }
+        if chars[i] == '*' || chars[i] == '_' {
+            if !buf.is_empty() { runs.push((std::mem::take(&mut buf), bold, italic)); }
+            italic = !italic;
+            i += 1;
+            continue;
+        }
+        if chars[i] == '`' { i += 1; continue; }
+        buf.push(chars[i]);
+        i += 1;
+    }
+    if !buf.is_empty() { runs.push((buf, bold, italic)); }
+    runs
+}
+
+fn para(text: &str, size: usize, force_bold: bool) -> Paragraph {
+    let mut p = Paragraph::new();
+    for (t, b, it) in parse_runs(text) {
+        let mut r = Run::new().add_text(t).size(size);
+        if b || force_bold { r = r.bold(); }
+        if it { r = r.italic(); }
+        p = p.add_run(r);
+    }
+    p
+}
+
+fn split_cells(line: &str) -> Vec<String> {
+    let t = line.trim();
+    let t = t.strip_prefix('|').unwrap_or(t);
+    let t = t.strip_suffix('|').unwrap_or(t);
+    t.split('|').map(|c| c.trim().to_string()).collect()
+}
+
+fn is_separator_row(cells: &[String]) -> bool {
+    !cells.is_empty()
+        && cells.iter().all(|c| !c.is_empty() && c.chars().all(|ch| ch == '-' || ch == ':' || ch == ' '))
+}
+
+fn md_table(block: &[&str]) -> Table {
+    let mut rows: Vec<TableRow> = Vec::new();
+    let mut first = true;
+    for line in block {
+        let cells = split_cells(line);
+        if is_separator_row(&cells) { continue; }
+        let bold = first;
+        first = false;
+        let tcells: Vec<TableCell> = cells
+            .iter()
+            .map(|c| TableCell::new().add_paragraph(para(c, 20, bold)))
+            .collect();
+        rows.push(TableRow::new(tcells));
+    }
+    Table::new(rows).width(9638, WidthType::Dxa)
+}
+
+/// Build a Word document from the manuscript markdown subset.
+pub fn markdown_to_docx(md: &str) -> Docx {
+    let mut docx = Docx::new();
+    let lines: Vec<&str> = md.lines().collect();
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i].trim_end();
+        if line.trim_start().starts_with('|') {
+            let mut block: Vec<&str> = Vec::new();
+            while i < lines.len() && lines[i].trim_start().starts_with('|') {
+                block.push(lines[i]);
+                i += 1;
+            }
+            docx = docx.add_table(md_table(&block));
+            docx = docx.add_paragraph(Paragraph::new());
+            continue;
+        }
+        if line.trim().is_empty() {
+            docx = docx.add_paragraph(Paragraph::new());
+        } else if let Some(rest) = line.strip_prefix("### ") {
+            docx = docx.add_paragraph(para(rest, 26, true));
+        } else if let Some(rest) = line.strip_prefix("## ") {
+            docx = docx.add_paragraph(para(rest, 30, true));
+        } else if let Some(rest) = line.strip_prefix("# ") {
+            docx = docx.add_paragraph(para(rest, 36, true));
+        } else if let Some(rest) = line.strip_prefix("- ").or_else(|| line.strip_prefix("* ")) {
+            docx = docx.add_paragraph(para(&format!("•  {rest}"), 22, false));
+        } else {
+            docx = docx.add_paragraph(para(line, 22, false));
+        }
+        i += 1;
+    }
+    docx
 }

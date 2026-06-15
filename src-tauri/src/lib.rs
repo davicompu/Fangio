@@ -4040,6 +4040,54 @@ async fn generate_synthesis(state: State<'_, AppState>) -> Result<String, String
         .map_err(err)
 }
 
+/// Export the full report — manuscript + a Findings-by-dimension table + the
+/// PRISMA 2020 checklist — as a single Word document. Pipe tables render as real
+/// Word tables. Pure in-app (no shell / Pandoc).
+#[tauri::command]
+async fn export_docx(state: State<'_, AppState>) -> Result<String, String> {
+    let db = state.current().await.ok_or("no project open")?;
+    let mut md = draft::generate(&db).await.map_err(err)?;
+
+    // Appendix A — Findings by dimension (themes report) as a markdown table.
+    let project = db.get_project().await.map_err(err)?;
+    let framework = project.framework.clone().unwrap_or_default();
+    let dim_names: Vec<String> = if framework == "Custom" {
+        let defs = db.list_framework_code_defs().await.map_err(err)?;
+        let mut seen = std::collections::HashSet::new();
+        defs.into_iter().filter_map(|d| seen.insert(d.dimension.clone()).then_some(d.dimension)).collect()
+    } else {
+        framework::dimensions_for(&framework).into_iter().map(|d| d.to_string()).collect()
+    };
+    let mut findings = String::from("\n\n# Appendix A: Findings by dimension\n\n| Dimension | Code | Count |\n|---|---|---|\n");
+    let mut any_findings = false;
+    for dim in &dim_names {
+        for (code, count, _) in db.distinct_codes_with_meta(dim).await.unwrap_or_default() {
+            findings.push_str(&format!("| {dim} | {code} | {count} |\n"));
+            any_findings = true;
+        }
+    }
+    if any_findings {
+        md.push_str(&findings);
+    }
+
+    // Appendix B — PRISMA 2020 checklist (already a markdown table).
+    if let Ok(checklist) = draft::generate_checklist(&db).await {
+        md.push_str("\n\n# Appendix B: PRISMA 2020 checklist\n\n");
+        let body = checklist
+            .strip_prefix("# PRISMA 2020 checklist\n\n")
+            .unwrap_or(&checklist);
+        md.push_str(body);
+    }
+
+    let docx = draft::markdown_to_docx(&md);
+    let dir = db.workspace.join("drafts");
+    std::fs::create_dir_all(&dir).map_err(err)?;
+    let path = dir.join("full-report.docx");
+    let file = std::fs::File::create(&path).map_err(err)?;
+    docx.build().pack(file).map_err(err)?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
 #[derive(Debug, Serialize)]
 struct ExportSummary {
     files: Vec<String>,
@@ -4334,6 +4382,7 @@ pub fn run() {
             generate_draft,
             generate_agenda,
             generate_synthesis,
+            export_docx,
             export_csvs,
             check_project_lock,
             snapshot_now,
