@@ -3893,11 +3893,24 @@ async fn generate_draft(state: State<'_, AppState>) -> Result<String, String> {
     Ok(content)
 }
 
-/// Draft a future-research agenda (SPAR-4-SLR Evaluation) from the review's RQs,
-/// framework, and the dimension→code frequency table. Returns markdown for the
-/// editor; the frontend persists it via project.research_agenda.
+#[derive(Debug, Deserialize, Default)]
+struct AgendaArgs {
+    /// Researcher's clarifying answers to weave into a fresh agenda.
+    #[serde(default)]
+    guidance: Option<String>,
+    /// Existing agenda to revise (paired with `instruction`).
+    #[serde(default)]
+    current: Option<String>,
+    /// Revision instruction applied to `current`.
+    #[serde(default)]
+    instruction: Option<String>,
+}
+
+/// Draft (or revise) a future-research agenda (SPAR-4-SLR Evaluation) from the
+/// review's RQs, framework, dimension findings, and optional researcher guidance.
+/// Returns markdown; the frontend persists it via project.research_agenda.
 #[tauri::command]
-async fn generate_agenda(state: State<'_, AppState>) -> Result<String, String> {
+async fn generate_agenda(args: AgendaArgs, state: State<'_, AppState>) -> Result<String, String> {
     let db = state.current().await.ok_or("no project open")?;
     let settings = db.all_settings().await.map_err(err)?;
     let base_url = settings.get("lmstudio.base_url").and_then(|v| v.as_str()).unwrap_or("http://127.0.0.1:1234/v1").to_string();
@@ -3933,7 +3946,96 @@ async fn generate_agenda(state: State<'_, AppState>) -> Result<String, String> {
         dims_with_codes.push((dim.clone(), codes.into_iter().map(|(c, n, _)| (c, n)).collect()));
     }
 
-    suggest::generate_research_agenda(&base_url, &model, &domain, &framework, &rq_refs, &dims_with_codes, temperature, api_key.as_deref())
+    suggest::generate_research_agenda(
+        &base_url,
+        &model,
+        &domain,
+        &framework,
+        &rq_refs,
+        &dims_with_codes,
+        args.guidance.as_deref(),
+        args.current.as_deref(),
+        args.instruction.as_deref(),
+        temperature,
+        api_key.as_deref(),
+    )
+    .await
+    .map_err(err)
+}
+
+/// Generate a structured, cited synthesis narrative organised by framework
+/// dimension. Retrieves corpus chunks per dimension (embedding "dimension:
+/// codes") and asks the chat model to synthesise. Returns markdown; the frontend
+/// persists it via project.synthesis.
+#[tauri::command]
+async fn generate_synthesis(state: State<'_, AppState>) -> Result<String, String> {
+    let db = state.current().await.ok_or("no project open")?;
+    let settings = db.all_settings().await.map_err(err)?;
+    let base_url = settings.get("lmstudio.base_url").and_then(|v| v.as_str()).unwrap_or("http://127.0.0.1:1234/v1").to_string();
+    let api_key = settings.get("lmstudio.api_key").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let chat_model = settings.get("lmstudio.chat_model").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let embed_model = settings.get("lmstudio.embed_model").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    if chat_model.is_empty() || embed_model.is_empty() {
+        return Err("Set both a reasoning model and an embedding model in Settings.".into());
+    }
+    let temperature = load_temperature(&settings, "temperature.qa", 0.2);
+
+    let project = db.get_project().await.map_err(err)?;
+    let domain = project.domain.clone().unwrap_or_default();
+    let framework = project.framework.clone().unwrap_or_default();
+    let rqs: Vec<String> = [project.rq_what.clone(), project.rq_how.clone(), project.rq_where.clone()]
+        .into_iter()
+        .flatten()
+        .filter(|s| !s.trim().is_empty())
+        .collect();
+    let rq_refs: Vec<&str> = rqs.iter().map(|s| s.as_str()).collect();
+
+    let dim_names: Vec<String> = if framework == "Custom" {
+        let defs = db.list_framework_code_defs().await.map_err(err)?;
+        let mut seen = std::collections::HashSet::new();
+        defs.into_iter().filter_map(|d| seen.insert(d.dimension.clone()).then_some(d.dimension)).collect()
+    } else {
+        framework::dimensions_for(&framework).into_iter().map(|d| d.to_string()).collect()
+    };
+
+    let all_chunks = db.all_embedded_chunks().await.map_err(err)?;
+    if all_chunks.is_empty() {
+        return Err("No embedded chunks yet. Add PDFs and run Index corpus first.".into());
+    }
+    let scored_pool: Vec<((i64, i64, String, i64, String), Vec<f32>)> = all_chunks
+        .into_iter()
+        .map(|(id, art_id, title, ci, text, bytes)| ((id, art_id, title, ci, text), vector::bytes_to_f32s(&bytes)))
+        .collect();
+
+    let mut dims: Vec<(String, Vec<String>, Vec<(String, String)>)> = Vec::new();
+    for dim in &dim_names {
+        let codes: Vec<String> = db
+            .distinct_codes_with_meta(dim)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(c, _, _)| c)
+            .collect();
+        // Retrieve excerpts most relevant to this dimension + its codes.
+        let query = format!("{dim}: {}", codes.join(", "));
+        let excerpts = match lmstudio::embed(&base_url, &embed_model, &[&query], api_key.as_deref()).await {
+            Ok(mut v) if !v.is_empty() => {
+                let q = v.remove(0);
+                let top = vector::top_k(scored_pool.clone(), &q, 4);
+                top.into_iter()
+                    .map(|s| {
+                        let (_, _, title, _, text) = s.item;
+                        let snippet: String = text.chars().take(700).collect();
+                        (title, snippet)
+                    })
+                    .collect::<Vec<_>>()
+            }
+            _ => Vec::new(),
+        };
+        dims.push((dim.clone(), codes, excerpts));
+    }
+
+    suggest::generate_synthesis(&base_url, &chat_model, &domain, &framework, &rq_refs, &dims, temperature, api_key.as_deref())
         .await
         .map_err(err)
 }
@@ -4231,6 +4333,7 @@ pub fn run() {
             build_rag_index,
             generate_draft,
             generate_agenda,
+            generate_synthesis,
             export_csvs,
             check_project_lock,
             snapshot_now,

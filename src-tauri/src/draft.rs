@@ -117,13 +117,19 @@ pub async fn generate(db: &ProjectDb) -> Result<String> {
         "The synthesized corpus was analysed using a {method} analysis approach, with each included article coded across every dimension of the framework.\n\n"
     ));
 
-    // Results placeholder
+    // Results
     s.push_str("## 3. Results\n\n");
     s.push_str(&format!(
-        "The final corpus comprises {} articles. The following sections present findings organised by framework dimension. Tables of included articles, codings, and excluded articles are exported alongside this draft as CSV files.\n\n",
+        "The final corpus comprises {} articles. Tables of included articles, codings, and excluded articles are exported alongside this draft as CSV files.\n\n",
         included.len()
     ));
-    s.push_str("[TO COMPLETE — write a short narrative for each dimension. Use the Coding panel and the Ask the corpus tool to identify patterns.]\n\n");
+    match project.synthesis.as_ref().filter(|x| !x.trim().is_empty()) {
+        Some(syn) => {
+            s.push_str(syn.trim());
+            s.push_str("\n\n");
+        }
+        None => s.push_str("[TO COMPLETE — generate a synthesis in Stage 3 → Synthesis, or write a short narrative for each dimension here.]\n\n"),
+    }
 
     // Discussion
     s.push_str("## 4. Discussion\n\n");

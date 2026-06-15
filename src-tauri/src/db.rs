@@ -45,6 +45,7 @@ pub struct ProjectRow {
     pub research_agenda: Option<String>,
     pub review_limitations: Option<String>,
     pub sources_of_support: Option<String>,
+    pub synthesis: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -415,6 +416,7 @@ impl ProjectDb {
             research_agenda: row.get("research_agenda"),
             review_limitations: row.get("review_limitations"),
             sources_of_support: row.get("sources_of_support"),
+            synthesis: row.get("synthesis"),
             created_at: row.get("created_at"),
             updated_at: row.get("updated_at"),
         })
@@ -451,6 +453,7 @@ impl ProjectDb {
             "project.research_agenda" => Some("research_agenda"),
             "project.review_limitations" => Some("review_limitations"),
             "project.sources_of_support" => Some("sources_of_support"),
+            "project.synthesis" => Some("synthesis"),
             "project.current_stage" => Some("current_stage"),
             _ => None,
         };

@@ -34,6 +34,7 @@ export interface ProjectRow {
   research_agenda: string | null;
   review_limitations: string | null;
   sources_of_support: string | null;
+  synthesis: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -820,8 +821,11 @@ export const api = {
   generateDraft() {
     return invoke<string>("generate_draft");
   },
-  generateAgenda() {
-    return invoke<string>("generate_agenda");
+  generateAgenda(args?: { guidance?: string; current?: string; instruction?: string }) {
+    return invoke<string>("generate_agenda", { args: args ?? {} });
+  },
+  generateSynthesis() {
+    return invoke<string>("generate_synthesis");
   },
   exportCsvs() {
     return invoke<ExportSummary>("export_csvs");

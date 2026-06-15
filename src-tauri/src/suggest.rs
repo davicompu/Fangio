@@ -1327,6 +1327,7 @@ No prose before or after the JSON."
 /// Draft a future-research agenda from the review's questions, framework, and the
 /// dimension→code frequency table. Returns markdown (bulleted directions).
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 pub async fn generate_research_agenda(
     base_url: &str,
     model: &str,
@@ -1334,6 +1335,9 @@ pub async fn generate_research_agenda(
     framework: &str,
     research_questions: &[&str],
     dims_with_codes: &[(String, Vec<(String, i64)>)],
+    guidance: Option<&str>,
+    revise_current: Option<&str>,
+    revise_instruction: Option<&str>,
     temperature: f32,
     api_key: Option<&str>,
 ) -> Result<String> {
@@ -1365,7 +1369,24 @@ pub async fn generate_research_agenda(
         .collect::<Vec<_>>()
         .join("\n");
 
-    let system = "You are a research methodologist helping a scholar write the future-research \
+    let context = format!(
+        "Domain: {domain}\nFramework: {framework}\nResearch questions:\n{rqs_block}\n\n\
+Codes applied per dimension (with counts):\n{findings_block}"
+    );
+
+    let (system, user) = if let (Some(cur), Some(instr)) = (revise_current, revise_instruction) {
+        // Revision mode — rework the existing agenda per the instruction.
+        let system = "You are revising a future-research agenda for a systematic literature \
+review. Apply the researcher's revision instruction faithfully while keeping every direction \
+specific and grounded in the review's questions and findings. Return the FULL revised agenda \
+as markdown bullet points only, no preamble."
+            .to_string();
+        let user = format!(
+            "{context}\n\nCurrent agenda:\n{cur}\n\nRevision instruction: {instr}\n\nReturn the full revised agenda now."
+        );
+        (system, user)
+    } else {
+        let system = "You are a research methodologist helping a scholar write the future-research \
 agenda for a systematic literature review (SPAR-4-SLR, Assessing stage). You are given the \
 review's domain, organising framework, research questions, and the frequency of codes applied \
 across each framework dimension. Codes that appear rarely or unevenly across dimensions often \
@@ -1374,11 +1395,79 @@ Write a concise future-research agenda as 4–7 markdown bullet points. Each bul
 specific, defensible research direction grounded in the dimensions and gaps shown — not generic \
 advice. Where useful, frame a direction as a question. Respond with the markdown bullets only, \
 no preamble."
+            .to_string();
+        let mut user = context.clone();
+        if let Some(g) = guidance.filter(|g| !g.trim().is_empty()) {
+            user.push_str(&format!(
+                "\n\nThe researcher's priorities for the agenda (weave these in):\n{}",
+                g.trim()
+            ));
+        }
+        user.push_str("\n\nWrite the agenda now.");
+        (system, user)
+    };
+
+    let messages = vec![
+        ChatMessage { role: "system".into(), content: system },
+        ChatMessage { role: "user".into(), content: user },
+    ];
+
+    let result = lmstudio::chat(base_url, model, &messages, Some(temperature), api_key).await?;
+    Ok(result.content.trim().to_string())
+}
+
+/// Write a structured, cited synthesis narrative organised by framework
+/// dimension. `dims` is `(dimension, codes, excerpts)` where excerpts are
+/// `(source_title, text)` retrieved from the corpus for that dimension.
+#[allow(clippy::too_many_arguments)]
+pub async fn generate_synthesis(
+    base_url: &str,
+    model: &str,
+    domain: &str,
+    framework: &str,
+    research_questions: &[&str],
+    dims: &[(String, Vec<String>, Vec<(String, String)>)],
+    temperature: f32,
+    api_key: Option<&str>,
+) -> Result<String> {
+    let rqs_block = if research_questions.is_empty() {
+        "(not specified)".to_string()
+    } else {
+        research_questions
+            .iter()
+            .enumerate()
+            .map(|(i, q)| format!("{}. {q}", i + 1))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    let mut blocks = String::new();
+    for (dim, codes, excerpts) in dims {
+        blocks.push_str(&format!("\n## Dimension: {dim}\n"));
+        if !codes.is_empty() {
+            blocks.push_str(&format!("Coded themes in this dimension: {}\n", codes.join(", ")));
+        }
+        if excerpts.is_empty() {
+            blocks.push_str("(no relevant excerpts retrieved)\n");
+        } else {
+            for (title, text) in excerpts {
+                blocks.push_str(&format!("- Source \"{title}\": {text}\n"));
+            }
+        }
+    }
+
+    let system = "You are writing the Results/synthesis section of a systematic literature \
+review. Write a structured narrative ORGANISED BY THE FRAMEWORK DIMENSIONS provided. For each \
+dimension, synthesise what the corpus says — drawing on the coded themes and the excerpts — \
+noting agreements, tensions, and gaps. \
+Cite sources inline by their title, e.g. 'Smith et al. found …'. Only state what the excerpts \
+support; do not invent findings. Use markdown: a '##' heading per dimension, prose and bullets \
+beneath. No preamble before the first heading."
         .to_string();
 
     let user = format!(
         "Domain: {domain}\nFramework: {framework}\nResearch questions:\n{rqs_block}\n\n\
-Codes applied per dimension (with counts):\n{findings_block}\n\nWrite the agenda now."
+Per-dimension coded themes and retrieved excerpts:\n{blocks}\n\nWrite the synthesis now."
     );
 
     let messages = vec![

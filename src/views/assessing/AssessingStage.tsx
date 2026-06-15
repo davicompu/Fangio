@@ -15,7 +15,7 @@ import {
 import type { ProjectRow, AssessingProgress } from "../../lib/api";
 import { api } from "../../lib/api";
 import { PdfLibraryPanel } from "./PdfLibraryPanel";
-import { AskCorpusPanel } from "./AskCorpusPanel";
+import { SynthesisPanel } from "./SynthesisPanel";
 import { FindingsPanel } from "./FindingsPanel";
 import { AgendaPanel } from "./AgendaPanel";
 import { DraftPanel } from "./DraftPanel";
@@ -121,7 +121,7 @@ export function AssessingStage({ project, onLeaveStage, onOpenRag }: Props) {
       progress != null && progress.articles_included > 0 &&
       progress.articles_with_pdf / progress.articles_included >= 0.8,
     findings: () => false, // reference view (analysis method is derived from the framework)
-    ask: () => false, // manual only
+    ask: () => !!(project.synthesis && project.synthesis.trim()),
     agenda: () => !!(project.research_agenda && project.research_agenda.trim()),
     prisma: () => false, // manual only
     draft: () => !!progress?.has_draft,
@@ -188,7 +188,7 @@ export function AssessingStage({ project, onLeaveStage, onOpenRag }: Props) {
             >
               {tab === "library" && <PdfLibraryPanel refreshKey={refreshTick} onChanged={onChanged} />}
               {tab === "findings" && <FindingsPanel project={project} />}
-              {tab === "ask" && <AskCorpusPanel />}
+              {tab === "ask" && <SynthesisPanel project={project} onOpenChat={onOpenRag} />}
               {tab === "agenda" && <AgendaPanel project={project} />}
               {tab === "prisma" && <PrismaPanel refreshKey={refreshTick} />}
               {tab === "draft" && <DraftPanel project={project} />}
@@ -231,7 +231,7 @@ export function AssessingStage({ project, onLeaveStage, onOpenRag }: Props) {
                 )}
               </div>
 
-              {(tab === "library" || tab === "ask" || tab === "prisma" || tab === "export") && (
+              {(tab === "library" || tab === "prisma" || tab === "export") && (
                 <div className="mt-3">
                   <MarkStepComplete
                     stage="assessing"
