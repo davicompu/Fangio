@@ -177,7 +177,24 @@ function App() {
             exit={{ opacity: 0 }}
             transition={{ duration: 0.35 }}
           >
-            <ArrangingStage project={project} onLeaveStage={() => setRoute("hub")} onProjectChanged={refreshProject} lmModels={lm.models} defaultChatModel={settings["lmstudio.chat_model"]} />
+            <ArrangingStage
+              project={project}
+              onLeaveStage={() => setRoute("hub")}
+              onProjectChanged={refreshProject}
+              onAdvanceStage={async (nextStage) => {
+                await api.saveDecision({
+                  stage: "arranging",
+                  sub_stage: null,
+                  decision_key: "project.current_stage",
+                  value_json: JSON.stringify(nextStage),
+                  rationale: null,
+                });
+                await refreshProject();
+                setRoute("assessing");
+              }}
+              lmModels={lm.models}
+              defaultChatModel={settings["lmstudio.chat_model"]}
+            />
           </motion.div>
         )}
         {project && project.onboarding_complete && route === "assessing" && (

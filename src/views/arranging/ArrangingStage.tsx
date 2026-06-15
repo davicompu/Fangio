@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   ArrowLeft,
+  ArrowRight,
   Binoculars,
   Boxes,
   ChevronDown,
@@ -37,6 +38,7 @@ interface Props {
   project: ProjectRow;
   onLeaveStage: () => void;
   onProjectChanged: () => Promise<void>;
+  onAdvanceStage: (nextStage: "assessing") => Promise<void>;
   lmModels: LmModel[];
   defaultChatModel: string;
 }
@@ -79,8 +81,9 @@ const tabInfo: Record<Tab, { headline: string; body: string; tip?: string }> = {
   },
 };
 
-export function ArrangingStage({ project, onLeaveStage, onProjectChanged, lmModels, defaultChatModel }: Props) {
+export function ArrangingStage({ project, onLeaveStage, onProjectChanged, onAdvanceStage, lmModels, defaultChatModel }: Props) {
   const [tab, setTab] = useState<Tab>("organization");
+  const [advancing, setAdvancing] = useState(false);
   const [refreshTick, setRefreshTick] = useState(0);
   const [progress, setProgress] = useState<ArrangingProgress | null>(null);
   const [progressSettings, setProgressSettings] = useState<Record<string, unknown>>({});
@@ -194,6 +197,22 @@ export function ArrangingStage({ project, onLeaveStage, onProjectChanged, lmMode
             </h1>
           </div>
         </div>
+        <button
+          onClick={async () => {
+            setAdvancing(true);
+            try {
+              await onAdvanceStage("assessing");
+            } finally {
+              setAdvancing(false);
+            }
+          }}
+          disabled={advancing}
+          className="no-drag inline-flex items-center gap-2 px-4 h-9 rounded-[var(--radius-sm)] text-[12px] font-semibold bg-[var(--color-ink-800)] text-white hover:bg-[var(--color-ink-900)] shadow-sm transition-paper disabled:opacity-50"
+          title="Mark Stage 2 complete and open Stage 3 (Assessing)"
+        >
+          {advancing ? <Loader2 size={13} className="animate-spin" /> : <ArrowRight size={13} strokeWidth={2} />}
+          Proceed to Stage 3
+        </button>
       </header>
 
       <nav className="px-6 xl:px-12 mb-6">
