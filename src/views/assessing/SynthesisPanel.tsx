@@ -60,7 +60,7 @@ export function SynthesisPanel({ project, onOpenChat, onSaved }: { project: Proj
   const hasText = !!text.trim();
 
   return (
-    <div className="space-y-5 max-w-3xl">
+    <div className="space-y-5 max-w-5xl">
       <div>
         <span className="eyebrow text-[var(--color-paper-500)]">Evaluation · synthesis</span>
         <h3 className="font-serif text-[20px] tracking-tight text-[var(--color-ink-900)] mt-0.5">
