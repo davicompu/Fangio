@@ -3,6 +3,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   CheckCircle2,
+  ExternalLink,
   FileText,
   Layers,
   Loader2,
@@ -25,19 +26,69 @@ interface Props {
 export function PdfLibraryPanel({ refreshKey, onChanged }: Props) {
   const [pdfs, setPdfs] = useState<PdfRow[]>([]);
   const [included, setIncluded] = useState<ArticleRow[]>([]);
+  const [codesByArticle, setCodesByArticle] = useState<Map<number, string[]>>(new Map());
   const [busy, setBusy] = useState(false);
   const [busyId, setBusyId] = useState<number | null>(null);
+  const [indexingAll, setIndexingAll] = useState(false);
+  const [indexAllMsg, setIndexAllMsg] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const reload = async () => {
-    const [p, all] = await Promise.all([api.listPdfs(), api.listArticles()]);
+    const [p, all, batch] = await Promise.all([
+      api.listPdfs(),
+      api.listArticles(),
+      api.listCodingBatch(0, 9999),
+    ]);
     setPdfs(p);
     setIncluded(all.filter((a) => a.status === "included"));
+    const m = new Map<number, string[]>();
+    for (const c of batch.codings) {
+      const arr = m.get(c.article_id) ?? [];
+      if (!arr.includes(c.code)) arr.push(c.code);
+      m.set(c.article_id, arr);
+    }
+    setCodesByArticle(m);
   };
 
   useEffect(() => {
     reload();
   }, [refreshKey]);
+
+  // Index + embed every linked PDF that isn't fully embedded yet, in one go —
+  // so the researcher doesn't have to remember to do each row by hand.
+  const indexCorpus = async () => {
+    const pending = pdfs.filter((p) => p.article_id !== null && (!p.indexed_at || !p.embedded_at));
+    if (pending.length === 0) {
+      setIndexAllMsg("Corpus already indexed and embedded.");
+      return;
+    }
+    setIndexingAll(true);
+    setError(null);
+    let done = 0;
+    try {
+      for (const p of pending) {
+        setIndexAllMsg(`Indexing ${done + 1} of ${pending.length}…`);
+        if (!p.indexed_at) await api.indexPdf(p.id);
+        await api.embedPdf(p.id);
+        done++;
+      }
+      setIndexAllMsg(`Indexed and embedded ${done} PDF${done !== 1 ? "s" : ""}.`);
+      await reload();
+      onChanged();
+    } catch (e: any) {
+      setError(e?.toString() || String(e));
+    } finally {
+      setIndexingAll(false);
+    }
+  };
+
+  const openPdf = async (p: PdfRow) => {
+    try {
+      await api.openPdfPath(p.stored_path);
+    } catch (e: any) {
+      setError(e?.toString() || String(e));
+    }
+  };
 
   const pickPdf = async () => {
     setError(null);
@@ -123,11 +174,23 @@ export function PdfLibraryPanel({ refreshKey, onChanged }: Props) {
             cite real passages.
           </p>
         </div>
-        <Button onClick={pickPdf} variant="primary" disabled={busy}>
-          {busy ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} strokeWidth={2} />}
-          Add PDF
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button onClick={indexCorpus} variant="secondary" disabled={indexingAll || busy}>
+            {indexingAll ? <Loader2 size={14} className="animate-spin" /> : <Layers size={14} strokeWidth={1.75} />}
+            Index corpus
+          </Button>
+          <Button onClick={pickPdf} variant="primary" disabled={busy}>
+            {busy ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} strokeWidth={2} />}
+            Add PDF
+          </Button>
+        </div>
       </div>
+
+      {indexAllMsg && (
+        <div className="mb-4 px-4 py-2.5 rounded-[var(--radius-sm)] bg-[var(--color-paper-100)] border border-[var(--color-paper-300)] text-[12px] text-[var(--color-paper-600)]">
+          {indexAllMsg}
+        </div>
+      )}
 
       {error && (
         <div className="mb-4 px-4 py-3 rounded-[var(--radius-sm)] bg-[var(--color-accent-50)] border border-[var(--color-accent-300)] text-[13px] text-[var(--color-accent-700)]">
@@ -152,8 +215,11 @@ export function PdfLibraryPanel({ refreshKey, onChanged }: Props) {
               <PdfRowCard
                 key={p.id}
                 pdf={p}
+                article={p.article_id != null ? included.find((a) => a.id === p.article_id) ?? null : null}
+                codes={p.article_id != null ? codesByArticle.get(p.article_id) ?? [] : []}
                 included={included}
                 busy={busyId === p.id}
+                onOpen={() => openPdf(p)}
                 onLink={(aid) => link(p.id, aid)}
                 onIndex={() => index(p.id)}
                 onEmbed={() => embed(p.id)}
@@ -169,16 +235,22 @@ export function PdfLibraryPanel({ refreshKey, onChanged }: Props) {
 
 function PdfRowCard({
   pdf,
+  article,
+  codes,
   included,
   busy,
+  onOpen,
   onLink,
   onIndex,
   onEmbed,
   onRemove,
 }: {
   pdf: PdfRow;
+  article: ArticleRow | null;
+  codes: string[];
   included: ArticleRow[];
   busy: boolean;
+  onOpen: () => void;
   onLink: (articleId: number) => void;
   onIndex: () => void;
   onEmbed: () => void;
@@ -187,6 +259,12 @@ function PdfRowCard({
   const linked = pdf.article_id !== null;
   const indexed = pdf.indexed_at !== null;
   const embedded = pdf.embedded_at !== null;
+
+  // Lead with the article's scholarly identity, not the filename.
+  const heading = article?.title ?? pdf.filename;
+  const meta = [article?.authors, article?.year?.toString(), article?.journal]
+    .filter(Boolean)
+    .join(" · ");
 
   return (
     <motion.div
@@ -197,18 +275,48 @@ function PdfRowCard({
     >
       <Card className="p-5">
         <div className="flex items-start gap-4">
-          <div className="w-10 h-12 rounded-[var(--radius-xs)] bg-[var(--color-paper-200)] text-[var(--color-paper-600)] flex items-center justify-center shrink-0">
+          <button
+            onClick={onOpen}
+            title="Open the PDF"
+            className="w-10 h-12 rounded-[var(--radius-xs)] bg-[var(--color-paper-200)] text-[var(--color-paper-600)] hover:bg-[var(--color-accent-100)] hover:text-[var(--color-accent-600)] flex items-center justify-center shrink-0 transition-paper"
+          >
             <FileText size={18} strokeWidth={1.5} />
-          </div>
+          </button>
           <div className="flex-1 min-w-0">
-            <div className="font-medium text-[14px] text-[var(--color-ink-900)] truncate">
-              {pdf.filename}
-            </div>
-            <div className="flex flex-wrap items-center gap-3 mt-1 text-[11px] text-[var(--color-paper-500)]">
+            <button
+              onClick={onOpen}
+              title="Open the PDF"
+              className="group flex items-start gap-1.5 text-left"
+            >
+              <span className="font-medium text-[15px] text-[var(--color-ink-900)] leading-snug group-hover:text-[var(--color-accent-700)] group-hover:underline underline-offset-2 decoration-[var(--color-accent-300)]">
+                {heading}
+              </span>
+              <ExternalLink size={12} strokeWidth={1.75} className="mt-1 shrink-0 text-[var(--color-paper-400)] group-hover:text-[var(--color-accent-600)]" />
+            </button>
+            {meta && (
+              <div className="text-[12px] text-[var(--color-paper-600)] mt-0.5">{meta}</div>
+            )}
+            {article?.abstract_text && (
+              <p className="text-[12px] text-[var(--color-paper-500)] leading-[1.6] mt-1.5 line-clamp-3">
+                {article.abstract_text}
+              </p>
+            )}
+            {codes.length > 0 && (
+              <div className="flex flex-wrap gap-1 mt-2">
+                {codes.slice(0, 10).map((c) => (
+                  <span key={c} className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-[var(--color-paper-100)] border border-[var(--color-paper-300)] text-[var(--color-paper-600)]">
+                    {c}
+                  </span>
+                ))}
+                {codes.length > 10 && (
+                  <span className="text-[10px] text-[var(--color-paper-400)] self-center">+{codes.length - 10} more</span>
+                )}
+              </div>
+            )}
+            <div className="flex flex-wrap items-center gap-3 mt-2.5 text-[11px] text-[var(--color-paper-500)]">
+              <span className="font-mono text-[10px] text-[var(--color-paper-400)] truncate max-w-[220px]" title={pdf.filename}>{pdf.filename}</span>
               {pdf.text_length && (
-                <span className="font-mono tabular-nums">
-                  {pdf.text_length.toLocaleString()} chars
-                </span>
+                <span className="font-mono tabular-nums">{pdf.text_length.toLocaleString()} chars</span>
               )}
               <StatusPill on={linked} label="linked" />
               <StatusPill on={indexed} label="indexed" />
