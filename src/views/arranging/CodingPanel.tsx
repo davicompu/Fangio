@@ -424,7 +424,7 @@ export function CodingPanel({ project, refreshKey, onChanged, initialCodeFilter,
             {onOpenAiCodingModal && (
               <Button variant="ghost" size="sm" onClick={onOpenAiCodingModal}>
                 <Sparkles size={13} strokeWidth={1.75} className="text-[var(--color-accent-500)]" />
-                Code with AI
+                Code with AI Raters
               </Button>
             )}
             <button

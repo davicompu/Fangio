@@ -103,7 +103,7 @@ export function AiCodingModal({
         <div className="flex items-center gap-2.5 px-5 py-4 border-b border-[var(--color-paper-200)]">
           <Sparkles size={16} strokeWidth={1.75} className="text-[var(--color-accent-500)]" />
           <h2 className="font-semibold text-[15px] text-[var(--color-ink-900)] flex-1">
-            Code with AI
+            Code with AI Raters
           </h2>
           <button
             onClick={onClose}
