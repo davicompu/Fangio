@@ -205,7 +205,7 @@ function App() {
             exit={{ opacity: 0 }}
             transition={{ duration: 0.35 }}
           >
-            <AssessingStage project={project} onLeaveStage={() => setRoute("hub")} onOpenRag={() => openRag("assessing")} />
+            <AssessingStage project={project} onLeaveStage={() => setRoute("hub")} onProjectChanged={refreshProject} onOpenRag={() => openRag("assessing")} />
           </motion.div>
         )}
         {project && project.onboarding_complete && route === "rag" && (

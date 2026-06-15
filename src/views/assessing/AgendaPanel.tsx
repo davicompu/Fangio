@@ -13,7 +13,7 @@ const CLARIFIERS = [
 
 /** Evaluation (SPAR-4-SLR 3a): the research-agenda proposal. Clarify → generate
  * → revise by prompt. Grounded in RQs + dimension findings. */
-export function AgendaPanel({ project }: { project: ProjectRow }) {
+export function AgendaPanel({ project, onSaved }: { project: ProjectRow; onSaved?: () => void | Promise<void> }) {
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [agenda, setAgenda] = useState(project.research_agenda ?? "");
   const [instruction, setInstruction] = useState("");
@@ -81,6 +81,7 @@ export function AgendaPanel({ project }: { project: ProjectRow }) {
         value_json: JSON.stringify(agenda),
         rationale: null,
       });
+      await onSaved?.();
       setSaved(true);
       setTimeout(() => setSaved(false), 1500);
     } catch (e: any) {

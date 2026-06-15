@@ -15,7 +15,7 @@ const ANALYSIS_METHODS = [
 
 /** Evaluation (SPAR-4-SLR 3a): the evidence base — code frequencies per
  * framework dimension from Stage 2 — plus the recorded analysis method. */
-export function FindingsPanel({ project }: { project: ProjectRow }) {
+export function FindingsPanel({ project, onSaved }: { project: ProjectRow; onSaved?: () => void | Promise<void> }) {
   const [dimensions, setDimensions] = useState<DimensionInfo[]>([]);
   const [codings, setCodings] = useState<CodingRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -67,6 +67,7 @@ export function FindingsPanel({ project }: { project: ProjectRow }) {
         value_json: JSON.stringify(value),
         rationale: null,
       });
+      await onSaved?.();
       setSavedMethod(true);
       setTimeout(() => setSavedMethod(false), 1500);
     } catch {

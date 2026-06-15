@@ -28,6 +28,7 @@ import { MarkStepComplete } from "../../components/MarkStepComplete";
 interface Props {
   project: ProjectRow;
   onLeaveStage: () => void;
+  onProjectChanged: () => Promise<void> | void;
   onOpenRag: () => void;
 }
 
@@ -58,8 +59,8 @@ const tabInfo: Record<Tab, { headline: string; body: string; tip?: string }> = {
   },
   ask: {
     headline: "Evaluation · synthesis",
-    body: "Ask questions of your full-text corpus using retrieval-augmented generation. The AI searches your indexed PDFs and synthesises an answer with citations.\n\nUse it to find patterns, check claims, and draft specific sections of your manuscript.",
-    tip: "Specific questions get better answers. 'Which papers use SEM?' beats 'What methods were used?'",
+    body: "Generate a cited synthesis of your corpus, organised by framework dimension and grounded in your coded themes. Edit it freely — it feeds the manuscript's Results section.\n\nFor ad-hoc questions about specific papers, use 'Chat with the literature' to query the corpus interactively.",
+    tip: "Generate first, then tighten the narrative per dimension. The chat is for one-off lookups; the synthesis is the artifact you keep.",
   },
   agenda: {
     headline: "Evaluation · research agenda",
@@ -83,7 +84,7 @@ const tabInfo: Record<Tab, { headline: string; body: string; tip?: string }> = {
   },
 };
 
-export function AssessingStage({ project, onLeaveStage, onOpenRag }: Props) {
+export function AssessingStage({ project, onLeaveStage, onProjectChanged, onOpenRag }: Props) {
   const [tab, setTab] = useState<Tab>("library");
   const [refreshTick, setRefreshTick] = useState(0);
 
@@ -115,6 +116,13 @@ export function AssessingStage({ project, onLeaveStage, onOpenRag }: Props) {
   }, [tab]);
 
   const onChanged = () => setRefreshTick((t) => t + 1);
+  // A panel saved to a project column (synthesis, agenda, analysis method,
+  // limitations, funding). Refresh the project prop so the panel re-seeds from
+  // fresh data when it remounts on a tab switch — otherwise the save is lost.
+  const onSaved = async () => {
+    await onProjectChanged();
+    setRefreshTick((t) => t + 1);
+  };
   const manualFlags = readManualFlags("assessing", TAB_IDS, progressSettings);
   const status = useTabProgress<Tab>(tab, {
     library: () =>
@@ -187,11 +195,11 @@ export function AssessingStage({ project, onLeaveStage, onOpenRag }: Props) {
               className="pl-6 pr-4 xl:pl-12 xl:pr-8"
             >
               {tab === "library" && <PdfLibraryPanel refreshKey={refreshTick} onChanged={onChanged} />}
-              {tab === "findings" && <FindingsPanel project={project} />}
-              {tab === "ask" && <SynthesisPanel project={project} onOpenChat={onOpenRag} />}
-              {tab === "agenda" && <AgendaPanel project={project} />}
+              {tab === "findings" && <FindingsPanel project={project} onSaved={onSaved} />}
+              {tab === "ask" && <SynthesisPanel project={project} onOpenChat={onOpenRag} onSaved={onSaved} />}
+              {tab === "agenda" && <AgendaPanel project={project} onSaved={onSaved} />}
               {tab === "prisma" && <PrismaPanel refreshKey={refreshTick} />}
-              {tab === "draft" && <DraftPanel project={project} />}
+              {tab === "draft" && <DraftPanel project={project} onSaved={onSaved} />}
               {tab === "export" && <ExportPanel />}
             </motion.div>
           </AnimatePresence>

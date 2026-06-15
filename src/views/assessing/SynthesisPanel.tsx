@@ -8,7 +8,7 @@ import { Markdown } from "../../components/Markdown";
 /** Evaluation (SPAR-4-SLR 3a): a generated, cited synthesis of the corpus,
  * organised by framework dimension. Editable and saved; feeds the manuscript's
  * Results section. Ad-hoc questions go to the literature chat instead. */
-export function SynthesisPanel({ project, onOpenChat }: { project: ProjectRow; onOpenChat: () => void }) {
+export function SynthesisPanel({ project, onOpenChat, onSaved }: { project: ProjectRow; onOpenChat: () => void; onSaved?: () => void | Promise<void> }) {
   const [text, setText] = useState(project.synthesis ?? "");
   const [generating, setGenerating] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -47,6 +47,7 @@ export function SynthesisPanel({ project, onOpenChat }: { project: ProjectRow; o
         value_json: JSON.stringify(text),
         rationale: null,
       });
+      await onSaved?.();
       setSaved(true);
       setTimeout(() => setSaved(false), 1500);
     } catch (e: any) {

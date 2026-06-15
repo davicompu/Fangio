@@ -16,9 +16,10 @@ import { DraftEditor } from "../../components/DraftEditor";
 
 interface Props {
   project: ProjectRow;
+  onSaved?: () => void | Promise<void>;
 }
 
-export function DraftPanel({ project }: Props) {
+export function DraftPanel({ project, onSaved }: Props) {
   const [content, setContent] = useState<string>("");
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState<"generate" | "save" | "regenerate" | null>(null);
@@ -48,6 +49,7 @@ export function DraftPanel({ project }: Props) {
         value_json: JSON.stringify(funding),
         rationale: null,
       });
+      await onSaved?.();
       setDetailsSaved(true);
       setTimeout(() => setDetailsSaved(false), 1500);
     } finally {
