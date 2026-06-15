@@ -3863,6 +3863,51 @@ async fn generate_draft(state: State<'_, AppState>) -> Result<String, String> {
     Ok(content)
 }
 
+/// Draft a future-research agenda (SPAR-4-SLR Evaluation) from the review's RQs,
+/// framework, and the dimension→code frequency table. Returns markdown for the
+/// editor; the frontend persists it via project.research_agenda.
+#[tauri::command]
+async fn generate_agenda(state: State<'_, AppState>) -> Result<String, String> {
+    let db = state.current().await.ok_or("no project open")?;
+    let settings = db.all_settings().await.map_err(err)?;
+    let base_url = settings.get("lmstudio.base_url").and_then(|v| v.as_str()).unwrap_or("http://127.0.0.1:1234/v1").to_string();
+    let api_key = settings.get("lmstudio.api_key").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let model = settings.get("lmstudio.chat_model").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    if model.is_empty() {
+        return Err("Pick a chat model in Settings first.".into());
+    }
+    let temperature = load_temperature(&settings, "temperature.suggestions", 0.3);
+
+    let project = db.get_project().await.map_err(err)?;
+    let domain = project.domain.clone().unwrap_or_default();
+    let framework = project.framework.clone().unwrap_or_default();
+    let rqs: Vec<String> = [project.rq_what.clone(), project.rq_how.clone(), project.rq_where.clone()]
+        .into_iter()
+        .flatten()
+        .filter(|s| !s.trim().is_empty())
+        .collect();
+    let rq_refs: Vec<&str> = rqs.iter().map(|s| s.as_str()).collect();
+
+    // Dimension names for this framework (custom frameworks read their code defs).
+    let dim_names: Vec<String> = if framework == "Custom" {
+        let defs = db.list_framework_code_defs().await.map_err(err)?;
+        let mut seen = std::collections::HashSet::new();
+        defs.into_iter().filter_map(|d| seen.insert(d.dimension.clone()).then_some(d.dimension)).collect()
+    } else {
+        framework::dimensions_for(&framework).into_iter().map(|d| d.to_string()).collect()
+    };
+
+    let mut dims_with_codes: Vec<(String, Vec<(String, i64)>)> = Vec::new();
+    for dim in &dim_names {
+        let codes = db.distinct_codes_with_meta(dim).await.unwrap_or_default();
+        dims_with_codes.push((dim.clone(), codes.into_iter().map(|(c, n, _)| (c, n)).collect()));
+    }
+
+    suggest::generate_research_agenda(&base_url, &model, &domain, &framework, &rq_refs, &dims_with_codes, temperature, api_key.as_deref())
+        .await
+        .map_err(err)
+}
+
 #[derive(Debug, Serialize)]
 struct ExportSummary {
     files: Vec<String>,
@@ -4155,6 +4200,7 @@ pub fn run() {
             get_rag_status,
             build_rag_index,
             generate_draft,
+            generate_agenda,
             export_csvs,
             check_project_lock,
             snapshot_now,

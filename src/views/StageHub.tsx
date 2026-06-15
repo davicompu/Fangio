@@ -58,7 +58,7 @@ const stages = [
     name: "Assessing",
     description: "Evaluation, agenda, and a draft manuscript ready for your edits.",
     icon: PenLine,
-    substages: ["Evaluation", "Reporting", "Draft"],
+    substages: ["Evaluation", "Reporting"],
   },
 ];
 

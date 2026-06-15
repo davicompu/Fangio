@@ -41,6 +41,10 @@ pub struct ProjectRow {
     pub journal_quality: Option<String>,
     pub search_inclusion_criteria: Option<String>,
     pub search_exclusion_criteria: Option<String>,
+    pub analysis_method: Option<String>,
+    pub research_agenda: Option<String>,
+    pub review_limitations: Option<String>,
+    pub sources_of_support: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -407,6 +411,10 @@ impl ProjectDb {
             journal_quality: row.get("journal_quality"),
             search_inclusion_criteria: row.get("search_inclusion_criteria"),
             search_exclusion_criteria: row.get("search_exclusion_criteria"),
+            analysis_method: row.get("analysis_method"),
+            research_agenda: row.get("research_agenda"),
+            review_limitations: row.get("review_limitations"),
+            sources_of_support: row.get("sources_of_support"),
             created_at: row.get("created_at"),
             updated_at: row.get("updated_at"),
         })
@@ -439,6 +447,10 @@ impl ProjectDb {
             "project.journal_quality" => Some("journal_quality"),
             "project.search_inclusion_criteria" => Some("search_inclusion_criteria"),
             "project.search_exclusion_criteria" => Some("search_exclusion_criteria"),
+            "project.analysis_method" => Some("analysis_method"),
+            "project.research_agenda" => Some("research_agenda"),
+            "project.review_limitations" => Some("review_limitations"),
+            "project.sources_of_support" => Some("sources_of_support"),
             "project.current_stage" => Some("current_stage"),
             _ => None,
         };

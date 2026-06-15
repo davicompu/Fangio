@@ -1322,6 +1322,74 @@ No prose before or after the JSON."
         .ok_or_else(|| anyhow!("could not parse adjudications from: {}", &result.content))
 }
 
+// ── Research agenda proposal (SPAR-4-SLR Evaluation 3a) ─────────────────────
+
+/// Draft a future-research agenda from the review's questions, framework, and the
+/// dimension→code frequency table. Returns markdown (bulleted directions).
+#[allow(clippy::too_many_arguments)]
+pub async fn generate_research_agenda(
+    base_url: &str,
+    model: &str,
+    domain: &str,
+    framework: &str,
+    research_questions: &[&str],
+    dims_with_codes: &[(String, Vec<(String, i64)>)],
+    temperature: f32,
+    api_key: Option<&str>,
+) -> Result<String> {
+    let rqs_block = if research_questions.is_empty() {
+        "(not specified)".to_string()
+    } else {
+        research_questions
+            .iter()
+            .enumerate()
+            .map(|(i, q)| format!("{}. {q}", i + 1))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    let findings_block = dims_with_codes
+        .iter()
+        .map(|(dim, codes)| {
+            let codes_str = if codes.is_empty() {
+                "(no codes applied)".to_string()
+            } else {
+                codes
+                    .iter()
+                    .map(|(c, n)| format!("{c} ({n})"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            format!("- {dim}: {codes_str}")
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let system = "You are a research methodologist helping a scholar write the future-research \
+agenda for a systematic literature review (SPAR-4-SLR, Assessing stage). You are given the \
+review's domain, organising framework, research questions, and the frequency of codes applied \
+across each framework dimension. Codes that appear rarely or unevenly across dimensions often \
+signal gaps and opportunities.\n\n\
+Write a concise future-research agenda as 4–7 markdown bullet points. Each bullet states a \
+specific, defensible research direction grounded in the dimensions and gaps shown — not generic \
+advice. Where useful, frame a direction as a question. Respond with the markdown bullets only, \
+no preamble."
+        .to_string();
+
+    let user = format!(
+        "Domain: {domain}\nFramework: {framework}\nResearch questions:\n{rqs_block}\n\n\
+Codes applied per dimension (with counts):\n{findings_block}\n\nWrite the agenda now."
+    );
+
+    let messages = vec![
+        ChatMessage { role: "system".into(), content: system },
+        ChatMessage { role: "user".into(), content: user },
+    ];
+
+    let result = lmstudio::chat(base_url, model, &messages, Some(temperature), api_key).await?;
+    Ok(result.content.trim().to_string())
+}
+
 // ── Corpus-level code consolidation ─────────────────────────────────────────
 // Cluster synonymous codes within one dimension across the whole corpus and pick
 // a canonical label per cluster (semantic judgment, not string similarity).

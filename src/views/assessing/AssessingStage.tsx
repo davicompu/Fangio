@@ -2,7 +2,10 @@ import { useState, useEffect, useRef } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   ArrowLeft,
+  BarChart3,
+  Compass,
   Download,
+  GitBranch,
   Library,
   Lightbulb,
   PenLine,
@@ -13,8 +16,11 @@ import type { ProjectRow, AssessingProgress } from "../../lib/api";
 import { api } from "../../lib/api";
 import { PdfLibraryPanel } from "./PdfLibraryPanel";
 import { AskCorpusPanel } from "./AskCorpusPanel";
+import { FindingsPanel } from "./FindingsPanel";
+import { AgendaPanel } from "./AgendaPanel";
 import { DraftPanel } from "./DraftPanel";
 import { ExportPanel } from "./ExportPanel";
+import { PrismaPanel } from "../arranging/PrismaPanel";
 import { ProgressionTabStrip, type ProgressionTab } from "../../components/ProgressionTabStrip";
 import { useTabProgress, readManualFlags } from "../../lib/useTabProgress";
 import { MarkStepComplete } from "../../components/MarkStepComplete";
@@ -25,33 +31,53 @@ interface Props {
   onOpenRag: () => void;
 }
 
-type Tab = "library" | "ask" | "draft" | "export";
+type Tab = "library" | "findings" | "ask" | "agenda" | "prisma" | "draft" | "export";
 
 const tabs: { id: Tab; label: string; icon: any }[] = [
-  { id: "library", label: "PDF library", icon: Library },
-  { id: "ask", label: "Ask the corpus", icon: Search },
+  // 3a · Evaluation
+  { id: "library", label: "Corpus", icon: Library },
+  { id: "findings", label: "Findings", icon: BarChart3 },
+  { id: "ask", label: "Synthesis", icon: Search },
+  { id: "agenda", label: "Agenda", icon: Compass },
+  // 3b · Reporting
+  { id: "prisma", label: "PRISMA", icon: GitBranch },
   { id: "draft", label: "Draft", icon: PenLine },
   { id: "export", label: "Export", icon: Download },
 ];
 
 const tabInfo: Record<Tab, { headline: string; body: string; tip?: string }> = {
   library: {
-    headline: "Your PDF corpus",
-    body: "All included articles with attached PDFs appear here. You can upload full-text PDFs, link them to articles, and build the vector index for corpus Q&A.\n\nArticles are auto-included when a PDF is attached — unless you explicitly excluded them during screening.",
-    tip: "Index the corpus before using 'Ask the corpus'. The index is built from your PDFs, not just the abstracts.",
+    headline: "Evaluation · full-text corpus",
+    body: "All included articles with attached PDFs appear here. Upload full-text PDFs, link them to articles, and build the vector index for corpus Q&A.\n\nArticles are auto-included when a PDF is attached — unless you explicitly excluded them during screening.",
+    tip: "Index the corpus before using Synthesis. The index is built from your PDFs, not just the abstracts.",
+  },
+  findings: {
+    headline: "Evaluation · findings",
+    body: "The evidence base for your review: how often each code was applied across the included corpus, organised by framework dimension. These frequencies are the raw material for your results narrative.\n\nRecord the analysis method you used — it's reported in the manuscript's method section.",
+    tip: "Uneven or sparse dimensions often signal the gaps you'll turn into your research agenda.",
   },
   ask: {
-    headline: "Ask the corpus",
-    body: "Ask questions of your full-text corpus using retrieval-augmented generation. The AI searches your indexed PDFs and synthesises an answer with citations.\n\nThis is useful for finding patterns, checking claims, and drafting specific sections of your manuscript.",
-    tip: "Specific questions get better answers than broad ones. 'Which papers use SEM?' beats 'What methods were used?'",
+    headline: "Evaluation · synthesis",
+    body: "Ask questions of your full-text corpus using retrieval-augmented generation. The AI searches your indexed PDFs and synthesises an answer with citations.\n\nUse it to find patterns, check claims, and draft specific sections of your manuscript.",
+    tip: "Specific questions get better answers. 'Which papers use SEM?' beats 'What methods were used?'",
+  },
+  agenda: {
+    headline: "Evaluation · research agenda",
+    body: "The signature output of a SPAR-4-SLR review: a forward-looking agenda of future research directions, grounded in the gaps your coding revealed.\n\nGenerate a starting point from your research questions and dimension findings, then refine it. It feeds the manuscript's agenda section.",
+    tip: "Tie each direction to a specific gap or contradiction in the corpus — reviewers reward concrete agendas.",
+  },
+  prisma: {
+    headline: "Reporting · PRISMA 2020",
+    body: "The PRISMA flow diagram and 27-item checklist, generated from your actual decisions. PRISMA 2020 (Page et al., 2021) is the reporting standard most journals require for systematic reviews.\n\nGaps in the counts indicate steps that still need completing back in earlier stages.",
+    tip: "Export the flow diagram and checklist with your submission — most journals require both.",
   },
   draft: {
-    headline: "Manuscript draft",
-    body: "Reeves generates a skeleton manuscript structured around your research questions and framework. Each section pulls from your decision log and coding data.\n\nEdit the draft directly — it's a starting point, not a finished product.",
-    tip: "Run the draft after you've completed coding. The more complete your data, the richer the generated content.",
+    headline: "Reporting · manuscript draft",
+    body: "Reeves assembles a skeleton manuscript from your project state — research questions, PRISMA flow, analysis method, findings, your research agenda, limitations, and funding.\n\nSet the reporting details at the top, then generate and edit the draft directly.",
+    tip: "Save your reporting details first, then (re)generate so they're woven into the draft.",
   },
   export: {
-    headline: "Export your review",
+    headline: "Reporting · export",
     body: "Export your findings, decision log, and PRISMA data in formats suitable for submission or archiving.\n\nThe decision log export provides a full audit trail — useful for peer review and replication.",
     tip: "Export a decision log snapshot before submission. Reviewers increasingly ask for it.",
   },
@@ -64,7 +90,7 @@ export function AssessingStage({ project, onLeaveStage, onOpenRag }: Props) {
   const [progress, setProgress] = useState<AssessingProgress | null>(null);
   const [progressSettings, setProgressSettings] = useState<Record<string, unknown>>({});
   const lastTabHydrated = useRef(false);
-  const TAB_IDS: Tab[] = ["library", "ask", "draft", "export"];
+  const TAB_IDS: Tab[] = ["library", "findings", "ask", "agenda", "prisma", "draft", "export"];
 
   useEffect(() => {
     api.assessingProgress().then(setProgress).catch(() => {});
@@ -94,7 +120,10 @@ export function AssessingStage({ project, onLeaveStage, onOpenRag }: Props) {
     library: () =>
       progress != null && progress.articles_included > 0 &&
       progress.articles_with_pdf / progress.articles_included >= 0.8,
+    findings: () => !!(project.analysis_method && project.analysis_method.trim()),
     ask: () => false, // manual only
+    agenda: () => !!(project.research_agenda && project.research_agenda.trim()),
+    prisma: () => false, // manual only
     draft: () => !!progress?.has_draft,
     export: () => false, // manual only
   }, manualFlags);
@@ -158,7 +187,10 @@ export function AssessingStage({ project, onLeaveStage, onOpenRag }: Props) {
               className="pl-6 pr-4 xl:pl-12 xl:pr-8"
             >
               {tab === "library" && <PdfLibraryPanel refreshKey={refreshTick} onChanged={onChanged} />}
+              {tab === "findings" && <FindingsPanel project={project} />}
               {tab === "ask" && <AskCorpusPanel />}
+              {tab === "agenda" && <AgendaPanel project={project} />}
+              {tab === "prisma" && <PrismaPanel refreshKey={refreshTick} />}
               {tab === "draft" && <DraftPanel project={project} />}
               {tab === "export" && <ExportPanel />}
             </motion.div>
@@ -199,7 +231,7 @@ export function AssessingStage({ project, onLeaveStage, onOpenRag }: Props) {
                 )}
               </div>
 
-              {(tab === "library" || tab === "ask" || tab === "export") && (
+              {(tab === "library" || tab === "ask" || tab === "prisma" || tab === "export") && (
                 <div className="mt-3">
                   <MarkStepComplete
                     stage="assessing"

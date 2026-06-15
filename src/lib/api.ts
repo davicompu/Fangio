@@ -30,6 +30,10 @@ export interface ProjectRow {
   journal_quality: string | null;
   search_inclusion_criteria: string | null;
   search_exclusion_criteria: string | null;
+  analysis_method: string | null;
+  research_agenda: string | null;
+  review_limitations: string | null;
+  sources_of_support: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -815,6 +819,9 @@ export const api = {
   },
   generateDraft() {
     return invoke<string>("generate_draft");
+  },
+  generateAgenda() {
+    return invoke<string>("generate_agenda");
   },
   exportCsvs() {
     return invoke<ExportSummary>("export_csvs");

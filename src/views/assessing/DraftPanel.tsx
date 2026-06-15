@@ -11,18 +11,49 @@ import {
 import { api, type ProjectRow } from "../../lib/api";
 import { Card } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
+import { TextArea } from "../../components/ui/TextField";
 import { DraftEditor } from "../../components/DraftEditor";
 
 interface Props {
   project: ProjectRow;
 }
 
-export function DraftPanel(_: Props) {
+export function DraftPanel({ project }: Props) {
   const [content, setContent] = useState<string>("");
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState<"generate" | "save" | "regenerate" | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const [dirty, setDirty] = useState(false);
+
+  // Reporting details (SPAR-4-SLR 3b) — woven into the generated draft.
+  const [limitations, setLimitations] = useState(project.review_limitations ?? "");
+  const [funding, setFunding] = useState(project.sources_of_support ?? "");
+  const [savingDetails, setSavingDetails] = useState(false);
+  const [detailsSaved, setDetailsSaved] = useState(false);
+
+  const saveReportingDetails = async () => {
+    setSavingDetails(true);
+    try {
+      await api.saveDecision({
+        stage: "assessing",
+        sub_stage: "reporting",
+        decision_key: "project.review_limitations",
+        value_json: JSON.stringify(limitations),
+        rationale: null,
+      });
+      await api.saveDecision({
+        stage: "assessing",
+        sub_stage: "reporting",
+        decision_key: "project.sources_of_support",
+        value_json: JSON.stringify(funding),
+        rationale: null,
+      });
+      setDetailsSaved(true);
+      setTimeout(() => setDetailsSaved(false), 1500);
+    } finally {
+      setSavingDetails(false);
+    }
+  };
 
   const generate = async () => {
     setBusy("generate");
@@ -83,6 +114,38 @@ export function DraftPanel(_: Props) {
   return (
     <div className="grid grid-cols-[1fr_280px] gap-10 max-w-6xl">
       <div>
+        {/* Reporting details (SPAR-4-SLR 3b) — fed into the generated draft */}
+        <div className="mb-6 rounded-[var(--radius-md)] border border-[var(--color-paper-300)] bg-[var(--color-paper-50)] p-5 space-y-3">
+          <div className="eyebrow text-[var(--color-paper-500)]">Reporting details</div>
+          <TextArea
+            label="Review limitations"
+            value={limitations}
+            onChange={(e) => setLimitations(e.target.value)}
+            rows={4}
+            placeholder={"- Language bias: only English-language sources were included.\n- Snapshot limitation: …"}
+            hint="Replaces the default limitations clauses in the draft when set."
+          />
+          <TextArea
+            label="Sources of support / funding"
+            value={funding}
+            onChange={(e) => setFunding(e.target.value)}
+            rows={2}
+            placeholder="e.g. This research received no external funding."
+            hint="Added as an Acknowledgements and funding section in the draft."
+          />
+          <div className="flex items-center gap-3">
+            <Button onClick={saveReportingDetails} disabled={savingDetails} variant="secondary" size="sm">
+              {savingDetails ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} strokeWidth={1.75} />}
+              Save details
+            </Button>
+            {detailsSaved && (
+              <span className="inline-flex items-center gap-1 text-[12px] text-[var(--color-ok-600)]">
+                <CheckCircle2 size={12} strokeWidth={2} /> Saved — regenerate the draft to apply
+              </span>
+            )}
+          </div>
+        </div>
+
         <div className="mb-6 flex items-end justify-between">
           <div>
             <div className="eyebrow text-[var(--color-paper-500)]">Manuscript</div>

@@ -101,6 +101,13 @@ pub async fn generate(db: &ProjectDb) -> Result<String> {
         ));
     }
 
+    if let Some(m) = project.analysis_method.as_ref().filter(|m| !m.trim().is_empty()) {
+        s.push_str("### 2.5 Analysis method\n\n");
+        s.push_str(&format!(
+            "The synthesized corpus was analysed using a {m} approach.\n\n"
+        ));
+    }
+
     // Results placeholder
     s.push_str("## 3. Results\n\n");
     s.push_str(&format!(
@@ -115,18 +122,36 @@ pub async fn generate(db: &ProjectDb) -> Result<String> {
 
     // Future agenda
     s.push_str("## 5. Future research agenda\n\n");
-    s.push_str("[TO COMPLETE — propose specific gaps to address. The Ask the corpus panel can help you identify contradictions and underexplored areas.]\n\n");
+    match project.research_agenda.as_ref().filter(|a| !a.trim().is_empty()) {
+        Some(agenda) => {
+            s.push_str(agenda.trim());
+            s.push_str("\n\n");
+        }
+        None => s.push_str("[TO COMPLETE — propose specific gaps to address. The Ask the corpus panel can help you identify contradictions and underexplored areas.]\n\n"),
+    }
 
     // Limitations
     s.push_str("## 6. Limitations\n\n");
-    s.push_str("- Language bias: only English-language sources were included.\n");
-    s.push_str("- Database coverage: any work indexed only in databases not searched is absent.\n");
-    s.push_str("- Snapshot limitation: the search reflects the literature as of the search end date.\n");
-    s.push_str("- Single-coder bias: coding was performed by one researcher with optional second-model assistance; full inter-rater reliability was not computed.\n\n");
+    if let Some(lim) = project.review_limitations.as_ref().filter(|l| !l.trim().is_empty()) {
+        s.push_str(lim.trim());
+        s.push_str("\n\n");
+    } else {
+        s.push_str("- Language bias: only English-language sources were included.\n");
+        s.push_str("- Database coverage: any work indexed only in databases not searched is absent.\n");
+        s.push_str("- Snapshot limitation: the search reflects the literature as of the search end date.\n");
+        s.push_str("- Single-coder bias: coding was performed by one researcher with optional second-model assistance; full inter-rater reliability was not computed.\n\n");
+    }
 
     // Conclusion
     s.push_str("## 7. Conclusion\n\n");
     s.push_str("[TO COMPLETE]\n\n");
+
+    // Sources of support / funding (SPAR-4-SLR reporting)
+    if let Some(funding) = project.sources_of_support.as_ref().filter(|f| !f.trim().is_empty()) {
+        s.push_str("## Acknowledgements and funding\n\n");
+        s.push_str(funding.trim());
+        s.push_str("\n\n");
+    }
 
     // References stub
     s.push_str("## References\n\n");
