@@ -136,6 +136,35 @@ mod smalltalk_tests {
     }
 }
 
+#[cfg(test)]
+mod theme_match_tests {
+    use super::themes_match;
+
+    #[test]
+    fn matches_casing_punctuation_and_plurals() {
+        // casing
+        assert!(themes_match("Comparative analysis", "comparative analysis"));
+        // y→ies plural
+        assert!(themes_match("Social comparison theory", "Social comparison theories"));
+        assert!(themes_match("Coping strategy", "coping strategies"));
+        // s / verb-form plural
+        assert!(themes_match("statistical testing", "statistical tests"));
+        // qualifier word (token subset)
+        assert!(themes_match("Information management", "Information management context"));
+        // punctuation / hyphens
+        assert!(themes_match("Business decision-making", "business decision making"));
+    }
+
+    #[test]
+    fn keeps_distinct_themes_apart() {
+        assert!(!themes_match("Business decision-making", "LLM business applications"));
+        assert!(!themes_match("Business decision-making", "Business higher education"));
+        assert!(!themes_match("Social comparison theory", "Emotional dissonance"));
+        // single shared word is not enough
+        assert!(!themes_match("Social identity dynamics", "Social comparison theories"));
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct OpenProjectArgs {
     path: String,
@@ -1054,8 +1083,15 @@ async fn reset_all_coding(state: State<'_, AppState>) -> Result<(), String> {
 // plural ("statistical testing" vs "statistical tests"). These should count as
 // agreement, not as separate disagreements to review.
 
-/// Crude suffix stripping so "tests"/"testing"/"tested" collapse to one stem.
+/// Crude suffix stripping so "tests"/"testing"/"tested" collapse to one stem,
+/// and the English y→ies plural collapses too ("theories"→"theory",
+/// "studies"→"study") so it matches the singular.
 fn theme_stem(token: &str) -> String {
+    // y→ies plural must be handled before the generic "es"/"s" rules, which
+    // would otherwise turn "theories" into "theori" (≠ "theory").
+    if token.len() > 4 && token.ends_with("ies") {
+        return format!("{}y", &token[..token.len() - 3]);
+    }
     for suf in ["ing", "ed", "es", "s"] {
         if token.len() > suf.len() + 2 && token.ends_with(suf) {
             return token[..token.len() - suf.len()].to_string();
