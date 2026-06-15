@@ -681,17 +681,20 @@ export function CodingPanel({ project, refreshKey, onChanged, initialCodeFilter,
                 {filtered.map((a, i) => {
                   const isCoded      = codedIds.has(a.id);
                   const isCurrent    = i === cardIndex;
-                  const isLastEdited = !isCurrent && a.id === lastEditedArticleId;
+                  const isPending    = !isCurrent && articleIdsWithProposals.has(a.id);
+                  const isLastEdited = !isCurrent && !isPending && a.id === lastEditedArticleId;
                   return (
                     <button
                       key={a.id}
                       ref={isCurrent ? activeNumberRef : undefined}
                       onClick={() => goTo(i)}
-                      title={`#${i + 1} — ${a.title}${isLastEdited ? " (last edited)" : ""}`}
+                      title={`#${i + 1} — ${a.title}${isPending ? " (AI suggestions to review)" : ""}${isLastEdited ? " (last edited)" : ""}`}
                       className={cn(
                         "h-[24px] min-w-[28px] px-1.5 rounded-full transition-paper text-[11px] font-medium tabular-nums flex items-center justify-center shrink-0",
                         isCurrent
                           ? "bg-[var(--color-ink-800)] text-white ring-2 ring-[var(--color-ink-800)] ring-offset-1"
+                          : isPending
+                          ? "bg-amber-100 text-amber-700 border border-amber-300 hover:bg-amber-200"
                           : isLastEdited
                           ? "bg-[var(--color-accent-100)] text-[var(--color-accent-700)] border border-[var(--color-accent-300)] hover:bg-[var(--color-accent-200)] ring-1 ring-[var(--color-accent-400)] ring-offset-1"
                           : isCoded
@@ -1700,6 +1703,10 @@ function DimensionRow({
 
 function AppliedCode({ coding, onRemove }: { coding: CodingRow; onRemove: () => void }) {
   const isModel = coding.source.startsWith("model-");
+  // Adjudicator-resolved codes get a distinct green bubble so they're
+  // recognisable in the main row (matching the "Resolved by AI adjudicator"
+  // section), not just another orange model chip.
+  const isAdjudicated = coding.source === "model-ai-adjudicated";
   return (
     <motion.span
       layout
@@ -1708,7 +1715,9 @@ function AppliedCode({ coding, onRemove }: { coding: CodingRow; onRemove: () => 
       exit={{ opacity: 0, scale: 0.9 }}
       className={cn(
         "group inline-flex items-center gap-1.5 pl-2.5 pr-1 py-0.5 rounded-full border text-[12px]",
-        isModel
+        isAdjudicated
+          ? "bg-[var(--color-ok-100)] border-[var(--color-ok-300)] text-[var(--color-ok-700)]"
+          : isModel
           ? "bg-[var(--color-accent-50)] border-[var(--color-accent-200)] text-[var(--color-accent-700)]"
           : "bg-[var(--color-ink-100)] border-[var(--color-ink-200)] text-[var(--color-ink-800)]",
       )}
