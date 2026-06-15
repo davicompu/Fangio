@@ -584,7 +584,7 @@ export function CodingPanel({ project, refreshKey, onChanged, initialCodeFilter,
                 }, new Map<string, { dimension: string; code: string; count: number }>())
                 .values()
               )
-                .sort((a, b) => b.count - a.count)
+                .sort((a, b) => a.code.localeCompare(b.code, undefined, { sensitivity: "base" }))
                 .map(({ dimension, code, count }) => {
                   const key = `${dimension}::${code}`;
                   const active = codeFilters.has(key);
@@ -1347,6 +1347,7 @@ function DimensionRow({
   const [acceptingId, setAcceptingId] = useState<number | null>(null);
   const [rejectingId, setRejectingId] = useState<number | null>(null);
   const [undoingId, setUndoingId] = useState<number | null>(null);
+  const [expandedAdjId, setExpandedAdjId] = useState<number | null>(null);
   const [newCode, setNewCode] = useState("");
   const [suggesting, setSuggesting] = useState(false);
   const [suggestions, setSuggestions] = useState<Suggestion[] | null>(null);
@@ -1635,39 +1636,54 @@ function DimensionRow({
                     Resolved by AI adjudicator
                   </p>
                   <div className="space-y-1.5">
-                    {adjudications.map((a) => (
-                      <div key={a.id} className="flex items-start gap-2 rounded-[var(--radius-xs)] bg-white/70 border border-[var(--color-ok-200)] px-2.5 py-1.5">
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-1.5 flex-wrap">
-                            <span className="text-[12px] font-medium text-[var(--color-ink-900)]">{a.canonical_code}</span>
-                            <span className="text-[10px] text-[var(--color-paper-500)]">
-                              merged “{a.label1}” + “{a.label2}”
-                            </span>
+                    {adjudications.map((a) => {
+                      const expanded = expandedAdjId === a.id;
+                      return (
+                        <div key={a.id} className="rounded-[var(--radius-xs)] bg-white/70 border border-[var(--color-ok-200)] px-2.5 py-1.5">
+                          <div className="flex items-center gap-2">
+                            <div className="flex-1 min-w-0 flex items-center gap-1.5 flex-wrap">
+                              {/* Green bubble — click to reveal why it was merged */}
+                              <button
+                                onClick={() => setExpandedAdjId(expanded ? null : a.id)}
+                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[12px] font-medium bg-[var(--color-ok-100)] border border-[var(--color-ok-300)] text-[var(--color-ok-700)] hover:bg-[var(--color-ok-200)] transition-paper"
+                                title="Show why these were merged"
+                              >
+                                {a.canonical_code}
+                                {a.adjudicator_rationale && (
+                                  expanded
+                                    ? <ChevronUp size={10} strokeWidth={2.5} />
+                                    : <ChevronDown size={10} strokeWidth={2.5} />
+                                )}
+                              </button>
+                              <span className="text-[10px] text-[var(--color-paper-500)] truncate">
+                                merged “{a.label1}” + “{a.label2}”
+                              </span>
+                            </div>
+                            <button
+                              onClick={async () => {
+                                setUndoingId(a.id);
+                                try {
+                                  await api.undoAdjudication(a.id);
+                                  await onReviewed();
+                                } finally {
+                                  setUndoingId(null);
+                                }
+                              }}
+                              disabled={undoingId === a.id}
+                              className="shrink-0 px-2 py-0.5 text-[10px] font-semibold rounded-full bg-white border border-[var(--color-paper-300)] text-[var(--color-paper-600)] hover:bg-[var(--color-paper-100)] disabled:opacity-40 transition-paper"
+                              title="Undo this merge and restore both original suggestions for manual review"
+                            >
+                              {undoingId === a.id ? <Loader2 size={9} className="animate-spin" /> : "Undo"}
+                            </button>
                           </div>
-                          {a.adjudicator_rationale && (
-                            <p className="text-[11px] text-[var(--color-paper-600)] italic leading-snug mt-0.5">
+                          {expanded && a.adjudicator_rationale && (
+                            <p className="text-[11px] text-[var(--color-paper-600)] italic leading-snug mt-1.5">
                               {a.adjudicator_rationale}
                             </p>
                           )}
                         </div>
-                        <button
-                          onClick={async () => {
-                            setUndoingId(a.id);
-                            try {
-                              await api.undoAdjudication(a.id);
-                              await onReviewed();
-                            } finally {
-                              setUndoingId(null);
-                            }
-                          }}
-                          disabled={undoingId === a.id}
-                          className="shrink-0 px-2 py-0.5 text-[10px] font-semibold rounded-full bg-white border border-[var(--color-paper-300)] text-[var(--color-paper-600)] hover:bg-[var(--color-paper-100)] disabled:opacity-40 transition-paper"
-                          title="Undo this merge and restore both original suggestions for manual review"
-                        >
-                          {undoingId === a.id ? <Loader2 size={9} className="animate-spin" /> : "Undo"}
-                        </button>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 </div>
               )}
