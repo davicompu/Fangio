@@ -97,6 +97,19 @@ export function AiCodingModal({
     ? Math.round((progress.done / progress.total) * 100)
     : 0;
 
+  // Group consolidations by canonical label (per dimension) so each canonical
+  // shows once with its merged variants nested beneath — far easier to scan.
+  const consolidationGroups = (() => {
+    const live = (coding.result?.consolidations ?? []).filter((c) => !undoneConsolidations.has(c.id));
+    const map = new Map<string, { dimension: string; canonical: string; items: { id: number; variant: string }[] }>();
+    for (const c of live) {
+      const key = `${c.dimension}␟${c.canonical_code}`;
+      if (!map.has(key)) map.set(key, { dimension: c.dimension, canonical: c.canonical_code, items: [] });
+      map.get(key)!.items.push({ id: c.id, variant: c.variant_code });
+    }
+    return [...map.values()];
+  })();
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-black/40 backdrop-blur-sm">
       <motion.div
@@ -354,32 +367,38 @@ export function AiCodingModal({
                 )}
               </div>
 
-              {/* Consolidated codes — canonical (was: original) · subtle undo */}
-              {coding.result.consolidations.filter((c) => !undoneConsolidations.has(c.id)).length > 0 && (
-                <div className="rounded-[var(--radius-sm)] border border-[var(--color-paper-200)] bg-[var(--color-paper-50)] px-3 py-2.5 max-h-44 overflow-y-auto">
-                  <p className="text-[10px] font-semibold uppercase tracking-wider text-[var(--color-paper-500)] mb-1.5">
+              {/* Consolidated codes — grouped by canonical, variants nested with subtle undo */}
+              {consolidationGroups.length > 0 && (
+                <div className="rounded-[var(--radius-sm)] border border-[var(--color-paper-200)] bg-[var(--color-paper-50)] px-3 py-2.5 max-h-56 overflow-y-auto">
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-[var(--color-paper-500)] mb-2">
                     Consolidated codes
                   </p>
-                  <div className="space-y-1">
-                    {coding.result.consolidations
-                      .filter((c) => !undoneConsolidations.has(c.id))
-                      .map((c) => (
-                        <div key={c.id} className="flex items-baseline gap-1.5 text-[12px] leading-snug">
-                          <span className="text-[var(--color-ink-800)]">{c.canonical_code}</span>
-                          <span className="text-[var(--color-paper-400)] text-[11px]">
-                            (was: {c.variant_code})
-                          </span>
-                          <button
-                            onClick={async () => {
-                              await api.undoConsolidation(c.id);
-                              setUndoneConsolidations((prev) => new Set(prev).add(c.id));
-                            }}
-                            className="ml-auto text-[10px] text-[var(--color-paper-400)] hover:text-[var(--color-ink-700)] underline underline-offset-2 transition-paper"
-                          >
-                            undo
-                          </button>
+                  <div className="space-y-2.5">
+                    {consolidationGroups.map((g) => (
+                      <div key={`${g.dimension}-${g.canonical}`}>
+                        <div className="flex items-baseline gap-1.5">
+                          <span className="text-[12px] font-semibold text-[var(--color-ink-900)]">{g.canonical}</span>
+                          <span className="text-[10px] uppercase tracking-wider text-[var(--color-paper-400)]">{g.dimension}</span>
                         </div>
-                      ))}
+                        <ul className="mt-0.5 ml-2 border-l border-[var(--color-paper-300)]">
+                          {g.items.map((it) => (
+                            <li key={it.id} className="flex items-center gap-1.5 pl-2.5 py-0.5 text-[11px] leading-snug">
+                              <span className="text-[var(--color-paper-400)]">was</span>
+                              <span className="text-[var(--color-paper-600)] truncate">{it.variant}</span>
+                              <button
+                                onClick={async () => {
+                                  await api.undoConsolidation(it.id);
+                                  setUndoneConsolidations((prev) => new Set(prev).add(it.id));
+                                }}
+                                className="ml-auto shrink-0 text-[10px] text-[var(--color-paper-400)] hover:text-[var(--color-ink-700)] underline underline-offset-2 transition-paper"
+                              >
+                                undo
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    ))}
                   </div>
                 </div>
               )}
