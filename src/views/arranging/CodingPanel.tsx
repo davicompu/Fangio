@@ -95,8 +95,8 @@ export function CodingPanel({ project, refreshKey, onChanged, initialCodeFilter,
   const [dropping, setDropping] = useState(false);
   const [pdfError, setPdfError] = useState<string | null>(null);
 
-  const reload = useCallback(async () => {
-    setLoading(true);
+  const reload = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true);
     const [dims, defs, batch, allArticles, crits, idxIds] = await Promise.all([
       api.listFrameworkDimensions(),
       api.listFrameworkCodeDefs(),
@@ -123,8 +123,14 @@ export function CodingPanel({ project, refreshKey, onChanged, initialCodeFilter,
       : [[], []];
     setProposals(props);
     setAdjudications(adjs);
-    setLoading(false);
+    if (!silent) setLoading(false);
   }, []);
+
+  // Refresh coding data in place after a single review action (accept / reject /
+  // undo) WITHOUT the loading flash or a parent refresh — both unmount the card
+  // and collapse the review panel, losing the reviewer's place. Lets the user
+  // work through the conflicts one by one.
+  const reviewRefresh = useCallback(() => reload(true), [reload]);
 
   useEffect(() => {
     reload();
@@ -743,6 +749,7 @@ export function CodingPanel({ project, refreshKey, onChanged, initialCodeFilter,
                 onBrowsePdf={() => handleBrowsePdf(currentArticle.id)}
                 onReplacePdf={() => handleReplacePdf(currentArticle.id)}
                 onChanged={onCodingChanged}
+                onReviewed={reviewRefresh}
                 onExcluded={async () => {
                   await onCodingChanged();
                   // stay on same index — the excluded article drops out of the list,
@@ -782,6 +789,7 @@ function ArticleCodingCard({
   onBrowsePdf,
   onReplacePdf,
   onChanged,
+  onReviewed,
   onExcluded,
   proposals,
   adjudications,
@@ -806,6 +814,7 @@ function ArticleCodingCard({
   onBrowsePdf: () => void;
   onReplacePdf: () => void;
   onChanged: () => Promise<void>;
+  onReviewed: () => Promise<void>;
   onExcluded: () => Promise<void>;
   proposals: AiCodingProposal[];
   adjudications: AiAdjudication[];
@@ -1264,6 +1273,7 @@ function ArticleCodingCard({
             starterCodes={codeDefs.filter((d) => d.dimension === dim.name)}
             codings={codings.filter((c) => c.dimension === dim.name)}
             onChanged={onChanged}
+            onReviewed={onReviewed}
             proposals={proposals.filter((p) => p.dimension === dim.name)}
             adjudications={adjudications.filter((a) => a.dimension === dim.name)}
           />
@@ -1319,6 +1329,7 @@ function DimensionRow({
   starterCodes,
   codings,
   onChanged,
+  onReviewed,
   proposals,
   adjudications,
 }: {
@@ -1327,6 +1338,7 @@ function DimensionRow({
   starterCodes: FrameworkCodeDefinition[];
   codings: CodingRow[];
   onChanged: () => Promise<void>;
+  onReviewed: () => Promise<void>;
   proposals: AiCodingProposal[];
   adjudications: AiAdjudication[];
 }) {
@@ -1582,7 +1594,7 @@ function DimensionRow({
                                 setAcceptingId(p.id);
                                 try {
                                   await api.acceptAiCodingProposal(p.id);
-                                  await onChanged();
+                                  await onReviewed();
                                 } finally {
                                   setAcceptingId(null);
                                 }
@@ -1597,7 +1609,7 @@ function DimensionRow({
                                 setRejectingId(p.id);
                                 try {
                                   await api.rejectAiCodingProposal(p.id);
-                                  await onChanged();
+                                  await onReviewed();
                                 } finally {
                                   setRejectingId(null);
                                 }
@@ -1643,7 +1655,7 @@ function DimensionRow({
                             setUndoingId(a.id);
                             try {
                               await api.undoAdjudication(a.id);
-                              await onChanged();
+                              await onReviewed();
                             } finally {
                               setUndoingId(null);
                             }
