@@ -30,6 +30,7 @@ interface AssemblingStageProps {
   settings: AppSettings;
   onLeaveStage: () => void;
   onAdvanceStage: (nextStage: "arranging") => Promise<void>;
+  onProjectChanged: () => Promise<void> | void;
   onOpenRag: () => void;
   onOpenSettings: () => void;
 }
@@ -40,11 +41,11 @@ const tabInfo: Record<Tab, { headline: string; body: string; tip?: string }> = {
   acquisition: {
     headline: "Defining your search",
     body: "Record which databases you'll search, the date range, and the boolean query string you'll run. These decisions are logged and appear in your manuscript's method section.\n\nA good boolean query balances recall (catching everything relevant) with precision (not drowning in noise). Build it from your research question keywords.",
-    tip: "Run your query in each database yourself — Fangio stores the results, but you control the search.",
+    tip: "Run your query in each database yourself — Reeves stores the results, but you control the search.",
   },
   import: {
     headline: "Importing search results",
-    body: "Export results from each database in RIS, BibTeX, Web of Science, or Scopus CSV format. Fangio parses and deduplicates them automatically.\n\nEach import creates a batch you can trace back — essential for PRISMA reporting.",
+    body: "Export results from each database in RIS, BibTeX, Web of Science, or Scopus CSV format. Reeves parses and deduplicates them automatically.\n\nEach import creates a batch you can trace back — essential for PRISMA reporting.",
     tip: "Import from every database separately to preserve provenance. Merged exports lose source information.",
   },
   journals: {
@@ -59,7 +60,7 @@ const tabInfo: Record<Tab, { headline: string; body: string; tip?: string }> = {
   },
   dedup: {
     headline: "Deduplication",
-    body: "The same article often appears across multiple databases. Fangio clusters likely duplicates based on title and DOI similarity.\n\nReview each cluster and confirm which records are true duplicates. Merged records keep the richest metadata from the set.",
+    body: "The same article often appears across multiple databases. Reeves clusters likely duplicates based on title and DOI similarity.\n\nReview each cluster and confirm which records are true duplicates. Merged records keep the richest metadata from the set.",
     tip: "When in doubt, merge. It's better to deduplicate conservatively and focus screening on unique records.",
   },
   checkpoint: {
@@ -116,7 +117,7 @@ const tabs: { id: Tab; label: string; eyebrow: string; icon: any; description: s
 
 const ALL_TAB_IDS: Tab[] = ["acquisition", "import", "journals", "library", "dedup", "checkpoint"];
 
-export function AssemblingStage({ project, settings, onLeaveStage, onAdvanceStage, onOpenRag, onOpenSettings }: AssemblingStageProps) {
+export function AssemblingStage({ project, settings, onLeaveStage, onAdvanceStage, onProjectChanged, onOpenRag, onOpenSettings }: AssemblingStageProps) {
   const [tab, setTab] = useState<Tab>("acquisition");
   const [assembling, setAssembling] = useState<AssemblingState | null>(null);
   const [progressSettings, setProgressSettings] = useState<Record<string, unknown>>({});
@@ -146,7 +147,14 @@ export function AssemblingStage({ project, settings, onLeaveStage, onAdvanceStag
     }
   }, [tab]);
 
-  const onChanged = () => setRefreshTick((t) => t + 1);
+  const onChanged = async () => {
+    // Acquisition writes to first-class project columns (databases, query, period,
+    // criteria). Re-fetch the project first so those saved values flow back into
+    // this stage's props — otherwise the form re-seeds from a stale project on
+    // remount and the Importing tab reads stale databases. Mirrors ArrangingStage.
+    await onProjectChanged();
+    setRefreshTick((t) => t + 1);
+  };
 
   const TAB_IDS: Tab[] = ["acquisition", "import", "journals", "library", "dedup", "checkpoint"];
   const manualFlags = readManualFlags("assembling", TAB_IDS, progressSettings);

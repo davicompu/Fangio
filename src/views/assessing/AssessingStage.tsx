@@ -47,7 +47,7 @@ const tabInfo: Record<Tab, { headline: string; body: string; tip?: string }> = {
   },
   draft: {
     headline: "Manuscript draft",
-    body: "Fangio generates a skeleton manuscript structured around your research questions and framework. Each section pulls from your decision log and coding data.\n\nEdit the draft directly — it's a starting point, not a finished product.",
+    body: "Reeves generates a skeleton manuscript structured around your research questions and framework. Each section pulls from your decision log and coding data.\n\nEdit the draft directly — it's a starting point, not a finished product.",
     tip: "Run the draft after you've completed coding. The more complete your data, the richer the generated content.",
   },
   export: {

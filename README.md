@@ -1,4 +1,4 @@
-# Fangio
+# Reeves
 
 A desktop workshop for systematic literature reviews. Implements the SPAR-4-SLR
 protocol (Paul et al. 2021) and PRISMA 2020 (Page et al. 2021), runs entirely on
@@ -31,9 +31,9 @@ reqwest with rustls, etc.). Subsequent runs are fast.
 
 ## What's in the foundation slice (Session 1)
 
-- Project workspace model: pick a folder, Fangio creates `project.sqlite`,
+- Project workspace model: pick a folder, Reeves creates `project.sqlite`,
   `data/`, `agent_reports/`, `imports/`, `pdfs/`, `drafts/`, `backups/`.
-- Recent projects list, persisted at `~/.config/fangio/recent.json`.
+- Recent projects list, persisted at `~/.config/carta/recent.json`.
 - Onboarding wizard with the seven SPAR-4-SLR identification decisions
   (project name, SLR type, organising framework, domain, three RQs).
 - "Why this step?" contextual docs beside every decision.
@@ -58,7 +58,7 @@ reqwest with rustls, etc.). Subsequent runs are fast.
 
 ## Network policy
 
-Fangio refuses to connect to anything that isn't `127.0.0.1` or `localhost`.
+Reeves refuses to connect to anything that isn't `127.0.0.1` or `localhost`.
 The `lmstudio.rs` client enforces this at the function level. Database
 connectors compile in but are gated behind an explicit user opt-in and key
 entry — none of which is exposed in the foundation slice.

@@ -163,6 +163,7 @@ function App() {
                 await refreshProject();
                 setRoute("hub");
               }}
+              onProjectChanged={refreshProject}
               onOpenRag={() => openRag("assembling")}
               onOpenSettings={() => setSettingsOpen(true)}
             />

@@ -1244,3 +1244,104 @@ fn parse_dimension_codings(s: &str, dimensions: &[&str]) -> Option<Vec<Dimension
     }
     Some(result)
 }
+
+// ── Disagreement adjudication ───────────────────────────────────────────────
+// An independent model decides which of two raters' leftover codes (within one
+// dimension of one article) denote the SAME concept, so the easy disagreements
+// resolve automatically. It may only pick a canonical label that is one of the
+// two inputs — it never invents a third.
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AdjudicationResolution {
+    #[serde(alias = "rater1", alias = "label1", alias = "r1")]
+    pub rater1_label: String,
+    #[serde(alias = "rater2", alias = "label2", alias = "r2")]
+    pub rater2_label: String,
+    #[serde(alias = "canonical", alias = "label", alias = "chosen")]
+    pub canonical_label: String,
+    #[serde(default, alias = "reason", alias = "reasoning", alias = "explanation")]
+    pub rationale: String,
+}
+
+/// Ask the adjudicator which `(rater1, rater2)` label pairs mean the same thing.
+/// `rater1`/`rater2` are `(label, rationale)` lists of each rater's leftover
+/// codes for one dimension of one article. Returns only the pairs the model is
+/// confident are equivalent.
+pub async fn adjudicate_disagreements(
+    base_url: &str,
+    model: &str,
+    dimension: &str,
+    rater1: &[(String, String)],
+    rater2: &[(String, String)],
+    temperature: f32,
+    api_key: Option<&str>,
+) -> Result<Vec<AdjudicationResolution>> {
+    let fmt = |items: &[(String, String)]| {
+        items
+            .iter()
+            .map(|(label, rat)| {
+                if rat.trim().is_empty() {
+                    format!("  - {label}")
+                } else {
+                    format!("  - {label} — {rat}")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    let system = "You are an independent adjudicator for a systematic literature review. \
+Two coders (Rater 1 and Rater 2) each proposed codes for the same dimension of the same \
+article, and these did not match. Your only job is to decide which Rater 1 / Rater 2 PAIRS \
+denote the SAME underlying concept — for example two names for the same research context, or \
+a general method and a specific tool that implements it (\"Structural equation modeling\" and \
+\"SmartPLS analysis\").\n\n\
+Rules:\n\
+- Only pair codes you are confident mean the same thing. If unsure, leave them out.\n\
+- For each pair, choose a canonical label that is EXACTLY one of the two given labels (the \
+clearer or more standard one). Never invent a new label.\n\
+- Do not pair codes that are genuinely different concepts.\n\n\
+Respond ONLY with a JSON array (possibly empty). Each element: \
+{\"rater1_label\": string, \"rater2_label\": string, \"canonical_label\": string, \"rationale\": string}. \
+No prose before or after the JSON."
+        .to_string();
+
+    let user = format!(
+        "Dimension: {dimension}\n\nRater 1 codes:\n{}\n\nRater 2 codes:\n{}\n\nReturn the JSON array now.",
+        fmt(rater1),
+        fmt(rater2),
+    );
+
+    let messages = vec![
+        ChatMessage { role: "system".into(), content: system },
+        ChatMessage { role: "user".into(), content: user },
+    ];
+
+    let result = lmstudio::chat(base_url, model, &messages, Some(temperature), api_key).await?;
+    parse_adjudications(&result.content)
+        .ok_or_else(|| anyhow!("could not parse adjudications from: {}", &result.content))
+}
+
+/// Extract the first balanced JSON array from the model output and parse it.
+fn parse_adjudications(s: &str) -> Option<Vec<AdjudicationResolution>> {
+    let bytes = s.as_bytes();
+    let start = bytes.iter().position(|&b| b == b'[')?;
+    let mut depth = 0i32;
+    let mut in_str = false;
+    let mut esc = false;
+    let mut end = None;
+    for i in start..bytes.len() {
+        let c = bytes[i];
+        if esc { esc = false; continue; }
+        if c == b'\\' { esc = true; continue; }
+        if c == b'"' { in_str = !in_str; continue; }
+        if in_str { continue; }
+        if c == b'[' { depth += 1; }
+        else if c == b']' {
+            depth -= 1;
+            if depth == 0 { end = Some(i + 1); break; }
+        }
+    }
+    let end = end?;
+    serde_json::from_str::<Vec<AdjudicationResolution>>(&s[start..end]).ok()
+}

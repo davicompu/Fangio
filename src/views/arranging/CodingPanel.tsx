@@ -20,15 +20,17 @@ import {
   Send,
   Sparkles,
   Tag,
+  Trash2,
   Upload,
   X,
 } from "lucide-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
+import { open as openDialog, save as saveDialog, confirm as confirmDialog } from "@tauri-apps/plugin-dialog";
 import { writeTextFile } from "@tauri-apps/plugin-fs";
 import { listen } from "@tauri-apps/api/event";
 import {
   api,
+  type AiAdjudication,
   type AiCodingProposal,
   type AskResult,
   type ArticleRow,
@@ -75,6 +77,7 @@ export function CodingPanel({ project, refreshKey, onChanged, initialCodeFilter,
   const [indexedIds, setIndexedIds] = useState<Set<number>>(new Set());
   const [loading, setLoading] = useState(true);
   const [proposals, setProposals] = useState<AiCodingProposal[]>([]);
+  const [adjudications, setAdjudications] = useState<AiAdjudication[]>([]);
   const [scanning, setScanning] = useState(false);
   const [scanMsg, setScanMsg] = useState<string | null>(null);
   const [showNamingHint, setShowNamingHint] = useState(false);
@@ -110,12 +113,16 @@ export function CodingPanel({ project, refreshKey, onChanged, initialCodeFilter,
     setIndexedIds(new Set(idxIds));
     setUnreviewedCount(allArticles.filter((a) => a.status === "retrieved").length);
     setCriteria(crits);
-    // Load proposals for all articles in this batch
+    // Load proposals + adjudications for all articles in this batch
     const ids = batch.articles.map((a) => a.id);
-    const props = ids.length > 0
-      ? await api.listAiCodingProposalsForArticles(ids)
-      : [];
+    const [props, adjs] = ids.length > 0
+      ? await Promise.all([
+          api.listAiCodingProposalsForArticles(ids),
+          api.listAdjudicationsForArticles(ids),
+        ])
+      : [[], []];
     setProposals(props);
+    setAdjudications(adjs);
     setLoading(false);
   }, []);
 
@@ -310,6 +317,25 @@ export function CodingPanel({ project, refreshKey, onChanged, initialCodeFilter,
     }
   };
 
+  const [resetting, setResetting] = useState(false);
+  const handleResetCoding = async () => {
+    const ok = await confirmDialog(
+      "Delete every applied code and all pending AI suggestions across all articles? This cannot be undone.",
+      { title: "Reset all coding", kind: "warning" },
+    );
+    if (!ok) return;
+    setResetting(true);
+    try {
+      await api.resetAllCoding();
+      onChanged();
+      await reload();
+    } catch (e: any) {
+      setScanMsg(`Reset failed: ${e?.message || String(e)}`);
+    } finally {
+      setResetting(false);
+    }
+  };
+
   const handleOpenPdf = async (pdfPath: string) => {
     setPdfError(null);
     try {
@@ -411,6 +437,10 @@ export function CodingPanel({ project, refreshKey, onChanged, initialCodeFilter,
             <Button variant="ghost" size="sm" onClick={handleScan} disabled={scanning}>
               {scanning ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} strokeWidth={2} />}
               Recheck PDFs
+            </Button>
+            <Button variant="ghost" size="sm" onClick={handleResetCoding} disabled={resetting}>
+              {resetting ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} strokeWidth={2} />}
+              Reset coding
             </Button>
           </div>
           {scanMsg && (
@@ -719,6 +749,7 @@ export function CodingPanel({ project, refreshKey, onChanged, initialCodeFilter,
                   // so the next article slides into this position automatically
                 }}
                 proposals={proposals.filter((p) => p.article_id === currentArticle.id)}
+                adjudications={adjudications.filter((a) => a.article_id === currentArticle.id)}
                 hasProposals={articleIdsWithProposals.has(currentArticle.id)}
               />
             </motion.div>
@@ -753,6 +784,7 @@ function ArticleCodingCard({
   onChanged,
   onExcluded,
   proposals,
+  adjudications,
   hasProposals,
 }: {
   index: number;
@@ -776,6 +808,7 @@ function ArticleCodingCard({
   onChanged: () => Promise<void>;
   onExcluded: () => Promise<void>;
   proposals: AiCodingProposal[];
+  adjudications: AiAdjudication[];
   hasProposals: boolean;
 }) {
   const [excludeOpen, setExcludeOpen] = useState(false);
@@ -1232,6 +1265,7 @@ function ArticleCodingCard({
             codings={codings.filter((c) => c.dimension === dim.name)}
             onChanged={onChanged}
             proposals={proposals.filter((p) => p.dimension === dim.name)}
+            adjudications={adjudications.filter((a) => a.dimension === dim.name)}
           />
         ))}
       </div>
@@ -1286,6 +1320,7 @@ function DimensionRow({
   codings,
   onChanged,
   proposals,
+  adjudications,
 }: {
   article: ArticleRow;
   dimension: DimensionInfo;
@@ -1293,11 +1328,13 @@ function DimensionRow({
   codings: CodingRow[];
   onChanged: () => Promise<void>;
   proposals: AiCodingProposal[];
+  adjudications: AiAdjudication[];
 }) {
   const [adding, setAdding] = useState(false);
   const [proposalReviewOpen, setProposalReviewOpen] = useState(false);
   const [acceptingId, setAcceptingId] = useState<number | null>(null);
   const [rejectingId, setRejectingId] = useState<number | null>(null);
+  const [undoingId, setUndoingId] = useState<number | null>(null);
   const [newCode, setNewCode] = useState("");
   const [suggesting, setSuggesting] = useState(false);
   const [suggestions, setSuggestions] = useState<Suggestion[] | null>(null);
@@ -1359,6 +1396,16 @@ function DimensionRow({
             >
               <AlertTriangle size={9} strokeWidth={2.5} />
               {proposals.length}
+            </button>
+          )}
+          {adjudications.length > 0 && (
+            <button
+              onClick={() => setProposalReviewOpen((v) => !v)}
+              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-semibold bg-[var(--color-ok-100)] border border-[var(--color-ok-300)] text-[var(--color-ok-700)] hover:bg-[var(--color-ok-200)] transition-paper"
+              title="Disagreements auto-resolved by the AI adjudicator"
+            >
+              <Sparkles size={9} strokeWidth={2.5} />
+              {adjudications.length}
             </button>
           )}
           <button
@@ -1479,7 +1526,7 @@ function DimensionRow({
 
         {/* Proposal review panel */}
         <AnimatePresence>
-          {proposalReviewOpen && proposals.length > 0 && (
+          {proposalReviewOpen && (proposals.length > 0 || adjudications.length > 0) && (
             <motion.div
               initial={{ opacity: 0, y: 4 }}
               animate={{ opacity: 1, y: 0 }}
@@ -1567,6 +1614,51 @@ function DimensionRow({
                   </div>
                 );
               })}
+
+              {/* Resolved by the independent AI adjudicator — already applied, opt-out */}
+              {adjudications.length > 0 && (
+                <div className="px-3 py-2.5 bg-[var(--color-ok-50)] border-t border-[var(--color-ok-200)]">
+                  <p className="flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-ok-700)] mb-1.5">
+                    <Sparkles size={10} strokeWidth={2.5} />
+                    Resolved by AI adjudicator
+                  </p>
+                  <div className="space-y-1.5">
+                    {adjudications.map((a) => (
+                      <div key={a.id} className="flex items-start gap-2 rounded-[var(--radius-xs)] bg-white/70 border border-[var(--color-ok-200)] px-2.5 py-1.5">
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="text-[12px] font-medium text-[var(--color-ink-900)]">{a.canonical_code}</span>
+                            <span className="text-[10px] text-[var(--color-paper-500)]">
+                              merged “{a.label1}” + “{a.label2}”
+                            </span>
+                          </div>
+                          {a.adjudicator_rationale && (
+                            <p className="text-[11px] text-[var(--color-paper-600)] italic leading-snug mt-0.5">
+                              {a.adjudicator_rationale}
+                            </p>
+                          )}
+                        </div>
+                        <button
+                          onClick={async () => {
+                            setUndoingId(a.id);
+                            try {
+                              await api.undoAdjudication(a.id);
+                              await onChanged();
+                            } finally {
+                              setUndoingId(null);
+                            }
+                          }}
+                          disabled={undoingId === a.id}
+                          className="shrink-0 px-2 py-0.5 text-[10px] font-semibold rounded-full bg-white border border-[var(--color-paper-300)] text-[var(--color-paper-600)] hover:bg-[var(--color-paper-100)] disabled:opacity-40 transition-paper"
+                          title="Undo this merge and restore both original suggestions for manual review"
+                        >
+                          {undoingId === a.id ? <Loader2 size={9} className="animate-spin" /> : "Undo"}
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </motion.div>
           )}
         </AnimatePresence>

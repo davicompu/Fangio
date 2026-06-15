@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { api, type ProjectRow, type RecentProject } from "../lib/api";
 import { formatRelative, cn } from "../lib/utils";
+import { useVersion } from "../lib/useVersion";
 import cartaMark from "../assets/carta_mark.png";
 
 interface ProjectPickerProps {
@@ -21,6 +22,7 @@ export function ProjectPicker({ onProjectOpened }: ProjectPickerProps) {
   const [recents, setRecents] = useState<RecentProject[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const version = useVersion();
 
   useEffect(() => {
     api.listRecentProjects().then(setRecents).catch(() => {});
@@ -105,7 +107,7 @@ export function ProjectPicker({ onProjectOpened }: ProjectPickerProps) {
                   <h1 className="font-serif text-[44px] tracking-tight leading-none text-[var(--color-ink-900)]">
                     Reeves
                   </h1>
-                  <span className="eyebrow">From search to synthesis · v0.1</span>
+                  <span className="eyebrow">From search to synthesis{version ? ` · v${version}` : ""}</span>
                 </div>
               </div>
             </div>

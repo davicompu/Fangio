@@ -291,6 +291,26 @@ export interface AiCodingProposal {
   created_at: string;
 }
 
+/** A disagreement pair the independent adjudicator merged into one applied code. */
+export interface AiAdjudication {
+  id: number;
+  article_id: number;
+  dimension: string;
+  canonical_code: string;
+  coding_id: number | null;
+  label1: string;
+  rater1: number;
+  rationale1: string | null;
+  model1: string | null;
+  label2: string;
+  rater2: number;
+  rationale2: string | null;
+  model2: string | null;
+  adjudicator_rationale: string | null;
+  run_id: string;
+  created_at: string;
+}
+
 export interface AiCodingCoverage {
   ready: number;
   needs_indexing: number;
@@ -315,7 +335,7 @@ export interface AiCodingProgress {
   done: number;
   total: number;
   article_title: string;
-  phase: "indexing" | "coding-rater1" | "coding-rater2" | "resolving";
+  phase: "indexing" | "coding-rater1" | "coding-rater2" | "resolving" | "adjudicating";
   skipped_no_pdf: number;
   consensus: number;
   disagreements: number;
@@ -327,6 +347,8 @@ export interface AiCodingResult {
   disagreements: number;
   skipped_no_pdf: number;
   indexed: number;
+  /** Disagreement pairs auto-resolved by the independent adjudicator. */
+  adjudicated: number;
 }
 
 export interface ClusterArticle {
@@ -588,6 +610,10 @@ export const api = {
   deleteCoding(id: number) {
     return invoke<void>("delete_coding", { id });
   },
+  /** Delete every applied code and pending AI coding suggestion across all articles. */
+  resetAllCoding() {
+    return invoke<void>("reset_all_coding");
+  },
   listCriteria() {
     return invoke<ExclusionCriterionRow[]>("list_criteria");
   },
@@ -682,6 +708,12 @@ export const api = {
   },
   rejectAllAiCodingProposalsForArticle(articleId: number) {
     return invoke<void>("reject_all_ai_coding_proposals_for_article", { articleId });
+  },
+  listAdjudicationsForArticles(articleIds: number[]) {
+    return invoke<AiAdjudication[]>("list_adjudications_for_articles", { articleIds });
+  },
+  undoAdjudication(id: number) {
+    return invoke<void>("undo_adjudication", { id });
   },
   getPrismaState() {
     return invoke<PrismaState>("get_prisma_state");

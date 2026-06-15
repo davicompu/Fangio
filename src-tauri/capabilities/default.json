@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the main Fangio window. Filesystem and dialog access scoped to user-selected paths only; no shell, no global shortcuts, no notifications without explicit opt-in.",
+  "description": "Capability for the main Reeves window. Filesystem and dialog access scoped to user-selected paths only; no shell, no global shortcuts, no notifications without explicit opt-in.",
   "windows": ["main"],
   "permissions": [
     "core:default",

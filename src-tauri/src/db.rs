@@ -179,6 +179,26 @@ pub struct AiCodingProposal {
     pub created_at: String,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AiAdjudication {
+    pub id: i64,
+    pub article_id: i64,
+    pub dimension: String,
+    pub canonical_code: String,
+    pub coding_id: Option<i64>,
+    pub label1: String,
+    pub rater1: i64,
+    pub rationale1: Option<String>,
+    pub model1: Option<String>,
+    pub label2: String,
+    pub rater2: i64,
+    pub rationale2: Option<String>,
+    pub model2: Option<String>,
+    pub adjudicator_rationale: Option<String>,
+    pub run_id: String,
+    pub created_at: String,
+}
+
 #[derive(Debug, Serialize)]
 pub struct AiCodingCoverage {
     pub ready: i64,
@@ -991,6 +1011,19 @@ impl ProjectDb {
     pub async fn delete_coding(&self, id: i64) -> Result<()> {
         sqlx::query("DELETE FROM coding WHERE id = ?")
             .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Wipe every applied code and every pending AI coding suggestion across all
+    /// articles. Used by the "Reset coding" action in the coding pane.
+    pub async fn clear_all_coding(&self) -> Result<()> {
+        sqlx::query("DELETE FROM coding").execute(&self.pool).await?;
+        sqlx::query("DELETE FROM ai_coding_proposal")
+            .execute(&self.pool)
+            .await?;
+        sqlx::query("DELETE FROM ai_adjudication")
             .execute(&self.pool)
             .await?;
         Ok(())
@@ -2540,6 +2573,113 @@ impl ProjectDb {
     pub async fn delete_ai_coding_proposals_for_article(&self, article_id: i64) -> Result<()> {
         sqlx::query("DELETE FROM ai_coding_proposal WHERE article_id = ?")
             .bind(article_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    // ── AI adjudication (third-rater disagreement resolution) ──────────────
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn insert_adjudication(
+        &self,
+        article_id: i64,
+        dimension: &str,
+        canonical_code: &str,
+        coding_id: Option<i64>,
+        label1: &str,
+        rater1: i64,
+        rationale1: Option<&str>,
+        model1: Option<&str>,
+        label2: &str,
+        rater2: i64,
+        rationale2: Option<&str>,
+        model2: Option<&str>,
+        adjudicator_rationale: Option<&str>,
+        run_id: &str,
+    ) -> Result<i64> {
+        let now = chrono::Utc::now().to_rfc3339();
+        let result = sqlx::query(
+            "INSERT INTO ai_adjudication \
+             (article_id, dimension, canonical_code, coding_id, label1, rater1, rationale1, model1, \
+              label2, rater2, rationale2, model2, adjudicator_rationale, run_id, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(article_id)
+        .bind(dimension)
+        .bind(canonical_code)
+        .bind(coding_id)
+        .bind(label1)
+        .bind(rater1)
+        .bind(rationale1)
+        .bind(model1)
+        .bind(label2)
+        .bind(rater2)
+        .bind(rationale2)
+        .bind(model2)
+        .bind(adjudicator_rationale)
+        .bind(run_id)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.last_insert_rowid())
+    }
+
+    fn map_adjudication(r: &sqlx::sqlite::SqliteRow) -> AiAdjudication {
+        AiAdjudication {
+            id: r.get("id"),
+            article_id: r.get("article_id"),
+            dimension: r.get("dimension"),
+            canonical_code: r.get("canonical_code"),
+            coding_id: r.get("coding_id"),
+            label1: r.get("label1"),
+            rater1: r.get("rater1"),
+            rationale1: r.get("rationale1"),
+            model1: r.get("model1"),
+            label2: r.get("label2"),
+            rater2: r.get("rater2"),
+            rationale2: r.get("rationale2"),
+            model2: r.get("model2"),
+            adjudicator_rationale: r.get("adjudicator_rationale"),
+            run_id: r.get("run_id"),
+            created_at: r.get("created_at"),
+        }
+    }
+
+    pub async fn list_adjudications_for_articles(
+        &self,
+        article_ids: &[i64],
+    ) -> Result<Vec<AiAdjudication>> {
+        if article_ids.is_empty() {
+            return Ok(vec![]);
+        }
+        let placeholders: String = std::iter::repeat("?")
+            .take(article_ids.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "SELECT * FROM ai_adjudication WHERE article_id IN ({}) ORDER BY article_id, dimension",
+            placeholders
+        );
+        let mut q = sqlx::query(&sql);
+        for id in article_ids {
+            q = q.bind(*id);
+        }
+        let rows = q.fetch_all(&self.pool).await?;
+        Ok(rows.iter().map(Self::map_adjudication).collect())
+    }
+
+    pub async fn get_adjudication(&self, id: i64) -> Result<Option<AiAdjudication>> {
+        let row = sqlx::query("SELECT * FROM ai_adjudication WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.as_ref().map(Self::map_adjudication))
+    }
+
+    pub async fn delete_adjudication(&self, id: i64) -> Result<()> {
+        sqlx::query("DELETE FROM ai_adjudication WHERE id = ?")
+            .bind(id)
             .execute(&self.pool)
             .await?;
         Ok(())

@@ -30,6 +30,7 @@ const PHASE_LABELS: Record<string, string> = {
   "coding-rater1": "Rater 1 coding",
   "coding-rater2": "Rater 2 coding",
   "resolving": "Resolving",
+  "adjudicating": "Adjudicating disagreements",
 };
 
 export function AiCodingModal({
@@ -314,6 +315,12 @@ export function AiCodingModal({
                   <span className="text-[var(--color-ok-600)]">Consensus codes applied</span>
                   <span className="font-medium text-[var(--color-ok-700)]">{coding.result.consensus}</span>
                 </div>
+                {coding.result.adjudicated > 0 && (
+                  <div className="flex justify-between px-3 py-2 text-[12px]">
+                    <span className="text-[var(--color-ok-600)]">Resolved by adjudicator</span>
+                    <span className="font-medium text-[var(--color-ok-700)]">{coding.result.adjudicated}</span>
+                  </div>
+                )}
                 {coding.result.disagreements > 0 && (
                   <div className="flex justify-between px-3 py-2 text-[12px]">
                     <span className="text-amber-600">Disagreements to review</span>

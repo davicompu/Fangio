@@ -1040,6 +1040,76 @@ async fn delete_coding(id: i64, state: State<'_, AppState>) -> Result<(), String
     db.delete_coding(id).await.map_err(err)
 }
 
+#[tauri::command]
+async fn reset_all_coding(state: State<'_, AppState>) -> Result<(), String> {
+    let db = state.current().await.ok_or("no project open")?;
+    db.clear_all_coding().await.map_err(err)?;
+    Ok(())
+}
+
+// ── Theme/code label matching across raters ────────────────────────────────
+// Two raters often name the same theme slightly differently — different casing
+// ("Comparative analysis" vs "comparative analysis"), extra qualifier words
+// ("Information management" vs "Information management context"), or singular/
+// plural ("statistical testing" vs "statistical tests"). These should count as
+// agreement, not as separate disagreements to review.
+
+/// Crude suffix stripping so "tests"/"testing"/"tested" collapse to one stem.
+fn theme_stem(token: &str) -> String {
+    for suf in ["ing", "ed", "es", "s"] {
+        if token.len() > suf.len() + 2 && token.ends_with(suf) {
+            return token[..token.len() - suf.len()].to_string();
+        }
+    }
+    token.to_string()
+}
+
+/// Lowercase, drop punctuation, split on whitespace, stem each token.
+fn theme_tokens(s: &str) -> Vec<String> {
+    let lowered: String = s
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { ' ' })
+        .collect();
+    lowered.split_whitespace().map(theme_stem).collect()
+}
+
+/// True when two theme labels refer to the same theme despite casing or minor
+/// wording differences: identical token streams, one token set contained in the
+/// other (qualifier words), or high token overlap (Jaccard ≥ 0.6).
+fn themes_match(a: &str, b: &str) -> bool {
+    let ta_v = theme_tokens(a);
+    let tb_v = theme_tokens(b);
+    if ta_v.is_empty() || tb_v.is_empty() {
+        return ta_v == tb_v;
+    }
+    if ta_v == tb_v {
+        return true;
+    }
+    let ta: std::collections::HashSet<&String> = ta_v.iter().collect();
+    let tb: std::collections::HashSet<&String> = tb_v.iter().collect();
+    // Containment (e.g. "information management" ⊂ "information management context"),
+    // but require ≥2 shared-side tokens so single words don't swallow phrases.
+    if ta.len().min(tb.len()) >= 2 && (ta.is_subset(&tb) || tb.is_subset(&ta)) {
+        return true;
+    }
+    let inter = ta.intersection(&tb).count();
+    let union = ta.union(&tb).count();
+    union > 0 && (inter as f32 / union as f32) >= 0.6
+}
+
+/// Canonical display casing for a theme: trim and uppercase the first letter,
+/// leaving the rest untouched so acronyms (LLM, GenAI) survive. Keeps every
+/// stored theme consistently capitalised.
+fn canonical_theme(s: &str) -> String {
+    let t = s.trim();
+    let mut chars = t.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
+}
+
 fn parse_exclusion_criterion_str(s: &str) -> (i64, String) {
     if let Some(rest) = s.strip_prefix("EC") {
         if let Some(colon_pos) = rest.find(':') {
@@ -1230,6 +1300,8 @@ struct AiCodingResult {
     disagreements: usize,
     skipped_no_pdf: usize,
     indexed: usize,
+    /// Disagreement pairs auto-resolved by the independent adjudicator.
+    adjudicated: usize,
 }
 
 #[tauri::command]
@@ -1272,6 +1344,51 @@ async fn list_ai_coding_proposals_for_articles(
 ) -> Result<Vec<db::AiCodingProposal>, String> {
     let db = state.current().await.ok_or("no project open")?;
     db.list_ai_coding_proposals_for_articles(&article_ids).await.map_err(err)
+}
+
+#[tauri::command]
+async fn list_adjudications_for_articles(
+    article_ids: Vec<i64>,
+    state: State<'_, AppState>,
+) -> Result<Vec<db::AiAdjudication>, String> {
+    let db = state.current().await.ok_or("no project open")?;
+    db.list_adjudications_for_articles(&article_ids).await.map_err(err)
+}
+
+/// Undo an AI adjudication: remove the merged code and restore the two original
+/// proposals to the normal review queue.
+#[tauri::command]
+async fn undo_adjudication(id: i64, state: State<'_, AppState>) -> Result<(), String> {
+    let db = state.current().await.ok_or("no project open")?;
+    if let Some(adj) = db.get_adjudication(id).await.map_err(err)? {
+        if let Some(coding_id) = adj.coding_id {
+            let _ = db.delete_coding(coding_id).await;
+        }
+        let _ = db
+            .save_ai_coding_proposal(
+                adj.article_id,
+                &adj.dimension,
+                &adj.label1,
+                adj.rationale1.as_deref(),
+                adj.rater1,
+                adj.model1.as_deref(),
+                &adj.run_id,
+            )
+            .await;
+        let _ = db
+            .save_ai_coding_proposal(
+                adj.article_id,
+                &adj.dimension,
+                &adj.label2,
+                adj.rationale2.as_deref(),
+                adj.rater2,
+                adj.model2.as_deref(),
+                &adj.run_id,
+            )
+            .await;
+        db.delete_adjudication(id).await.map_err(err)?;
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -1703,12 +1820,14 @@ async fn run_ai_coding(
                 let r2_codes = r2_map.get(dim).cloned().unwrap_or_default();
 
                 for s in &r1_dim_coding.suggestions {
-                    if r2_codes.contains(&s.code.as_str()) {
-                        // Both raters agree → save as consensus
+                    // Fuzzy + case-insensitive match so the same theme worded a
+                    // little differently by each rater counts as agreement.
+                    if r2_codes.iter().any(|c| themes_match(c, &s.code)) {
+                        // Both raters agree → save as consensus (canonical casing)
                         let _ = db.save_coding(
                             article.id,
                             dim,
-                            &s.code,
+                            &canonical_theme(&s.code),
                             s.rationale.as_deref(),
                             "model-ai-consensus",
                             Some(&args.rater1_model),
@@ -1719,7 +1838,7 @@ async fn run_ai_coding(
                         let _ = db.save_ai_coding_proposal(
                             article.id,
                             dim,
-                            &s.code,
+                            &canonical_theme(&s.code),
                             s.rationale.as_deref(),
                             1,
                             Some(&args.rater1_model),
@@ -1729,15 +1848,15 @@ async fn run_ai_coding(
                     }
                 }
 
-                // Rater 2 codes that rater 1 didn't suggest
+                // Rater 2 codes that don't match any of rater 1's codes
                 if let Some(r2_dim_coding) = r2.iter().find(|dc| dc.dimension == dim) {
                     let r1_codes = r1_map.get(dim).cloned().unwrap_or_default();
                     for s in &r2_dim_coding.suggestions {
-                        if !r1_codes.contains(&s.code.as_str()) {
+                        if !r1_codes.iter().any(|c| themes_match(c, &s.code)) {
                             let _ = db.save_ai_coding_proposal(
                                 article.id,
                                 dim,
-                                &s.code,
+                                &canonical_theme(&s.code),
                                 s.rationale.as_deref(),
                                 2,
                                 args.rater2_model.as_deref(),
@@ -1754,7 +1873,7 @@ async fn run_ai_coding(
                     let _ = db.save_coding(
                         article.id,
                         &dim_coding.dimension,
-                        &s.code,
+                        &canonical_theme(&s.code),
                         s.rationale.as_deref(),
                         "model-ai-consensus",
                         Some(&args.rater1_model),
@@ -1767,12 +1886,138 @@ async fn run_ai_coding(
         processed += 1;
     }
 
+    // ── Phase 3: independent adjudication of leftover disagreements ─────────
+    // Dual-rater only. After every article is coded, an independent model
+    // sweeps the remaining proposals and merges pairs that denote the same
+    // concept (e.g. "Structural equation modeling" vs "SmartPLS analysis").
+    let mut adjudicated = 0usize;
+    if args.rater2_model.is_some() && !cancelled.load(Ordering::SeqCst) {
+        let adj_model = settings
+            .get("lmstudio.chat_model")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        let article_ids: Vec<i64> = articles.iter().map(|a| a.id).collect();
+        let proposals = db
+            .list_ai_coding_proposals_for_articles(&article_ids)
+            .await
+            .unwrap_or_default();
+
+        // Group this run's proposals by (article, dimension), split by rater.
+        let mut groups: std::collections::BTreeMap<(i64, String), (Vec<db::AiCodingProposal>, Vec<db::AiCodingProposal>)> =
+            std::collections::BTreeMap::new();
+        for p in proposals.into_iter().filter(|p| p.run_id == args.run_id) {
+            let entry = groups.entry((p.article_id, p.dimension.clone())).or_default();
+            if p.rater == 1 { entry.0.push(p); } else { entry.1.push(p); }
+        }
+
+        let total_groups = groups.len();
+        if !adj_model.is_empty() && total_groups > 0 {
+            for (gi, ((article_id, dim), (r1, r2))) in groups.into_iter().enumerate() {
+                if cancelled.load(Ordering::SeqCst) { break; }
+                let _ = app.emit(
+                    "coding:progress",
+                    AiCodingProgress {
+                        done: gi + 1,
+                        total: total_groups,
+                        article_title: dim.clone(),
+                        phase: "adjudicating".into(),
+                        skipped_no_pdf,
+                        consensus,
+                        disagreements,
+                    },
+                );
+                // Need leftovers from BOTH raters to have a pair to adjudicate.
+                if r1.is_empty() || r2.is_empty() { continue; }
+
+                let r1_pairs: Vec<(String, String)> = r1
+                    .iter()
+                    .map(|p| (p.code.clone(), p.rationale.clone().unwrap_or_default()))
+                    .collect();
+                let r2_pairs: Vec<(String, String)> = r2
+                    .iter()
+                    .map(|p| (p.code.clone(), p.rationale.clone().unwrap_or_default()))
+                    .collect();
+
+                let resolutions = match suggest::adjudicate_disagreements(
+                    &base_url, &adj_model, &dim, &r1_pairs, &r2_pairs, temperature, api_key.as_deref(),
+                )
+                .await
+                {
+                    Ok(r) => r,
+                    Err(_) => continue, // model unreachable / unparsable → leave for human
+                };
+
+                let mut used: std::collections::HashSet<i64> = std::collections::HashSet::new();
+                for res in resolutions {
+                    let p1 = r1
+                        .iter()
+                        .find(|p| !used.contains(&p.id) && p.code.eq_ignore_ascii_case(res.rater1_label.trim()));
+                    let p2 = r2
+                        .iter()
+                        .find(|p| !used.contains(&p.id) && p.code.eq_ignore_ascii_case(res.rater2_label.trim()));
+                    let (p1, p2) = match (p1, p2) {
+                        (Some(a), Some(b)) => (a, b),
+                        _ => continue,
+                    };
+                    // Canonical label must be one of the two inputs (case-insensitive).
+                    let canonical_src = if res.canonical_label.trim().eq_ignore_ascii_case(&p1.code) {
+                        &p1.code
+                    } else if res.canonical_label.trim().eq_ignore_ascii_case(&p2.code) {
+                        &p2.code
+                    } else {
+                        continue; // model invented a label → discard, leave for human
+                    };
+                    let canonical = canonical_theme(canonical_src);
+                    let adj_rationale = if res.rationale.trim().is_empty() {
+                        None
+                    } else {
+                        Some(res.rationale.trim())
+                    };
+
+                    if let Ok(coding_id) = db
+                        .save_coding(article_id, &dim, &canonical, adj_rationale, "model-ai-adjudicated", Some(&adj_model))
+                        .await
+                    {
+                        let _ = db
+                            .insert_adjudication(
+                                article_id,
+                                &dim,
+                                &canonical,
+                                Some(coding_id),
+                                &p1.code,
+                                p1.rater,
+                                p1.rationale.as_deref(),
+                                p1.model_name.as_deref(),
+                                &p2.code,
+                                p2.rater,
+                                p2.rationale.as_deref(),
+                                p2.model_name.as_deref(),
+                                adj_rationale,
+                                &args.run_id,
+                            )
+                            .await;
+                        let _ = db.delete_ai_coding_proposal(p1.id).await;
+                        let _ = db.delete_ai_coding_proposal(p2.id).await;
+                        used.insert(p1.id);
+                        used.insert(p2.id);
+                        adjudicated += 1;
+                        // p1 was a rater-1 proposal counted in `disagreements`.
+                        disagreements = disagreements.saturating_sub(1);
+                    }
+                }
+            }
+        }
+    }
+
     Ok(AiCodingResult {
         processed,
         consensus,
         disagreements,
         skipped_no_pdf,
         indexed,
+        adjudicated,
     })
 }
 
@@ -3702,6 +3947,7 @@ pub fn run() {
             list_coding_batch,
             save_coding,
             delete_coding,
+            reset_all_coding,
             list_criteria,
             save_criterion,
             delete_criterion,
@@ -3724,6 +3970,8 @@ pub fn run() {
             get_ai_coding_coverage,
             list_ai_coding_proposals,
             list_ai_coding_proposals_for_articles,
+            list_adjudications_for_articles,
+            undo_adjudication,
             accept_ai_coding_proposal,
             reject_ai_coding_proposal,
             reject_all_ai_coding_proposals_for_article,
