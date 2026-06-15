@@ -31,6 +31,7 @@ const PHASE_LABELS: Record<string, string> = {
   "coding-rater2": "Rater 2 coding",
   "resolving": "Resolving",
   "adjudicating": "Adjudicating disagreements",
+  "consolidating": "Consolidating codes",
 };
 
 export function AiCodingModal({
@@ -50,6 +51,7 @@ export function AiCodingModal({
   );
   const [coverage, setCoverage] = useState<AiCodingCoverage | null>(null);
   const [loadingCoverage, setLoadingCoverage] = useState(false);
+  const [undoneConsolidations, setUndoneConsolidations] = useState<Set<number>>(new Set());
 
   // Load coverage when the modal opens in idle state
   useEffect(() => {
@@ -65,6 +67,11 @@ export function AiCodingModal({
   useEffect(() => {
     setSelectedDims(new Set(availableDimensions.map((d) => d.name)));
   }, [availableDimensions]);
+
+  // Fresh run → clear any undo state from a previous run's summary
+  useEffect(() => {
+    if (coding.step === "running") setUndoneConsolidations(new Set());
+  }, [coding.step]);
 
   const toggleDim = (name: string) => {
     setSelectedDims((prev) => {
@@ -321,6 +328,12 @@ export function AiCodingModal({
                     <span className="font-medium text-[var(--color-ok-700)]">{coding.result.adjudicated}</span>
                   </div>
                 )}
+                {coding.result.consolidated > 0 && (
+                  <div className="flex justify-between px-3 py-2 text-[12px]">
+                    <span className="text-[var(--color-ok-600)]">Codes consolidated</span>
+                    <span className="font-medium text-[var(--color-ok-700)]">{coding.result.consolidated}</span>
+                  </div>
+                )}
                 {coding.result.disagreements > 0 && (
                   <div className="flex justify-between px-3 py-2 text-[12px]">
                     <span className="text-amber-600">Disagreements to review</span>
@@ -340,6 +353,36 @@ export function AiCodingModal({
                   </div>
                 )}
               </div>
+
+              {/* Consolidated codes — canonical (was: original) · subtle undo */}
+              {coding.result.consolidations.filter((c) => !undoneConsolidations.has(c.id)).length > 0 && (
+                <div className="rounded-[var(--radius-sm)] border border-[var(--color-paper-200)] bg-[var(--color-paper-50)] px-3 py-2.5 max-h-44 overflow-y-auto">
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-[var(--color-paper-500)] mb-1.5">
+                    Consolidated codes
+                  </p>
+                  <div className="space-y-1">
+                    {coding.result.consolidations
+                      .filter((c) => !undoneConsolidations.has(c.id))
+                      .map((c) => (
+                        <div key={c.id} className="flex items-baseline gap-1.5 text-[12px] leading-snug">
+                          <span className="text-[var(--color-ink-800)]">{c.canonical_code}</span>
+                          <span className="text-[var(--color-paper-400)] text-[11px]">
+                            (was: {c.variant_code})
+                          </span>
+                          <button
+                            onClick={async () => {
+                              await api.undoConsolidation(c.id);
+                              setUndoneConsolidations((prev) => new Set(prev).add(c.id));
+                            }}
+                            className="ml-auto text-[10px] text-[var(--color-paper-400)] hover:text-[var(--color-ink-700)] underline underline-offset-2 transition-paper"
+                          >
+                            undo
+                          </button>
+                        </div>
+                      ))}
+                  </div>
+                </div>
+              )}
             </div>
           )}
 

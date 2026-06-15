@@ -1322,6 +1322,89 @@ No prose before or after the JSON."
         .ok_or_else(|| anyhow!("could not parse adjudications from: {}", &result.content))
 }
 
+// ── Corpus-level code consolidation ─────────────────────────────────────────
+// Cluster synonymous codes within one dimension across the whole corpus and pick
+// a canonical label per cluster (semantic judgment, not string similarity).
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ConsolidationCluster {
+    #[serde(alias = "canonical", alias = "label", alias = "keep")]
+    pub canonical_label: String,
+    #[serde(default, alias = "variants", alias = "merge", alias = "others")]
+    pub variant_labels: Vec<String>,
+}
+
+/// `codes` is `(label, count, is_researcher)`. Returns clusters of codes that mean
+/// the same thing; the canonical label is always one of the inputs, and a
+/// researcher-typed label is preferred as canonical when present in a cluster.
+pub async fn consolidate_codes(
+    base_url: &str,
+    model: &str,
+    dimension: &str,
+    codes: &[(String, i64, bool)],
+    temperature: f32,
+    api_key: Option<&str>,
+) -> Result<Vec<ConsolidationCluster>> {
+    let list = codes
+        .iter()
+        .map(|(label, count, is_researcher)| {
+            let tag = if *is_researcher { " [researcher-defined]" } else { "" };
+            format!("  - {label} (used {count}×){tag}")
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let system = "You are consolidating the codebook for a systematic literature review. \
+You are given the list of codes researchers and AI raters applied within ONE dimension across \
+all articles. Some are near-duplicates that denote the SAME concept worded differently \
+(e.g. \"Structural equation modelling\" / \"Structural equation modeling\", \"Higher education \
+setting\" / \"Business education\"). Group those into clusters so the codebook is clean.\n\n\
+Rules:\n\
+- Only cluster codes you are confident denote the same concept. Leave genuinely distinct codes \
+out (a code with no synonym simply doesn't appear in your output).\n\
+- For each cluster pick a canonical label that is EXACTLY one of the given labels. Never invent a \
+new label.\n\
+- If a cluster contains a code marked [researcher-defined], that label MUST be the canonical one.\n\n\
+Respond ONLY with a JSON array (possibly empty). Each element: \
+{\"canonical_label\": string, \"variant_labels\": [string, ...]} where variant_labels are the \
+OTHER labels in the cluster (not equal to canonical_label). No prose before or after the JSON."
+        .to_string();
+
+    let user = format!("Dimension: {dimension}\n\nCodes:\n{list}\n\nReturn the JSON array now.");
+
+    let messages = vec![
+        ChatMessage { role: "system".into(), content: system },
+        ChatMessage { role: "user".into(), content: user },
+    ];
+
+    let result = lmstudio::chat(base_url, model, &messages, Some(temperature), api_key).await?;
+    parse_consolidations(&result.content)
+        .ok_or_else(|| anyhow!("could not parse consolidations from: {}", &result.content))
+}
+
+fn parse_consolidations(s: &str) -> Option<Vec<ConsolidationCluster>> {
+    let bytes = s.as_bytes();
+    let start = bytes.iter().position(|&b| b == b'[')?;
+    let mut depth = 0i32;
+    let mut in_str = false;
+    let mut esc = false;
+    let mut end = None;
+    for i in start..bytes.len() {
+        let c = bytes[i];
+        if esc { esc = false; continue; }
+        if c == b'\\' { esc = true; continue; }
+        if c == b'"' { in_str = !in_str; continue; }
+        if in_str { continue; }
+        if c == b'[' { depth += 1; }
+        else if c == b']' {
+            depth -= 1;
+            if depth == 0 { end = Some(i + 1); break; }
+        }
+    }
+    let end = end?;
+    serde_json::from_str::<Vec<ConsolidationCluster>>(&s[start..end]).ok()
+}
+
 /// Extract the first balanced JSON array from the model output and parse it.
 fn parse_adjudications(s: &str) -> Option<Vec<AdjudicationResolution>> {
     let bytes = s.as_bytes();

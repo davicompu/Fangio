@@ -1329,6 +1329,15 @@ struct AiCodingProgress {
     disagreements: usize,
 }
 
+#[derive(Debug, Serialize, Clone)]
+struct ConsolidationSummary {
+    id: i64,
+    dimension: String,
+    canonical_code: String,
+    variant_code: String,
+    count: i64,
+}
+
 #[derive(Debug, Serialize)]
 struct AiCodingResult {
     processed: usize,
@@ -1338,6 +1347,10 @@ struct AiCodingResult {
     indexed: usize,
     /// Disagreement pairs auto-resolved by the independent adjudicator.
     adjudicated: usize,
+    /// Synonymous codes merged corpus-wide in the consolidation phase.
+    consolidated: usize,
+    /// Per-merge detail for the modal summary + Undo.
+    consolidations: Vec<ConsolidationSummary>,
 }
 
 #[tauri::command]
@@ -1423,6 +1436,19 @@ async fn undo_adjudication(id: i64, state: State<'_, AppState>) -> Result<(), St
             )
             .await;
         db.delete_adjudication(id).await.map_err(err)?;
+    }
+    Ok(())
+}
+
+/// Undo a code consolidation: rename the merged rows back to the original variant.
+#[tauri::command]
+async fn undo_consolidation(id: i64, state: State<'_, AppState>) -> Result<(), String> {
+    let db = state.current().await.ok_or("no project open")?;
+    if let Some(c) = db.get_consolidation(id).await.map_err(err)? {
+        db.revert_consolidation(&c.dimension, &c.canonical_code, &c.variant_code)
+            .await
+            .map_err(err)?;
+        db.delete_consolidation(id).await.map_err(err)?;
     }
     Ok(())
 }
@@ -2047,6 +2073,95 @@ async fn run_ai_coding(
         }
     }
 
+    // ── Phase 4: corpus-level code consolidation ───────────────────────────
+    // After adjudication, an independent pass clusters synonymous codes within
+    // each dimension across the whole corpus and renames variants to a canonical
+    // label. Researcher-typed codes are canonical anchors and never renamed.
+    let mut consolidated = 0usize;
+    let mut consolidations: Vec<ConsolidationSummary> = Vec::new();
+    if !cancelled.load(Ordering::SeqCst) {
+        let adj_model = settings
+            .get("lmstudio.chat_model")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        if !adj_model.is_empty() {
+            let total_dims = dims_to_code.len();
+            for (di, (dim_name, _)) in dims_to_code.iter().enumerate() {
+                if cancelled.load(Ordering::SeqCst) { break; }
+                let _ = app.emit(
+                    "coding:progress",
+                    AiCodingProgress {
+                        done: di + 1,
+                        total: total_dims,
+                        article_title: dim_name.clone(),
+                        phase: "consolidating".into(),
+                        skipped_no_pdf,
+                        consensus,
+                        disagreements,
+                    },
+                );
+
+                let codes = db.distinct_codes_with_meta(dim_name).await.unwrap_or_default();
+                if codes.len() < 2 { continue; }
+                // Valid labels + which are researcher-anchored (never renamed away).
+                let valid: std::collections::HashMap<String, bool> = codes
+                    .iter()
+                    .map(|(c, _, is_res)| (c.to_lowercase(), *is_res))
+                    .collect();
+
+                let clusters = match suggest::consolidate_codes(
+                    &base_url, &adj_model, dim_name, &codes, temperature, api_key.as_deref(),
+                )
+                .await
+                {
+                    Ok(c) => c,
+                    Err(_) => continue, // unreachable / unparsable → leave codes as-is
+                };
+
+                for cluster in clusters {
+                    let canon_key = cluster.canonical_label.trim().to_lowercase();
+                    // Canonical must be a real label in this dimension.
+                    let Some(&_canon_is_res) = valid.get(&canon_key) else { continue };
+                    for variant in &cluster.variant_labels {
+                        let var_key = variant.trim().to_lowercase();
+                        if var_key == canon_key { continue; }
+                        match valid.get(&var_key) {
+                            // Variant must exist and must not be a researcher anchor.
+                            Some(false) => {}
+                            _ => continue,
+                        }
+                        let n = db
+                            .apply_consolidation(dim_name, cluster.canonical_label.trim(), variant.trim())
+                            .await
+                            .unwrap_or(0);
+                        if n > 0 {
+                            if let Ok(id) = db
+                                .insert_consolidation(
+                                    dim_name,
+                                    cluster.canonical_label.trim(),
+                                    variant.trim(),
+                                    n as i64,
+                                    &args.run_id,
+                                )
+                                .await
+                            {
+                                consolidations.push(ConsolidationSummary {
+                                    id,
+                                    dimension: dim_name.clone(),
+                                    canonical_code: cluster.canonical_label.trim().to_string(),
+                                    variant_code: variant.trim().to_string(),
+                                    count: n as i64,
+                                });
+                                consolidated += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     Ok(AiCodingResult {
         processed,
         consensus,
@@ -2054,6 +2169,8 @@ async fn run_ai_coding(
         skipped_no_pdf,
         indexed,
         adjudicated,
+        consolidated,
+        consolidations,
     })
 }
 
@@ -4008,6 +4125,7 @@ pub fn run() {
             list_ai_coding_proposals_for_articles,
             list_adjudications_for_articles,
             undo_adjudication,
+            undo_consolidation,
             accept_ai_coding_proposal,
             reject_ai_coding_proposal,
             reject_all_ai_coding_proposals_for_article,

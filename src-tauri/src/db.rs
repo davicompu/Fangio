@@ -199,6 +199,17 @@ pub struct AiAdjudication {
     pub created_at: String,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AiConsolidation {
+    pub id: i64,
+    pub dimension: String,
+    pub canonical_code: String,
+    pub variant_code: String,
+    pub count: i64,
+    pub run_id: String,
+    pub created_at: String,
+}
+
 #[derive(Debug, Serialize)]
 pub struct AiCodingCoverage {
     pub ready: i64,
@@ -1024,6 +1035,9 @@ impl ProjectDb {
             .execute(&self.pool)
             .await?;
         sqlx::query("DELETE FROM ai_adjudication")
+            .execute(&self.pool)
+            .await?;
+        sqlx::query("DELETE FROM ai_consolidation")
             .execute(&self.pool)
             .await?;
         Ok(())
@@ -2679,6 +2693,122 @@ impl ProjectDb {
 
     pub async fn delete_adjudication(&self, id: i64) -> Result<()> {
         sqlx::query("DELETE FROM ai_adjudication WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    // ── Corpus-level code consolidation ────────────────────────────────────
+
+    /// Distinct codes in a dimension with their occurrence count and whether any
+    /// occurrence was researcher-typed (those become canonical anchors).
+    pub async fn distinct_codes_with_meta(
+        &self,
+        dimension: &str,
+    ) -> Result<Vec<(String, i64, bool)>> {
+        let rows = sqlx::query(
+            "SELECT code, COUNT(*) AS cnt, \
+             MAX(CASE WHEN source = 'researcher' THEN 1 ELSE 0 END) AS has_res \
+             FROM coding WHERE dimension = ? GROUP BY code ORDER BY cnt DESC",
+        )
+        .bind(dimension)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .iter()
+            .map(|r| {
+                let code: String = r.get("code");
+                let cnt: i64 = r.get("cnt");
+                let has_res: i64 = r.get("has_res");
+                (code, cnt, has_res != 0)
+            })
+            .collect())
+    }
+
+    /// Rename every non-researcher occurrence of `variant` to `canonical` within a
+    /// dimension, stamping `consolidated_from` for display/undo. Returns rows changed.
+    pub async fn apply_consolidation(
+        &self,
+        dimension: &str,
+        canonical: &str,
+        variant: &str,
+    ) -> Result<u64> {
+        let res = sqlx::query(
+            "UPDATE coding SET code = ?, consolidated_from = ? \
+             WHERE dimension = ? AND code = ? AND source != 'researcher'",
+        )
+        .bind(canonical)
+        .bind(variant)
+        .bind(dimension)
+        .bind(variant)
+        .execute(&self.pool)
+        .await?;
+        Ok(res.rows_affected())
+    }
+
+    pub async fn insert_consolidation(
+        &self,
+        dimension: &str,
+        canonical: &str,
+        variant: &str,
+        count: i64,
+        run_id: &str,
+    ) -> Result<i64> {
+        let now = chrono::Utc::now().to_rfc3339();
+        let res = sqlx::query(
+            "INSERT INTO ai_consolidation (dimension, canonical_code, variant_code, count, run_id, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(dimension)
+        .bind(canonical)
+        .bind(variant)
+        .bind(count)
+        .bind(run_id)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+        Ok(res.last_insert_rowid())
+    }
+
+    pub async fn get_consolidation(&self, id: i64) -> Result<Option<AiConsolidation>> {
+        let row = sqlx::query("SELECT * FROM ai_consolidation WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.map(|r| AiConsolidation {
+            id: r.get("id"),
+            dimension: r.get("dimension"),
+            canonical_code: r.get("canonical_code"),
+            variant_code: r.get("variant_code"),
+            count: r.get("count"),
+            run_id: r.get("run_id"),
+            created_at: r.get("created_at"),
+        }))
+    }
+
+    /// Revert one consolidation: rename the affected rows back to the variant.
+    pub async fn revert_consolidation(
+        &self,
+        dimension: &str,
+        canonical: &str,
+        variant: &str,
+    ) -> Result<()> {
+        sqlx::query(
+            "UPDATE coding SET code = ?, consolidated_from = NULL \
+             WHERE dimension = ? AND code = ? AND consolidated_from = ?",
+        )
+        .bind(variant)
+        .bind(dimension)
+        .bind(canonical)
+        .bind(variant)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn delete_consolidation(&self, id: i64) -> Result<()> {
+        sqlx::query("DELETE FROM ai_consolidation WHERE id = ?")
             .bind(id)
             .execute(&self.pool)
             .await?;

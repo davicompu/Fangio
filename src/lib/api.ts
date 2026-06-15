@@ -335,10 +335,19 @@ export interface AiCodingProgress {
   done: number;
   total: number;
   article_title: string;
-  phase: "indexing" | "coding-rater1" | "coding-rater2" | "resolving" | "adjudicating";
+  phase: "indexing" | "coding-rater1" | "coding-rater2" | "resolving" | "adjudicating" | "consolidating";
   skipped_no_pdf: number;
   consensus: number;
   disagreements: number;
+}
+
+/** One variant→canonical merge from the corpus-level consolidation phase. */
+export interface ConsolidationSummary {
+  id: number;
+  dimension: string;
+  canonical_code: string;
+  variant_code: string;
+  count: number;
 }
 
 export interface AiCodingResult {
@@ -349,6 +358,10 @@ export interface AiCodingResult {
   indexed: number;
   /** Disagreement pairs auto-resolved by the independent adjudicator. */
   adjudicated: number;
+  /** Synonymous codes merged corpus-wide in the consolidation phase. */
+  consolidated: number;
+  /** Per-merge detail for the modal summary + Undo. */
+  consolidations: ConsolidationSummary[];
 }
 
 export interface ClusterArticle {
@@ -714,6 +727,9 @@ export const api = {
   },
   undoAdjudication(id: number) {
     return invoke<void>("undo_adjudication", { id });
+  },
+  undoConsolidation(id: number) {
+    return invoke<void>("undo_consolidation", { id });
   },
   getPrismaState() {
     return invoke<PrismaState>("get_prisma_state");
