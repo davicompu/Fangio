@@ -56,71 +56,91 @@ export function SynthesisPanel({ project, onOpenChat }: { project: ProjectRow; o
     }
   };
 
+  const hasText = !!text.trim();
+
   return (
     <div className="space-y-5 max-w-3xl">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <span className="eyebrow text-[var(--color-paper-500)]">Evaluation · synthesis</span>
-          <h3 className="font-serif text-[20px] tracking-tight text-[var(--color-ink-900)] mt-0.5">
-            Corpus synthesis
-          </h3>
-          <p className="text-[14px] text-[var(--color-paper-600)] leading-relaxed max-w-xl mt-1">
-            Generate a cited synthesis of your corpus, organised by framework dimension and grounded in
-            your coded themes. Edit it freely — it feeds the manuscript's Results section.
+      <div>
+        <span className="eyebrow text-[var(--color-paper-500)]">Evaluation · synthesis</span>
+        <h3 className="font-serif text-[20px] tracking-tight text-[var(--color-ink-900)] mt-0.5">
+          Corpus synthesis
+        </h3>
+        <p className="text-[14px] text-[var(--color-paper-600)] leading-relaxed max-w-xl mt-1">
+          Generate a cited synthesis of your corpus, organised by framework dimension and grounded in
+          your coded themes. Edit it freely — it feeds the manuscript's Results section.
+        </p>
+      </div>
+
+      {error && <div className="text-[12px] text-[var(--color-warn-600)]">{error}</div>}
+
+      {/* Empty state — Generate is the clear, primary step */}
+      {!hasText && (
+        <div className="rounded-[var(--radius-md)] border border-[var(--color-paper-300)] bg-[var(--color-paper-50)] px-6 py-10 flex flex-col items-center text-center gap-4">
+          <div className="w-12 h-12 rounded-full bg-[var(--color-accent-100)] text-[var(--color-accent-600)] flex items-center justify-center">
+            <Sparkles size={22} strokeWidth={1.75} />
+          </div>
+          <p className="text-[13px] text-[var(--color-paper-600)] max-w-sm leading-relaxed">
+            Synthesise your corpus into a cited, dimension-by-dimension narrative — the core step of the
+            Evaluation stage.
           </p>
-        </div>
-        <Button variant="ghost" size="sm" onClick={onOpenChat} title="Ask ad-hoc questions of the corpus">
-          <MessagesSquare size={13} strokeWidth={1.75} className="text-[var(--color-accent-500)]" />
-          Chat with the literature
-        </Button>
-      </div>
-
-      <div className="flex items-center gap-3">
-        <Button onClick={generate} disabled={generating} variant="primary">
-          {generating ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} strokeWidth={1.75} />}
-          {generating ? "Synthesising…" : text.trim() ? "Regenerate synthesis" : "Generate synthesis"}
-        </Button>
-        {text.trim() && (
-          <>
-            <Button onClick={() => setEditing((v) => !v)} variant="ghost" size="sm">
-              {editing ? "Preview" : "Edit"}
-            </Button>
-            <Button onClick={save} disabled={saving} variant="secondary" size="sm">
-              {saving ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} strokeWidth={1.75} />}
-              Save
-            </Button>
-          </>
-        )}
-        {saved && (
-          <span className="inline-flex items-center gap-1 text-[12px] text-[var(--color-ok-600)]">
-            <Check size={12} strokeWidth={2.5} /> Saved
-          </span>
-        )}
-        {error && <span className="text-[12px] text-[var(--color-warn-600)]">{error}</span>}
-      </div>
-
-      {!text.trim() && !generating && (
-        <div className="border border-dashed border-[var(--color-paper-300)] rounded-[var(--radius-md)] p-10 text-center text-[13px] text-[var(--color-paper-500)] leading-relaxed">
-          No synthesis yet. Click <strong>Generate synthesis</strong> to draft a dimension-by-dimension
-          narrative from your embedded corpus and codings.
+          <Button onClick={generate} disabled={generating} variant="primary" size="lg">
+            {generating ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={16} strokeWidth={1.75} />}
+            {generating ? "Synthesising…" : "Generate synthesis"}
+          </Button>
+          <button
+            onClick={onOpenChat}
+            className="inline-flex items-center gap-1.5 text-[12px] text-[var(--color-paper-500)] hover:text-[var(--color-accent-700)] transition-paper"
+          >
+            <MessagesSquare size={12} strokeWidth={1.75} />
+            Prefer to explore by hand? Chat with the literature
+          </button>
         </div>
       )}
 
-      {text.trim() && (
-        editing ? (
-          <TextArea
-            label="Synthesis (markdown)"
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            rows={20}
-          />
-        ) : (
-          <div className="rounded-[var(--radius-md)] border border-[var(--color-paper-300)] bg-white px-5 py-4">
-            <Markdown className="prose-editorial text-[14px] leading-[1.7] text-[var(--color-ink-800)]">
-              {text}
-            </Markdown>
+      {/* Result — toolbar with Regenerate demoted, chat as a subtle trailing link */}
+      {hasText && (
+        <>
+          <div className="flex items-center gap-2">
+            <Button onClick={() => setEditing((v) => !v)} variant="ghost" size="sm">
+              {editing ? "Preview" : "Edit"}
+            </Button>
+            <Button onClick={save} disabled={saving} variant="primary" size="sm">
+              {saving ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} strokeWidth={1.75} />}
+              Save
+            </Button>
+            <Button onClick={generate} disabled={generating} variant="ghost" size="sm">
+              {generating ? <Loader2 size={13} className="animate-spin" /> : <Sparkles size={13} strokeWidth={1.75} />}
+              Regenerate
+            </Button>
+            {saved && (
+              <span className="inline-flex items-center gap-1 text-[12px] text-[var(--color-ok-600)]">
+                <Check size={12} strokeWidth={2.5} /> Saved
+              </span>
+            )}
+            <button
+              onClick={onOpenChat}
+              className="ml-auto inline-flex items-center gap-1.5 text-[12px] text-[var(--color-paper-500)] hover:text-[var(--color-accent-700)] transition-paper"
+            >
+              <MessagesSquare size={12} strokeWidth={1.75} />
+              Chat with the literature
+            </button>
           </div>
-        )
+
+          {editing ? (
+            <TextArea
+              label="Synthesis (markdown)"
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              rows={20}
+            />
+          ) : (
+            <div className="rounded-[var(--radius-md)] border border-[var(--color-paper-300)] bg-white px-5 py-4">
+              <Markdown className="prose-editorial text-[14px] leading-[1.7] text-[var(--color-ink-800)]">
+                {text}
+              </Markdown>
+            </div>
+          )}
+        </>
       )}
     </div>
   );
