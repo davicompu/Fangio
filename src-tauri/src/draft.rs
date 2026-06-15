@@ -101,12 +101,21 @@ pub async fn generate(db: &ProjectDb) -> Result<String> {
         ));
     }
 
-    if let Some(m) = project.analysis_method.as_ref().filter(|m| !m.trim().is_empty()) {
-        s.push_str("### 2.5 Analysis method\n\n");
-        s.push_str(&format!(
-            "The synthesized corpus was analysed using a {m} approach.\n\n"
-        ));
-    }
+    // Analysis method (SPAR-4-SLR Evaluation). Defaults to framework-based using
+    // the chosen framework; only overridden when the researcher set one explicitly.
+    s.push_str("### 2.5 Analysis method\n\n");
+    let method = match project.analysis_method.as_ref().filter(|m| !m.trim().is_empty()) {
+        Some(m) => m.trim().to_string(),
+        None => match project.framework.as_deref() {
+            Some("TCM") => "framework-based (TCM: Theories, Contexts, Methods)".to_string(),
+            Some("ADO") => "framework-based (ADO: Antecedents, Decisions, Outcomes)".to_string(),
+            Some(f) if !f.is_empty() && f != "Custom" => format!("framework-based ({f})"),
+            _ => "framework-based".to_string(),
+        },
+    };
+    s.push_str(&format!(
+        "The synthesized corpus was analysed using a {method} analysis approach, with each included article coded across every dimension of the framework.\n\n"
+    ));
 
     // Results placeholder
     s.push_str("## 3. Results\n\n");

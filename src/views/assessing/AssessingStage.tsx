@@ -120,7 +120,7 @@ export function AssessingStage({ project, onLeaveStage, onOpenRag }: Props) {
     library: () =>
       progress != null && progress.articles_included > 0 &&
       progress.articles_with_pdf / progress.articles_included >= 0.8,
-    findings: () => !!(project.analysis_method && project.analysis_method.trim()),
+    findings: () => false, // reference view (analysis method is derived from the framework)
     ask: () => false, // manual only
     agenda: () => !!(project.research_agenda && project.research_agenda.trim()),
     prisma: () => false, // manual only

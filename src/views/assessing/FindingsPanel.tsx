@@ -6,7 +6,7 @@ import { Select } from "../../components/ui/Select";
 const ANALYSIS_METHODS = [
   "Content analysis",
   "Thematic analysis",
-  "Framework-based analysis (TCCM)",
+  "Framework-based analysis (TCM)",
   "Framework-based analysis (ADO)",
   "Bibliometric analysis",
   "Meta-analysis",
@@ -21,6 +21,18 @@ export function FindingsPanel({ project }: { project: ProjectRow }) {
   const [loading, setLoading] = useState(true);
   const [method, setMethod] = useState(project.analysis_method ?? "");
   const [savedMethod, setSavedMethod] = useState(false);
+  const [showPicker, setShowPicker] = useState(false);
+
+  // The framework you chose already implies a framework-based analysis — no need
+  // to ask again. Derive the default; the picker is only for the rare override.
+  const frameworkMethod =
+    project.framework === "TCM" ? "Framework-based analysis (TCM)"
+    : project.framework === "ADO" ? "Framework-based analysis (ADO)"
+    : project.framework === "Custom" ? "Framework-based analysis (custom framework)"
+    : project.framework ? `Framework-based analysis (${project.framework})`
+    : "Framework-based analysis";
+  const overridden = !!method.trim();
+  const effectiveMethod = overridden ? method : frameworkMethod;
 
   useEffect(() => {
     Promise.all([api.listFrameworkDimensions(), api.listCodingBatch(0, 9999)])
@@ -75,17 +87,49 @@ export function FindingsPanel({ project }: { project: ProjectRow }) {
             </span>
           )}
         </div>
-        <p className="text-[14px] text-[var(--color-paper-600)] leading-relaxed max-w-xl mb-3">
-          How was the synthesized corpus analysed? This is recorded in the method section of your manuscript.
-        </p>
-        <div className="max-w-sm">
-          <Select value={method} onChange={(e) => saveMethod(e.target.value)}>
-            <option value="">Select an analysis method…</option>
-            {ANALYSIS_METHODS.map((m) => (
-              <option key={m} value={m}>{m}</option>
-            ))}
-            {method && !ANALYSIS_METHODS.includes(method) && <option value={method}>{method}</option>}
-          </Select>
+        {/* Derived from the framework — not a required choice */}
+        <div className="rounded-[var(--radius-sm)] border border-[var(--color-paper-300)] bg-[var(--color-paper-50)] px-4 py-3 max-w-xl">
+          <div className="flex items-baseline gap-2">
+            <span className="text-[14px] font-medium text-[var(--color-ink-900)]">{effectiveMethod}</span>
+            {!overridden && (
+              <span className="text-[11px] text-[var(--color-paper-500)]">
+                · derived from your {project.framework ?? "chosen"} framework
+              </span>
+            )}
+          </div>
+          <p className="text-[12px] text-[var(--color-paper-500)] leading-relaxed mt-1">
+            Your {project.framework ?? "chosen"} framework already defines a framework-based analysis, so there's nothing to set here — it's recorded in the manuscript's method section automatically. Override it only if you also applied a different technique (e.g. a bibliometric pass).
+          </p>
+          <div className="mt-2 flex items-center gap-3">
+            <button
+              onClick={() => setShowPicker((v) => !v)}
+              className="text-[12px] text-[var(--color-accent-600)] hover:text-[var(--color-accent-700)] underline underline-offset-2"
+            >
+              {showPicker ? "Cancel" : overridden ? "Change method" : "Use a different method"}
+            </button>
+            {overridden && (
+              <button
+                onClick={() => { setShowPicker(false); saveMethod(""); }}
+                className="text-[12px] text-[var(--color-paper-500)] hover:text-[var(--color-ink-700)] underline underline-offset-2"
+              >
+                Reset to framework default
+              </button>
+            )}
+          </div>
+          {showPicker && (
+            <div className="mt-3 max-w-sm">
+              <Select
+                value={method}
+                onChange={(e) => { saveMethod(e.target.value); setShowPicker(false); }}
+              >
+                <option value="">— framework default ({frameworkMethod}) —</option>
+                {ANALYSIS_METHODS.map((m) => (
+                  <option key={m} value={m}>{m}</option>
+                ))}
+                {method && !ANALYSIS_METHODS.includes(method) && <option value={method}>{method}</option>}
+              </Select>
+            </div>
+          )}
         </div>
       </section>
 
