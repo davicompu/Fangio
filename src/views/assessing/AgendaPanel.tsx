@@ -118,7 +118,7 @@ export function AgendaPanel({ project, onSaved }: { project: ProjectRow; onSaved
         ))}
         <Button onClick={generate} disabled={generating} variant="primary">
           {generating ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} strokeWidth={1.75} />}
-          {generating ? "Generating…" : agenda.trim() ? "Regenerate from answers" : "Generate agenda"}
+          {generating ? "Drafting…" : agenda.trim() ? "Re-draft from answers" : "Draft agenda"}
         </Button>
       </div>
 

@@ -90,9 +90,9 @@ export function SynthesisPanel({ project, onOpenChat, onSaved }: { project: Proj
           </Button>
           <button
             onClick={onOpenChat}
-            className="inline-flex items-center gap-1.5 text-[12px] text-[var(--color-paper-500)] hover:text-[var(--color-accent-700)] transition-paper"
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-[var(--radius-sm)] text-[12px] font-medium text-[var(--color-accent-700)] border border-[var(--color-accent-300)] bg-[var(--color-accent-50)] hover:bg-[var(--color-accent-100)] transition-paper"
           >
-            <MessagesSquare size={12} strokeWidth={1.75} />
+            <MessagesSquare size={13} strokeWidth={2} />
             Prefer to explore by hand? Chat with the literature
           </button>
         </div>
@@ -120,9 +120,9 @@ export function SynthesisPanel({ project, onOpenChat, onSaved }: { project: Proj
             )}
             <button
               onClick={onOpenChat}
-              className="ml-auto inline-flex items-center gap-1.5 text-[12px] text-[var(--color-paper-500)] hover:text-[var(--color-accent-700)] transition-paper"
+              className="ml-auto inline-flex items-center gap-1.5 px-3 py-1.5 rounded-[var(--radius-sm)] text-[12px] font-medium text-[var(--color-accent-700)] border border-[var(--color-accent-300)] bg-[var(--color-accent-50)] hover:bg-[var(--color-accent-100)] transition-paper"
             >
-              <MessagesSquare size={12} strokeWidth={1.75} />
+              <MessagesSquare size={13} strokeWidth={2} />
               Chat with the literature
             </button>
           </div>
