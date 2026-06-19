@@ -10,6 +10,7 @@ import {
   GitBranch,
   ListChecks,
   Loader2,
+  ScrollText,
 } from "lucide-react";
 import { api } from "../../lib/api";
 import { Card } from "../../components/ui/Card";
@@ -18,6 +19,7 @@ import { cn } from "../../lib/utils";
 
 type Job =
   | "docx"
+  | "decisions"
   | "csv"
   | "bibtex"
   | "checklist"
@@ -35,6 +37,7 @@ export function ExportPanel() {
     try {
       let files: string[] = [];
       if (kind === "docx") files = [await api.exportDocx()];
+      else if (kind === "decisions") files = [await api.exportDecisionReport()];
       else if (kind === "csv") files = (await api.exportCsvs()).files;
       else if (kind === "bibtex") files = [await api.exportBibtex()];
       else if (kind === "checklist") files = [await api.exportPrismaChecklist()];
@@ -72,6 +75,14 @@ export function ExportPanel() {
       </div>
 
       <div className="grid grid-cols-2 gap-4">
+        <ExportCard
+          icon={<ScrollText size={20} strokeWidth={1.5} />}
+          title="Decision report (DOCX)"
+          description="A human-readable audit trail of every decision — configuration, screening (include/exclude), coding, and AI-assisted resolutions — each labelled human vs AI, for your transparency/methods section."
+          path="drafts/decision-report.docx"
+          busy={busy === "decisions"}
+          onRun={() => run("decisions")}
+        />
         <ExportCard
           icon={<FileSpreadsheet size={20} strokeWidth={1.5} />}
           title="Article CSVs"

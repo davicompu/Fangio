@@ -4088,6 +4088,22 @@ async fn export_docx(state: State<'_, AppState>) -> Result<String, String> {
     Ok(path.to_string_lossy().into_owned())
 }
 
+/// Export the decision report — a human-readable audit trail of configuration,
+/// screening, coding, and AI-assisted resolutions (human vs AI throughout) — as
+/// a single Word document for inclusion in the research.
+#[tauri::command]
+async fn export_decision_report(state: State<'_, AppState>) -> Result<String, String> {
+    let db = state.current().await.ok_or("no project open")?;
+    let md = draft::generate_decision_report(&db).await.map_err(err)?;
+    let docx = draft::markdown_to_docx(&md);
+    let dir = db.workspace.join("drafts");
+    std::fs::create_dir_all(&dir).map_err(err)?;
+    let path = dir.join("decision-report.docx");
+    let file = std::fs::File::create(&path).map_err(err)?;
+    docx.build().pack(file).map_err(err)?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
 #[derive(Debug, Serialize)]
 struct ExportSummary {
     files: Vec<String>,
@@ -4383,6 +4399,7 @@ pub fn run() {
             generate_agenda,
             generate_synthesis,
             export_docx,
+            export_decision_report,
             export_csvs,
             check_project_lock,
             snapshot_now,

@@ -830,6 +830,9 @@ export const api = {
   exportDocx() {
     return invoke<string>("export_docx");
   },
+  exportDecisionReport() {
+    return invoke<string>("export_decision_report");
+  },
   exportCsvs() {
     return invoke<ExportSummary>("export_csvs");
   },

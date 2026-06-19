@@ -425,3 +425,180 @@ pub fn markdown_to_docx(md: &str) -> Docx {
     }
     docx
 }
+
+// ── Decision report ─────────────────────────────────────────────────────────
+// A human-readable audit trail of the review's decisions, compiled from the
+// decision log (configuration), the article table (screening), the coding table
+// (coding), and the AI-resolution tables — labelling human vs AI throughout.
+
+fn cell(s: &str) -> String {
+    // Markdown table cells can't contain raw '|' or newlines.
+    s.replace('|', "/").replace('\n', " ").trim().to_string()
+}
+
+fn short(s: &str, n: usize) -> String {
+    let t = s.trim();
+    if t.chars().count() > n {
+        format!("{}…", t.chars().take(n).collect::<String>())
+    } else {
+        t.to_string()
+    }
+}
+
+fn decode_value(value_json: &str) -> String {
+    match serde_json::from_str::<serde_json::Value>(value_json) {
+        Ok(serde_json::Value::String(s)) => s,
+        Ok(serde_json::Value::Array(a)) => a
+            .iter()
+            .map(|v| v.as_str().map(|s| s.to_string()).unwrap_or_else(|| v.to_string()))
+            .collect::<Vec<_>>()
+            .join(", "),
+        Ok(other) => other.to_string(),
+        Err(_) => value_json.to_string(),
+    }
+}
+
+fn key_label(key: &str) -> String {
+    key.strip_prefix("project.").unwrap_or(key).replace('_', " ")
+}
+
+pub async fn generate_decision_report(db: &ProjectDb) -> Result<String> {
+    let project = db.get_project().await?;
+    let log = db.list_decision_log().await?;
+    let articles = db.list_articles().await?;
+    let criteria = db.list_criteria().await?;
+    let ids: Vec<i64> = articles.iter().map(|a| a.id).collect();
+    let codings = db.list_codings_for_articles(&ids).await?;
+    let adjudications = db.list_adjudications_for_articles(&ids).await?;
+    let consolidations = db.list_all_consolidations().await?;
+
+    let crit_label: std::collections::HashMap<i64, String> =
+        criteria.iter().map(|c| (c.number, c.label.clone())).collect();
+    let title_of: std::collections::HashMap<i64, String> =
+        articles.iter().map(|a| (a.id, a.title.clone())).collect();
+
+    let mut s = String::new();
+    s.push_str(&format!("# Decision report — {}\n\n", project.name));
+    s.push_str("This report documents the decisions made during the review for transparency and replication. Each decision is labelled by who made it — the **researcher (human)** or an **AI assistant** whose suggestion was applied. It is generated from the project's decision log and database.\n\n");
+
+    // 1. Configuration decisions (human, via the decision log)
+    s.push_str("## 1. Configuration decisions\n\n");
+    let effective: Vec<&crate::db::DecisionLogRow> = log.iter().filter(|d| d.superseded_by.is_none()).collect();
+    if effective.is_empty() {
+        s.push_str("_No configuration decisions recorded._\n\n");
+    } else {
+        s.push_str("These are protocol decisions (research questions, framework, search strategy, eligibility criteria, and Stage-3 outputs), all made by the researcher.\n\n");
+        s.push_str("| When | Stage | Decision | Value |\n|---|---|---|---|\n");
+        for d in &effective {
+            s.push_str(&format!(
+                "| {} | {} | {} | {} |\n",
+                cell(&short(&d.created_at, 19)),
+                cell(&d.stage),
+                cell(&key_label(&d.decision_key)),
+                cell(&short(&decode_value(&d.value_json), 100)),
+            ));
+        }
+        let revised = log.len() - effective.len();
+        if revised > 0 {
+            s.push_str(&format!("\n_{revised} earlier decision(s) were later revised and are superseded above._\n"));
+        }
+        s.push_str("\n");
+    }
+
+    // 2. Screening decisions (human or AI)
+    s.push_str("## 2. Screening decisions\n\n");
+    let screened: Vec<_> = articles.iter().filter(|a| a.status == "included" || a.status == "excluded").collect();
+    if screened.is_empty() {
+        s.push_str("_No screening decisions recorded yet._\n\n");
+    } else {
+        s.push_str("| Article | Decision | Criterion | Decided by | When |\n|---|---|---|---|---|\n");
+        for a in &screened {
+            let decided_by = if a.ai_rationale.is_some() {
+                "AI"
+            } else if a.screened_at.is_some() {
+                "Human"
+            } else {
+                "Auto (PDF attached)"
+            };
+            let criterion = if a.status == "excluded" {
+                a.exclusion_criterion
+                    .and_then(|n| crit_label.get(&n).cloned().or(Some(format!("Criterion {n}"))))
+                    .unwrap_or_else(|| "—".into())
+            } else {
+                "—".into()
+            };
+            s.push_str(&format!(
+                "| {} | {} | {} | {} | {} |\n",
+                cell(&short(&a.title, 60)),
+                if a.status == "included" { "Included" } else { "Excluded" },
+                cell(&criterion),
+                decided_by,
+                cell(&a.screened_at.clone().map(|t| short(&t, 19)).unwrap_or_else(|| "—".into())),
+            ));
+        }
+        s.push_str("\n");
+    }
+
+    // 3. Coding decisions (human vs AI)
+    s.push_str("## 3. Coding decisions\n\n");
+    if codings.is_empty() {
+        s.push_str("_No codes applied yet._\n\n");
+    } else {
+        s.push_str("| Article | Dimension | Code | Applied by | When |\n|---|---|---|---|---|\n");
+        for c in &codings {
+            let by = match c.source.as_str() {
+                "researcher" => "Human",
+                s if s.starts_with("model-suggested") => "Human (AI-suggested)",
+                s if s.starts_with("model-ai") => "AI",
+                other => other,
+            };
+            let title = title_of.get(&c.article_id).cloned().unwrap_or_else(|| format!("#{}", c.article_id));
+            s.push_str(&format!(
+                "| {} | {} | {} | {} | {} |\n",
+                cell(&short(&title, 48)),
+                cell(&c.dimension),
+                cell(&c.code),
+                by,
+                cell(&short(&c.created_at, 19)),
+            ));
+        }
+        s.push_str("\n");
+    }
+
+    // 4. AI-assisted resolutions
+    s.push_str("## 4. AI-assisted resolutions\n\n");
+    if adjudications.is_empty() && consolidations.is_empty() {
+        s.push_str("_No AI adjudications or consolidations._\n\n");
+    } else {
+        if !adjudications.is_empty() {
+            s.push_str("**Adjudicated disagreements** (an independent model merged two raters' equivalent codes):\n\n");
+            s.push_str("| Dimension | Kept | Merged from |\n|---|---|---|\n");
+            for a in &adjudications {
+                s.push_str(&format!(
+                    "| {} | {} | {} + {} |\n",
+                    cell(&a.dimension),
+                    cell(&a.canonical_code),
+                    cell(&a.label1),
+                    cell(&a.label2),
+                ));
+            }
+            s.push_str("\n");
+        }
+        if !consolidations.is_empty() {
+            s.push_str("**Consolidated codes** (synonymous codes merged corpus-wide):\n\n");
+            s.push_str("| Dimension | Canonical | Merged variant | Count |\n|---|---|---|---|\n");
+            for c in &consolidations {
+                s.push_str(&format!(
+                    "| {} | {} | {} | {} |\n",
+                    cell(&c.dimension),
+                    cell(&c.canonical_code),
+                    cell(&c.variant_code),
+                    c.count,
+                ));
+            }
+            s.push_str("\n");
+        }
+    }
+
+    Ok(s)
+}

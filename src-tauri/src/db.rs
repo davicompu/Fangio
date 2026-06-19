@@ -215,6 +215,18 @@ pub struct AiConsolidation {
     pub created_at: String,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DecisionLogRow {
+    pub id: i64,
+    pub stage: String,
+    pub sub_stage: Option<String>,
+    pub decision_key: String,
+    pub value_json: String,
+    pub rationale: Option<String>,
+    pub created_at: String,
+    pub superseded_by: Option<i64>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct AiCodingCoverage {
     pub ready: i64,
@@ -2828,6 +2840,48 @@ impl ProjectDb {
             .execute(&self.pool)
             .await?;
         Ok(())
+    }
+
+    pub async fn list_all_consolidations(&self) -> Result<Vec<AiConsolidation>> {
+        let rows = sqlx::query("SELECT * FROM ai_consolidation ORDER BY dimension, canonical_code")
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows
+            .iter()
+            .map(|r| AiConsolidation {
+                id: r.get("id"),
+                dimension: r.get("dimension"),
+                canonical_code: r.get("canonical_code"),
+                variant_code: r.get("variant_code"),
+                count: r.get("count"),
+                run_id: r.get("run_id"),
+                created_at: r.get("created_at"),
+            })
+            .collect())
+    }
+
+    /// Full decision log (every saveDecision), chronological. Powers the
+    /// decision report — the human-authored audit trail of the review.
+    pub async fn list_decision_log(&self) -> Result<Vec<DecisionLogRow>> {
+        let rows = sqlx::query(
+            "SELECT id, stage, sub_stage, decision_key, value_json, rationale, created_at, superseded_by \
+             FROM decision_log ORDER BY created_at, id",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .iter()
+            .map(|r| DecisionLogRow {
+                id: r.get("id"),
+                stage: r.get("stage"),
+                sub_stage: r.get("sub_stage"),
+                decision_key: r.get("decision_key"),
+                value_json: r.get("value_json"),
+                rationale: r.get("rationale"),
+                created_at: r.get("created_at"),
+                superseded_by: r.get("superseded_by"),
+            })
+            .collect())
     }
 
     // ── AI Screening proposals ────────────────────────────────────────────
