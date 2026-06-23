@@ -33,6 +33,7 @@ interface AssemblingStageProps {
   onProjectChanged: () => Promise<void> | void;
   onOpenRag: () => void;
   onOpenSettings: () => void;
+  onUpdateDatabaseUrl: (id: string, url: string) => Promise<void> | void;
 }
 
 type Tab = "acquisition" | "journals" | "import" | "library" | "dedup" | "checkpoint";
@@ -117,7 +118,7 @@ const tabs: { id: Tab; label: string; eyebrow: string; icon: any; description: s
 
 const ALL_TAB_IDS: Tab[] = ["acquisition", "import", "journals", "library", "dedup", "checkpoint"];
 
-export function AssemblingStage({ project, settings, onLeaveStage, onAdvanceStage, onProjectChanged, onOpenRag, onOpenSettings }: AssemblingStageProps) {
+export function AssemblingStage({ project, settings, onLeaveStage, onAdvanceStage, onProjectChanged, onOpenRag, onOpenSettings, onUpdateDatabaseUrl }: AssemblingStageProps) {
   const [tab, setTab] = useState<Tab>("acquisition");
   const [assembling, setAssembling] = useState<AssemblingState | null>(null);
   const [progressSettings, setProgressSettings] = useState<Record<string, unknown>>({});
@@ -237,6 +238,7 @@ export function AssemblingStage({ project, settings, onLeaveStage, onAdvanceStag
                   settings={settings}
                   onSaved={onChanged}
                   onOpenSettings={onOpenSettings}
+                  onUpdateDatabaseUrl={onUpdateDatabaseUrl}
                 />
               )}
               {tab === "journals" && (

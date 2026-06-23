@@ -166,6 +166,11 @@ function App() {
               onProjectChanged={refreshProject}
               onOpenRag={() => openRag("assembling")}
               onOpenSettings={() => setSettingsOpen(true)}
+              onUpdateDatabaseUrl={async (id, url) => {
+                const cfg = settings["databases.config"] ?? [];
+                const next = cfg.map((d) => (d.id === id ? { ...d, url } : d));
+                await updateSetting("databases.config", next);
+              }}
             />
           </motion.div>
         )}

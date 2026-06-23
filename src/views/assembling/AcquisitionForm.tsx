@@ -1,7 +1,7 @@
 import { useState, useRef } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { motion } from "framer-motion";
-import { Calendar, Check, Clipboard, Database, ExternalLink, Filter, Globe, Lightbulb, Plus, Save, Search, Settings as SettingsIcon, Sparkles, X } from "lucide-react";
+import { Calendar, Check, Clipboard, Database, ExternalLink, Filter, Globe, Lightbulb, Loader2, Plus, Save, Search, Settings as SettingsIcon, Sparkles, X } from "lucide-react";
 import { api, type ProjectRow, type SuggestQueryResult } from "../../lib/api";
 import { Card } from "../../components/ui/Card";
 import { TextField, TextArea } from "../../components/ui/TextField";
@@ -14,10 +14,26 @@ interface Props {
   settings: AppSettings;
   onSaved: () => void;
   onOpenSettings: () => void;
+  onUpdateDatabaseUrl: (id: string, url: string) => Promise<void> | void;
 }
 
-export function AcquisitionForm({ project, settings, onSaved, onOpenSettings }: Props) {
+export function AcquisitionForm({ project, settings, onSaved, onOpenSettings, onUpdateDatabaseUrl }: Props) {
   const DATABASES = settings["databases.config"] ?? [];
+  const [urlDrafts, setUrlDrafts] = useState<Record<string, string>>({});
+  const [savingUrl, setSavingUrl] = useState<string | null>(null);
+
+  const saveDatabaseUrl = async (id: string) => {
+    let url = (urlDrafts[id] ?? "").trim();
+    if (!url) return;
+    if (!/^https?:\/\//i.test(url)) url = "https://" + url;
+    setSavingUrl(id);
+    try {
+      await onUpdateDatabaseUrl(id, url);
+      setUrlDrafts((d) => ({ ...d, [id]: "" }));
+    } finally {
+      setSavingUrl(null);
+    }
+  };
 
   const [databases, setDatabases] = useState<Set<string>>(
     () => new Set<string>(project.databases ? (JSON.parse(project.databases) as string[]) : []),
@@ -233,6 +249,42 @@ export function AcquisitionForm({ project, settings, onSaved, onOpenSettings }: 
             );
           })}
         </div>
+
+        {/* Prompt for missing search URLs as soon as a URL-less database is selected */}
+        {(() => {
+          const needUrl = DATABASES.filter((d) => databases.has(d.id) && !d.url);
+          if (needUrl.length === 0) return null;
+          return (
+            <div className="mt-4 rounded-[var(--radius-sm)] border border-[var(--color-accent-300)] bg-[var(--color-accent-50)] p-4 space-y-3">
+              <p className="text-[12px] text-[var(--color-accent-700)] leading-relaxed">
+                Add the search URL for {needUrl.length === 1 ? "this database" : "these databases"} so you can
+                launch {needUrl.length === 1 ? "it" : "them"} from here. Paste the page where you run an advanced
+                search (you can also set these later in Settings).
+              </p>
+              {needUrl.map((d) => (
+                <div key={d.id} className="flex items-center gap-2">
+                  <span className="text-[12px] font-medium text-[var(--color-ink-800)] w-44 shrink-0 truncate" title={d.label}>{d.label}</span>
+                  <input
+                    type="text"
+                    value={urlDrafts[d.id] ?? ""}
+                    onChange={(e) => setUrlDrafts((s) => ({ ...s, [d.id]: e.target.value }))}
+                    onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); saveDatabaseUrl(d.id); } }}
+                    placeholder="e.g., scopus.com/search/form.uri"
+                    className="flex-1 px-2.5 py-1.5 text-[12px] rounded-[var(--radius-xs)] border border-[var(--color-accent-300)] bg-white placeholder:text-[var(--color-paper-400)] focus:outline-none focus:ring-1 focus:ring-[var(--color-accent-400)]"
+                  />
+                  <Button
+                    onClick={() => saveDatabaseUrl(d.id)}
+                    disabled={savingUrl === d.id || !(urlDrafts[d.id] ?? "").trim()}
+                    variant="secondary"
+                    size="sm"
+                  >
+                    {savingUrl === d.id ? <Loader2 size={12} className="animate-spin" /> : "Save URL"}
+                  </Button>
+                </div>
+              ))}
+            </div>
+          );
+        })()}
       </section>
 
       {/* Period */}
