@@ -116,8 +116,8 @@ export function FullTextScreeningPanel({ refreshKey, onChanged }: { refreshKey: 
   ];
 
   return (
-    <div className="w-full pl-6 pr-4 xl:pl-12 xl:pr-8 max-w-4xl">
-      <div className="flex items-end justify-between mb-4">
+    <div className="w-full pl-6 pr-4 xl:pl-12 xl:pr-8">
+      <div className="flex items-end justify-between gap-6 mb-4">
         <div>
           <div className="eyebrow text-[var(--color-paper-500)]">Eligibility</div>
           <h2 className="font-serif text-[26px] tracking-tight text-[var(--color-ink-900)] mt-1">Full-text screening</h2>
@@ -126,12 +126,12 @@ export function FullTextScreeningPanel({ refreshKey, onChanged }: { refreshKey: 
             eligible ones; exclude the rest (they leave the corpus).
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          <Button onClick={screenWithAi} variant="secondary" disabled={aiBusy || finding} title="AI reads the full text and suggests keep/exclude for unreviewed articles">
+        <div className="flex items-center gap-2 shrink-0">
+          <Button onClick={screenWithAi} variant="secondary" disabled={aiBusy || finding} className="whitespace-nowrap" title="AI reads the full text and suggests keep/exclude for unreviewed articles">
             {aiBusy ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} strokeWidth={1.75} className="text-[var(--color-accent-500)]" />}
             {aiBusy && aiProgress && aiProgress.total > 0 ? `Screening ${aiProgress.done}/${aiProgress.total}` : "Screen with AI"}
           </Button>
-          <Button onClick={findPdfs} variant="secondary" disabled={finding || aiBusy} title="Fetch open-access PDFs (Unpaywall) for articles missing one">
+          <Button onClick={findPdfs} variant="secondary" disabled={finding || aiBusy} className="whitespace-nowrap" title="Fetch open-access PDFs (Unpaywall) for articles missing one">
             {finding ? <Loader2 size={14} className="animate-spin" /> : <DownloadCloud size={14} strokeWidth={1.75} />}
             Find PDFs{missingPdf > 0 ? ` (${missingPdf})` : ""}
           </Button>
@@ -167,45 +167,70 @@ export function FullTextScreeningPanel({ refreshKey, onChanged }: { refreshKey: 
         <div className="space-y-3">
           {filtered.map((a) => (
             <div key={a.id} className="rounded-[var(--radius-md)] border border-[var(--color-paper-300)] bg-white p-4">
-              <div className="flex items-start gap-3">
-                <div className="flex-1 min-w-0">
-                  <div className="font-medium text-[14px] text-[var(--color-ink-900)] leading-snug">{a.title}</div>
-                  <div className="text-[12px] text-[var(--color-paper-600)] mt-0.5">
-                    {[a.authors, a.year?.toString()].filter(Boolean).join(" · ") || "—"}
-                  </div>
-                  {a.abstract_text && (
-                    <p className="text-[12px] text-[var(--color-paper-500)] leading-[1.6] mt-1.5 line-clamp-3">{a.abstract_text}</p>
-                  )}
-                  <div className="mt-2">
-                    {a.pdf_path ? (
-                      <button
-                        onClick={() => api.openPdfPath(a.pdf_path!).catch(() => {})}
-                        className="inline-flex items-center gap-1.5 text-[12px] font-medium text-[var(--color-accent-700)] hover:underline underline-offset-2"
-                      >
-                        <FileText size={12} strokeWidth={1.75} /> Open PDF <ExternalLink size={11} strokeWidth={1.75} />
-                      </button>
-                    ) : (
-                      <span className="text-[11px] text-[var(--color-warn-600)]">No PDF attached — use “Find PDFs” or add one in the corpus.</span>
-                    )}
-                  </div>
-                </div>
-                <div className="flex flex-col items-end gap-1.5 shrink-0">
+              <div className="font-medium text-[14px] text-[var(--color-ink-900)] leading-snug">{a.title}</div>
+              <div className="text-[12px] text-[var(--color-paper-600)] mt-0.5">
+                {[a.authors, a.year?.toString()].filter(Boolean).join(" · ") || "—"}
+              </div>
+              {a.abstract_text && (
+                <p className="text-[12px] text-[var(--color-paper-500)] leading-[1.6] mt-1.5 line-clamp-2">{a.abstract_text}</p>
+              )}
+
+              <div className="mt-3 pt-3 border-t border-[var(--color-paper-200)] flex items-center justify-between gap-3">
+                {a.pdf_path ? (
+                  <button
+                    onClick={() => api.openPdfPath(a.pdf_path!).catch(() => {})}
+                    className="inline-flex items-center gap-1.5 text-[12px] font-medium text-[var(--color-accent-700)] hover:underline underline-offset-2"
+                  >
+                    <FileText size={13} strokeWidth={1.75} /> Open PDF <ExternalLink size={11} strokeWidth={1.75} />
+                  </button>
+                ) : (
+                  <span className="text-[11px] text-[var(--color-warn-600)]">No PDF — use “Find PDFs” or add one in the corpus.</span>
+                )}
+
+                <div className="flex items-center gap-2 shrink-0">
                   {tab === "pending" ? (
                     <>
-                      <Button variant="secondary" size="sm" onClick={() => keep(a.id)} disabled={busyId === a.id}>
-                        {busyId === a.id ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} strokeWidth={2} />} Keep
-                      </Button>
-                      <Button variant="ghost" size="sm" onClick={() => setExcludeFor(excludeFor === a.id ? null : a.id)} disabled={busyId === a.id}>
-                        <Ban size={12} strokeWidth={2} /> Exclude
-                      </Button>
+                      <button
+                        onClick={() => keep(a.id)}
+                        disabled={busyId === a.id}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-[var(--radius-sm)] text-[12px] font-semibold bg-[var(--color-ok-100)] border border-[var(--color-ok-300)] text-[var(--color-ok-700)] hover:bg-[var(--color-ok-200)] disabled:opacity-40 transition-paper"
+                      >
+                        {busyId === a.id ? <Loader2 size={12} className="animate-spin" /> : <Check size={13} strokeWidth={2.25} />} Keep
+                      </button>
+                      <button
+                        onClick={() => setExcludeFor(excludeFor === a.id ? null : a.id)}
+                        disabled={busyId === a.id}
+                        className={cn(
+                          "inline-flex items-center gap-1.5 px-3 py-1.5 rounded-[var(--radius-sm)] text-[12px] font-medium border transition-paper disabled:opacity-40",
+                          excludeFor === a.id
+                            ? "bg-[var(--color-warn-50)] border-[var(--color-warn-400)] text-[var(--color-warn-700)]"
+                            : "bg-white border-[var(--color-paper-300)] text-[var(--color-paper-600)] hover:border-[var(--color-warn-400)] hover:text-[var(--color-warn-700)]",
+                        )}
+                      >
+                        <Ban size={13} strokeWidth={2} /> Exclude
+                      </button>
                     </>
                   ) : (
-                    <Button variant="ghost" size="sm" onClick={() => reset(a.id)} disabled={busyId === a.id}>
-                      {busyId === a.id ? <Loader2 size={12} className="animate-spin" /> : <RotateCcw size={12} strokeWidth={2} />} Undo
-                    </Button>
+                    <>
+                      <span className={cn(
+                        "inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-semibold uppercase tracking-wide",
+                        tab === "kept" ? "bg-[var(--color-ok-100)] text-[var(--color-ok-700)]" : "bg-[var(--color-warn-100)] text-[var(--color-warn-700)]",
+                      )}>
+                        {tab === "kept" ? <Check size={11} strokeWidth={2.5} /> : <Ban size={11} strokeWidth={2.5} />}
+                        {tab === "kept" ? "Kept" : "Excluded"}
+                      </span>
+                      <button
+                        onClick={() => reset(a.id)}
+                        disabled={busyId === a.id}
+                        className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-[var(--radius-sm)] text-[12px] font-medium text-[var(--color-paper-500)] hover:text-[var(--color-ink-700)] hover:bg-[var(--color-paper-100)] disabled:opacity-40 transition-paper"
+                      >
+                        {busyId === a.id ? <Loader2 size={12} className="animate-spin" /> : <RotateCcw size={12} strokeWidth={2} />} Undo
+                      </button>
+                    </>
                   )}
                 </div>
               </div>
+
               {excludeFor === a.id && (
                 <div className="mt-3 flex items-center gap-2">
                   <input
@@ -216,9 +241,13 @@ export function FullTextScreeningPanel({ refreshKey, onChanged }: { refreshKey: 
                     placeholder="Reason (optional) — e.g. not empirical, wrong population"
                     className="flex-1 px-3 py-1.5 text-[12px] rounded-[var(--radius-sm)] border border-[var(--color-paper-300)] bg-white focus:outline-none focus:ring-1 focus:ring-[var(--color-warn-400)]"
                   />
-                  <Button variant="primary" size="sm" onClick={() => doExclude(a.id)} disabled={busyId === a.id}>
+                  <button
+                    onClick={() => doExclude(a.id)}
+                    disabled={busyId === a.id}
+                    className="shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-[var(--radius-sm)] text-[12px] font-semibold bg-[var(--color-warn-600)] text-white hover:bg-[var(--color-warn-700)] disabled:opacity-40 transition-paper"
+                  >
                     Exclude at full text
-                  </Button>
+                  </button>
                 </div>
               )}
             </div>
