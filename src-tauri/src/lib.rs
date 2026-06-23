@@ -1305,6 +1305,60 @@ async fn keep_article(article_id: i64, state: State<'_, AppState>) -> Result<(),
     Ok(())
 }
 
+// ── Full-text (eligibility) screening ──────────────────────────────────────
+
+#[tauri::command]
+async fn list_fulltext_candidates(
+    state: State<'_, AppState>,
+) -> Result<Vec<db::FulltextCandidate>, String> {
+    let db = state.current().await.ok_or("no project open")?;
+    db.list_fulltext_candidates().await.map_err(err)
+}
+
+#[tauri::command]
+async fn fulltext_keep_article(article_id: i64, state: State<'_, AppState>) -> Result<(), String> {
+    let db = state.current().await.ok_or("no project open")?;
+    db.fulltext_keep(article_id).await.map_err(err)?;
+    Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+struct FulltextExcludeArgs {
+    article_id: i64,
+    #[serde(default)]
+    rationale: Option<String>,
+}
+
+#[tauri::command]
+async fn fulltext_exclude_article(
+    args: FulltextExcludeArgs,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let db = state.current().await.ok_or("no project open")?;
+    db.fulltext_exclude(args.article_id).await.map_err(err)?;
+    // Keep the RAG corpus consistent.
+    let _ = db.delete_chunks_for_article(args.article_id).await;
+    let detail = format!("Excluded article {} at full-text screening", args.article_id);
+    let _ = db
+        .log_review_event(
+            "arranging",
+            "fulltext_exclude",
+            Some(&format!("article {}", args.article_id)),
+            Some(&detail),
+            args.rationale.as_deref(),
+            "human",
+        )
+        .await;
+    Ok(())
+}
+
+#[tauri::command]
+async fn reset_fulltext_article(article_id: i64, state: State<'_, AppState>) -> Result<(), String> {
+    let db = state.current().await.ok_or("no project open")?;
+    db.fulltext_reset(article_id).await.map_err(err)?;
+    Ok(())
+}
+
 #[tauri::command]
 async fn unscreen_article(article_id: i64, state: State<'_, AppState>) -> Result<(), String> {
     let db = state.current().await.ok_or("no project open")?;
@@ -4488,6 +4542,10 @@ pub fn run() {
             export_docx,
             export_decision_report,
             find_missing_pdfs,
+            list_fulltext_candidates,
+            fulltext_keep_article,
+            fulltext_exclude_article,
+            reset_fulltext_article,
             export_csvs,
             check_project_lock,
             snapshot_now,

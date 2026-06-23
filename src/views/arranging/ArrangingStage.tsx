@@ -7,6 +7,7 @@ import {
   Boxes,
   ChevronDown,
   ChevronUp,
+  FileSearch,
   GitBranch,
   Layers,
   Lightbulb,
@@ -32,6 +33,7 @@ import { OrganizationPanel } from "./OrganizationPanel";
 import { CodingPanel } from "./CodingPanel";
 import { CriteriaPanel } from "./CriteriaPanel";
 import { ScreeningPanel, useAiScreening } from "./ScreeningPanel";
+import { FullTextScreeningPanel } from "./FullTextScreeningPanel";
 import { PrismaPanel } from "./PrismaPanel";
 
 interface Props {
@@ -43,12 +45,13 @@ interface Props {
   defaultChatModel: string;
 }
 
-type Tab = "organization" | "coding" | "criteria" | "screening" | "prisma";
+type Tab = "organization" | "coding" | "criteria" | "screening" | "fulltext" | "prisma";
 
 const tabs: { id: Tab; label: string; icon: any }[] = [
   { id: "organization", label: "Organisation", icon: Layers },
   { id: "criteria", label: "Purification", icon: ListFilter },
-  { id: "screening", label: "Screening", icon: Binoculars },
+  { id: "screening", label: "Title & abstract", icon: Binoculars },
+  { id: "fulltext", label: "Full text", icon: FileSearch },
   { id: "coding", label: "Coding", icon: Tags },
   { id: "prisma", label: "PRISMA flow", icon: GitBranch },
 ];
@@ -66,8 +69,13 @@ const tabInfo: Record<Tab, { headline: string; body: string; tip?: string }> = {
   },
   screening: {
     headline: "Title & abstract screening",
-    body: "Work through each article: read the title and abstract, then decide whether it meets your inclusion criteria.\n\nIncluded articles proceed to full-text assessment and coding. Excluded articles are logged with a reason — essential for PRISMA reporting.\n\nIf you're unsure, mark it 'Include' and resolve at full-text stage.",
+    body: "Work through each article: read the title and abstract, then decide whether it meets your inclusion criteria.\n\nIncluded articles proceed to full-text assessment and coding. Excluded articles are logged with a reason — essential for PRISMA reporting.\n\nIf you're unsure, mark it 'Include' and resolve it at the full-text stage.",
     tip: "Aim for decisions in 30–60 seconds per article. If you're deliberating longer, the criteria may need sharpening.",
+  },
+  fulltext: {
+    headline: "Full-text screening (eligibility)",
+    body: "PRISMA's second screening pass. Read the full text of the articles that passed title & abstract screening and confirm each is eligible.\n\nUse Find PDFs to fetch open-access copies for articles missing one. Keep the eligible articles; exclude the rest — excluded articles leave the corpus and won't be coded.",
+    tip: "This step is optional — articles you don't explicitly exclude here stay in the corpus. Exclude only those that fail on full-text reading.",
   },
   coding: {
     headline: "Coding included articles",
@@ -96,7 +104,7 @@ export function ArrangingStage({ project, onLeaveStage, onProjectChanged, onAdva
   const [aiCodingModalOpen, setAiCodingModalOpen] = useState(false);
   const [dimensions, setDimensions] = useState<DimensionInfo[]>([]);
   const lastTabHydrated = useRef(false);
-  const ALL_TAB_IDS: Tab[] = ["organization", "criteria", "screening", "coding", "prisma"];
+  const ALL_TAB_IDS: Tab[] = ["organization", "criteria", "screening", "fulltext", "coding", "prisma"];
 
   useEffect(() => {
     api.listFrameworkDimensions().then(setDimensions).catch(() => {});
@@ -129,12 +137,13 @@ export function ArrangingStage({ project, onLeaveStage, onProjectChanged, onAdva
     setRefreshTick((t) => t + 1);
   };
 
-  const TAB_IDS: Tab[] = ["organization", "criteria", "screening", "coding", "prisma"];
+  const TAB_IDS: Tab[] = ["organization", "criteria", "screening", "fulltext", "coding", "prisma"];
   const manualFlags = readManualFlags("arranging", TAB_IDS, progressSettings);
   const status = useTabProgress<Tab>(tab, {
     organization: () => (progress?.codes_count ?? 0) >= 1,
     criteria: () => (progress?.criteria_count ?? 0) >= 1,
     screening: () => progress != null && progress.articles_retrieved > 0 && progress.articles_screened >= progress.articles_retrieved,
+    fulltext: () => false, // optional pass — no hard completion
     coding: () => progress != null && progress.articles_included > 0 && progress.articles_coded >= progress.articles_included,
     prisma: () => false, // manual only
   }, manualFlags);
@@ -245,6 +254,7 @@ export function ArrangingStage({ project, onLeaveStage, onProjectChanged, onAdva
                 />
               )}
               {tab === "screening" && <ScreeningPanel project={project} refreshKey={refreshTick} onChanged={onChanged} onOpenAiModal={() => setAiModalOpen(true)} />}
+              {tab === "fulltext" && <FullTextScreeningPanel refreshKey={refreshTick} onChanged={onChanged} />}
               {tab === "prisma" && <PrismaPanel refreshKey={refreshTick} />}
             </motion.div>
           </AnimatePresence>

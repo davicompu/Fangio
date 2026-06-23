@@ -188,6 +188,18 @@ export interface FrameworkCodeDefinition {
   description: string | null;
 }
 
+export interface FulltextCandidate {
+  id: number;
+  title: string;
+  authors: string | null;
+  year: number | null;
+  abstract_text: string | null;
+  doi: string | null;
+  /** null = not yet full-text reviewed, "included" = kept, "excluded". */
+  fulltext_status: string | null;
+  pdf_path: string | null;
+}
+
 export interface CodingRow {
   id: number;
   article_id: number;
@@ -835,6 +847,18 @@ export const api = {
   },
   findMissingPdfs() {
     return invoke<{ found: number; attempted: number; no_doi: number; no_oa: number }>("find_missing_pdfs");
+  },
+  listFulltextCandidates() {
+    return invoke<FulltextCandidate[]>("list_fulltext_candidates");
+  },
+  fulltextKeepArticle(articleId: number) {
+    return invoke<void>("fulltext_keep_article", { articleId });
+  },
+  fulltextExcludeArticle(articleId: number, rationale?: string) {
+    return invoke<void>("fulltext_exclude_article", { args: { article_id: articleId, rationale } });
+  },
+  resetFulltextArticle(articleId: number) {
+    return invoke<void>("reset_fulltext_article", { articleId });
   },
   exportCsvs() {
     return invoke<ExportSummary>("export_csvs");

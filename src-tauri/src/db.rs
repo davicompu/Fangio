@@ -228,6 +228,19 @@ pub struct DecisionLogRow {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct FulltextCandidate {
+    pub id: i64,
+    pub title: String,
+    pub authors: Option<String>,
+    pub year: Option<i32>,
+    pub abstract_text: Option<String>,
+    pub doi: Option<String>,
+    /// null = not yet full-text reviewed, "included" = kept, "excluded".
+    pub fulltext_status: Option<String>,
+    pub pdf_path: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ReviewEvent {
     pub id: i64,
     pub stage: String,
@@ -2851,6 +2864,79 @@ impl ProjectDb {
             .bind(id)
             .execute(&self.pool)
             .await?;
+        Ok(())
+    }
+
+    // ── Full-text (eligibility) screening ──────────────────────────────────
+
+    /// Title/abstract-included articles (plus any full-text-excluded ones, so
+    /// they can be reviewed/undone), with their full-text status and PDF path.
+    pub async fn list_fulltext_candidates(&self) -> Result<Vec<FulltextCandidate>> {
+        let rows = sqlx::query(
+            "SELECT a.id, a.title, a.authors, a.year, a.abstract AS abstract_text, a.doi, \
+             a.fulltext_status, \
+             (SELECT p.stored_path FROM pdf p WHERE p.article_id = a.id LIMIT 1) AS pdf_path \
+             FROM article a \
+             WHERE a.status = 'included' OR a.fulltext_status = 'excluded' \
+             ORDER BY a.id",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .iter()
+            .map(|r| FulltextCandidate {
+                id: r.get("id"),
+                title: r.get("title"),
+                authors: r.get("authors"),
+                year: r.get("year"),
+                abstract_text: r.get("abstract_text"),
+                doi: r.get("doi"),
+                fulltext_status: r.get("fulltext_status"),
+                pdf_path: r.get("pdf_path"),
+            })
+            .collect())
+    }
+
+    /// Mark an article reviewed and kept at full text (stays in the corpus).
+    pub async fn fulltext_keep(&self, article_id: i64) -> Result<()> {
+        let now = chrono::Utc::now().to_rfc3339();
+        sqlx::query("UPDATE article SET fulltext_status = 'included', updated_at = ? WHERE id = ?")
+            .bind(&now)
+            .bind(article_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Exclude an article at full text: leaves the corpus (status='excluded')
+    /// and is marked so the decision trail/PRISMA can tell it apart.
+    pub async fn fulltext_exclude(&self, article_id: i64) -> Result<()> {
+        let now = chrono::Utc::now().to_rfc3339();
+        sqlx::query(
+            "UPDATE article SET status = 'excluded', fulltext_status = 'excluded', \
+             screened_at = ?, updated_at = ? WHERE id = ?",
+        )
+        .bind(&now)
+        .bind(&now)
+        .bind(article_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Undo a full-text decision: clears the flag and restores to the included
+    /// pool if it had been full-text-excluded.
+    pub async fn fulltext_reset(&self, article_id: i64) -> Result<()> {
+        let now = chrono::Utc::now().to_rfc3339();
+        sqlx::query(
+            "UPDATE article SET \
+             status = CASE WHEN fulltext_status = 'excluded' THEN 'included' ELSE status END, \
+             fulltext_status = NULL, updated_at = ? WHERE id = ?",
+        )
+        .bind(&now)
+        .bind(article_id)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
