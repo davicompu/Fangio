@@ -349,6 +349,15 @@ function PdfRowCard({
               {pdf.text_length && (
                 <span className="font-mono tabular-nums">{pdf.text_length.toLocaleString()} chars</span>
               )}
+              {pdf.source === "unpaywall" && (
+                <span
+                  className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded-sm bg-[var(--color-accent-100)] text-[var(--color-accent-700)]"
+                  title={`Open-access PDF fetched from Unpaywall on ${new Date(pdf.created_at).toLocaleString()}${pdf.source_url ? `\n${pdf.source_url}` : ""}`}
+                >
+                  <DownloadCloud size={9} strokeWidth={2.25} />
+                  Unpaywall · {new Date(pdf.created_at).toLocaleDateString()}
+                </span>
+              )}
               <StatusPill on={linked} label="linked" />
               <StatusPill on={indexed} label="indexed" />
               <StatusPill on={embedded} label="embedded" highlight />

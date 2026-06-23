@@ -971,7 +971,7 @@ async fn find_missing_pdfs(state: State<'_, AppState>) -> Result<FindPdfsResult,
             continue;
         }
         let stored = dest_path.to_string_lossy().to_string();
-        if db.insert_pdf_linked(&dest_name, &stored, a.id).await.is_ok() {
+        if db.insert_pdf_oa(&dest_name, &stored, a.id, &url).await.is_ok() {
             res.found += 1;
         }
     }
@@ -1357,6 +1357,128 @@ async fn reset_fulltext_article(article_id: i64, state: State<'_, AppState>) -> 
     let db = state.current().await.ok_or("no project open")?;
     db.fulltext_reset(article_id).await.map_err(err)?;
     Ok(())
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct FulltextScreenProgress {
+    done: usize,
+    total: usize,
+    title: String,
+}
+
+#[derive(Debug, Serialize)]
+struct FulltextScreenResult {
+    processed: usize,
+    kept: usize,
+    excluded: usize,
+    uncertain: usize,
+    skipped_no_pdf: usize,
+}
+
+/// AI full-text screening: for each title/abstract-included article that hasn't
+/// been full-text reviewed and has a PDF, read the full text and decide
+/// eligibility. Confident includes are kept, confident excludes leave the corpus
+/// (logged as AI decisions); uncertain/low-confidence are left for the human.
+#[tauri::command]
+async fn run_ai_fulltext_screening(
+    app: tauri::AppHandle<tauri::Wry>,
+    state: State<'_, AppState>,
+) -> Result<FulltextScreenResult, String> {
+    let db = state.current().await.ok_or("no project open")?;
+    let settings = db.all_settings().await.map_err(err)?;
+    let base_url = settings.get("lmstudio.base_url").and_then(|v| v.as_str()).unwrap_or("http://127.0.0.1:1234/v1").to_string();
+    let api_key = settings.get("lmstudio.api_key").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let model = settings.get("lmstudio.chat_model").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    if model.is_empty() {
+        return Err("Pick a reasoning model in Settings first.".into());
+    }
+    let threshold: f64 = settings.get("screening.confidence_threshold").and_then(|v| v.as_f64()).unwrap_or(0.90);
+    let temperature = load_temperature(&settings, "temperature.decisions", 0.0);
+    let profile = settings.get("ai_raters.rater1.profile").and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+    let project = db.get_project().await.map_err(err)?;
+    let domain = project.domain.unwrap_or_default();
+    let criteria: Vec<(i64, String)> = db
+        .list_criteria()
+        .await
+        .map_err(err)?
+        .into_iter()
+        .map(|c| (c.number, c.label))
+        .collect();
+
+    let candidates: Vec<_> = db
+        .list_fulltext_candidates()
+        .await
+        .map_err(err)?
+        .into_iter()
+        .filter(|c| c.fulltext_status.is_none())
+        .collect();
+    let total = candidates.len();
+
+    let mut res = FulltextScreenResult { processed: 0, kept: 0, excluded: 0, uncertain: 0, skipped_no_pdf: 0 };
+    for (i, c) in candidates.iter().enumerate() {
+        let _ = app.emit(
+            "fulltext_screen:progress",
+            FulltextScreenProgress { done: i, total, title: c.title.clone() },
+        );
+        let path = match c.pdf_path.as_deref() {
+            Some(p) => p,
+            None => {
+                res.skipped_no_pdf += 1;
+                continue;
+            }
+        };
+        let text = match pdf::extract(std::path::Path::new(path)) {
+            Ok(e) => e.text,
+            Err(_) => {
+                res.skipped_no_pdf += 1;
+                continue;
+            }
+        };
+        let decision = match suggest::screen_article_fulltext(
+            &base_url, &model, &c.title, &text, &domain, &criteria, &profile, temperature, api_key.as_deref(),
+        )
+        .await
+        {
+            Ok(d) => d,
+            Err(_) => {
+                res.uncertain += 1;
+                continue;
+            }
+        };
+        res.processed += 1;
+        let confident = decision.confidence >= threshold;
+        match decision.decision.as_str() {
+            "include" if confident => {
+                let _ = db.fulltext_keep(c.id).await;
+                res.kept += 1;
+            }
+            "exclude" if confident => {
+                if db.fulltext_exclude(c.id).await.is_ok() {
+                    let _ = db.delete_chunks_for_article(c.id).await;
+                    let _ = db
+                        .log_review_event(
+                            "arranging",
+                            "fulltext_exclude",
+                            Some(&format!("article {}", c.id)),
+                            Some(&format!("AI full-text exclusion: {}", c.title)),
+                            Some(&decision.rationale),
+                            "ai",
+                        )
+                        .await;
+                    res.excluded += 1;
+                }
+            }
+            _ => {
+                res.uncertain += 1;
+            }
+        }
+    }
+    let _ = app.emit(
+        "fulltext_screen:progress",
+        FulltextScreenProgress { done: total, total, title: String::new() },
+    );
+    Ok(res)
 }
 
 #[tauri::command]
@@ -4546,6 +4668,7 @@ pub fn run() {
             fulltext_keep_article,
             fulltext_exclude_article,
             reset_fulltext_article,
+            run_ai_fulltext_screening,
             export_csvs,
             check_project_lock,
             snapshot_now,

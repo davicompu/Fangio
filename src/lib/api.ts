@@ -427,6 +427,9 @@ export interface PdfRow {
   indexed_at: string | null;
   embedded_at: string | null;
   created_at: string;
+  /** null = manually added; "unpaywall" = auto-fetched open-access copy. */
+  source: string | null;
+  source_url: string | null;
 }
 
 export interface IndexResult {
@@ -859,6 +862,9 @@ export const api = {
   },
   resetFulltextArticle(articleId: number) {
     return invoke<void>("reset_fulltext_article", { articleId });
+  },
+  runAiFulltextScreening() {
+    return invoke<{ processed: number; kept: number; excluded: number; uncertain: number; skipped_no_pdf: number }>("run_ai_fulltext_screening");
   },
   exportCsvs() {
     return invoke<ExportSummary>("export_csvs");

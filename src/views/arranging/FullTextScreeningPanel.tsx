@@ -7,7 +7,9 @@ import {
   FileText,
   Loader2,
   RotateCcw,
+  Sparkles,
 } from "lucide-react";
+import { listen } from "@tauri-apps/api/event";
 import { api, type FulltextCandidate } from "../../lib/api";
 import { Button } from "../../components/ui/Button";
 import { cn } from "../../lib/utils";
@@ -26,6 +28,8 @@ export function FullTextScreeningPanel({ refreshKey, onChanged }: { refreshKey: 
   const [msg, setMsg] = useState<string | null>(null);
   const [excludeFor, setExcludeFor] = useState<number | null>(null);
   const [reason, setReason] = useState("");
+  const [aiBusy, setAiBusy] = useState(false);
+  const [aiProgress, setAiProgress] = useState<{ done: number; total: number } | null>(null);
 
   const reload = async () => {
     try {
@@ -35,6 +39,29 @@ export function FullTextScreeningPanel({ refreshKey, onChanged }: { refreshKey: 
     }
   };
   useEffect(() => { reload(); }, [refreshKey]);
+
+  useEffect(() => {
+    const un = listen<{ done: number; total: number }>("fulltext_screen:progress", (e) => setAiProgress(e.payload));
+    return () => { un.then((f) => f()); };
+  }, []);
+
+  const screenWithAi = async () => {
+    setAiBusy(true);
+    setMsg("AI full-text screening…");
+    setAiProgress({ done: 0, total: 0 });
+    try {
+      const r = await api.runAiFulltextScreening();
+      setMsg(`AI screened ${r.processed}: ${r.kept} kept · ${r.excluded} excluded · ${r.uncertain} left for you${r.skipped_no_pdf ? ` · ${r.skipped_no_pdf} no PDF` : ""}`);
+      await reload();
+      onChanged();
+    } catch (e: any) {
+      const m: string = e?.message ?? String(e);
+      setMsg(m.includes("reasoning model") ? "Pick a reasoning model in Settings first." : `Model error: ${m}`);
+    } finally {
+      setAiBusy(false);
+      setAiProgress(null);
+    }
+  };
 
   const phaseOf = (i: FulltextCandidate): Tab =>
     i.fulltext_status === "included" ? "kept" : i.fulltext_status === "excluded" ? "excluded" : "pending";
@@ -99,10 +126,16 @@ export function FullTextScreeningPanel({ refreshKey, onChanged }: { refreshKey: 
             eligible ones; exclude the rest (they leave the corpus).
           </p>
         </div>
-        <Button onClick={findPdfs} variant="secondary" disabled={finding} title="Fetch open-access PDFs (Unpaywall) for articles missing one">
-          {finding ? <Loader2 size={14} className="animate-spin" /> : <DownloadCloud size={14} strokeWidth={1.75} />}
-          Find PDFs{missingPdf > 0 ? ` (${missingPdf})` : ""}
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button onClick={screenWithAi} variant="secondary" disabled={aiBusy || finding} title="AI reads the full text and suggests keep/exclude for unreviewed articles">
+            {aiBusy ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} strokeWidth={1.75} className="text-[var(--color-accent-500)]" />}
+            {aiBusy && aiProgress && aiProgress.total > 0 ? `Screening ${aiProgress.done}/${aiProgress.total}` : "Screen with AI"}
+          </Button>
+          <Button onClick={findPdfs} variant="secondary" disabled={finding || aiBusy} title="Fetch open-access PDFs (Unpaywall) for articles missing one">
+            {finding ? <Loader2 size={14} className="animate-spin" /> : <DownloadCloud size={14} strokeWidth={1.75} />}
+            Find PDFs{missingPdf > 0 ? ` (${missingPdf})` : ""}
+          </Button>
+        </div>
       </div>
 
       {msg && (

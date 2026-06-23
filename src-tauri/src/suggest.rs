@@ -1042,6 +1042,70 @@ pub async fn screen_article(
     Ok(decision)
 }
 
+/// Full-text (eligibility) screening: reads the article's full text and decides
+/// include / exclude / uncertain against the criteria. Mirrors `screen_article`
+/// but at the full-text level.
+#[allow(clippy::too_many_arguments)]
+pub async fn screen_article_fulltext(
+    base_url: &str,
+    model: &str,
+    title: &str,
+    full_text: &str,
+    domain: &str,
+    exclusion_criteria_labeled: &[(i64, String)],
+    profile: &str,
+    temperature: f32,
+    api_key: Option<&str>,
+) -> Result<ScreeningDecision> {
+    let domain_block = if domain.trim().is_empty() {
+        "(not specified)".to_string()
+    } else {
+        domain.to_string()
+    };
+    let exc_block = if exclusion_criteria_labeled.is_empty() {
+        "(none specified)".to_string()
+    } else {
+        exclusion_criteria_labeled
+            .iter()
+            .map(|(n, l)| format!("EC{n}: {l}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let profile_block = if profile.trim().is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\n\nRater profile (read carefully — this shapes how YOU evaluate this article):\n{}\n",
+            profile.trim()
+        )
+    };
+    // Truncate to keep the prompt manageable (char-safe).
+    let body: String = full_text.chars().take(12_000).collect();
+
+    let system = format!(
+        "You are a systematic literature review screener applying FULL-TEXT eligibility screening. \
+You read the full text of an article that already passed title-and-abstract screening, and decide \
+whether it is eligible for inclusion, should be excluded, or is uncertain.{profile_block}\n\n\
+Domain scope of this review:\n{domain_block}\n\n\
+Exclusion criteria (exclude the article if it meets ANY of these):\n{exc_block}\n\n\
+Base your decision on the FULL TEXT below — its methods, sample, setting, and findings — not just \
+the abstract. Provide a 2–4 sentence rationale citing specific evidence from the text (a method, a \
+sample description, a finding). For an exclude, name which criterion matched and the evidence.\n\n\
+Respond ONLY with a JSON object: {{\"decision\": \"include\"|\"exclude\"|\"uncertain\", \
+\"criterion_number\": number-or-null, \"rationale\": string, \"confidence\": number-0-to-1}}. \
+No prose before or after the JSON."
+    );
+    let user = format!("Title: {title}\n\nFull text (excerpt):\n{body}\n\nReturn the JSON decision.");
+    let messages = vec![
+        ChatMessage { role: "system".into(), content: system },
+        ChatMessage { role: "user".into(), content: user },
+    ];
+    let result = lmstudio::chat(base_url, model, &messages, Some(temperature), api_key).await?;
+    parse_screening_decision(&result.content).ok_or_else(|| {
+        anyhow::anyhow!("could not parse full-text screening decision from: {}", result.content)
+    })
+}
+
 /// A rationale is substantive when it has at least ~40 non-whitespace characters
 /// AND is not one of a small set of generic filler phrases the model produces
 /// when it skips the reasoning step. The threshold is conservative: a single

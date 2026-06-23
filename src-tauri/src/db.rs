@@ -308,6 +308,9 @@ pub struct PdfRow {
     pub indexed_at: Option<String>,
     pub embedded_at: Option<String>,
     pub created_at: String,
+    /// How the PDF was acquired: null = manual, "unpaywall" = auto-fetched OA.
+    pub source: Option<String>,
+    pub source_url: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -1698,9 +1701,34 @@ impl ProjectDb {
         Ok(())
     }
 
+    /// Insert an auto-fetched open-access PDF (records Unpaywall provenance).
+    pub async fn insert_pdf_oa(
+        &self,
+        filename: &str,
+        stored_path: &str,
+        article_id: i64,
+        source_url: &str,
+    ) -> Result<()> {
+        let now = chrono::Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT OR IGNORE INTO pdf \
+             (filename, stored_path, source_path, article_id, source, source_url, created_at) \
+             VALUES (?, ?, ?, ?, 'unpaywall', ?, ?)",
+        )
+        .bind(filename)
+        .bind(stored_path)
+        .bind(stored_path)
+        .bind(article_id)
+        .bind(source_url)
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     pub async fn list_pdfs(&self) -> Result<Vec<PdfRow>> {
         let rows = sqlx::query(
-            "SELECT id, filename, stored_path, source_path, page_count, text_length, article_id, indexed_at, embedded_at, created_at \
+            "SELECT id, filename, stored_path, source_path, page_count, text_length, article_id, indexed_at, embedded_at, created_at, source, source_url \
              FROM pdf ORDER BY created_at DESC",
         )
         .fetch_all(&self.pool)
@@ -1718,6 +1746,8 @@ impl ProjectDb {
                 indexed_at: r.get("indexed_at"),
                 embedded_at: r.get("embedded_at"),
                 created_at: r.get("created_at"),
+                source: r.get("source"),
+                source_url: r.get("source_url"),
             })
             .collect())
     }
