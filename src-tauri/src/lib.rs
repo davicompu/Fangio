@@ -932,7 +932,10 @@ struct FindPdfsResult {
 /// workspace — exactly as if the researcher had dropped the file in. Open-access
 /// only; reaches the internet (Unpaywall + the OA host).
 #[tauri::command]
-async fn find_missing_pdfs(state: State<'_, AppState>) -> Result<FindPdfsResult, String> {
+async fn find_missing_pdfs(
+    app: tauri::AppHandle<tauri::Wry>,
+    state: State<'_, AppState>,
+) -> Result<FindPdfsResult, String> {
     let db = state.current().await.ok_or("no project open")?;
     let articles = db.list_articles().await.map_err(err)?;
     let pdfs = db.list_pdfs().await.map_err(err)?;
@@ -941,8 +944,18 @@ async fn find_missing_pdfs(state: State<'_, AppState>) -> Result<FindPdfsResult,
     let pdfs_dir = db.workspace.join("pdfs");
     std::fs::create_dir_all(&pdfs_dir).map_err(err)?;
 
+    let candidates: Vec<_> = articles
+        .iter()
+        .filter(|a| a.status == "included" && !linked.contains(&a.id))
+        .collect();
+    let total = candidates.len();
+
     let mut res = FindPdfsResult { found: 0, attempted: 0, no_doi: 0, no_oa: 0 };
-    for a in articles.iter().filter(|a| a.status == "included" && !linked.contains(&a.id)) {
+    for (i, a) in candidates.iter().enumerate() {
+        let _ = app.emit(
+            "find_pdfs:progress",
+            FulltextScreenProgress { done: i, total, title: a.title.clone() },
+        );
         let doi = match a.doi.as_deref().filter(|d| !d.trim().is_empty()) {
             Some(d) => d,
             None => {
@@ -975,6 +988,10 @@ async fn find_missing_pdfs(state: State<'_, AppState>) -> Result<FindPdfsResult,
             res.found += 1;
         }
     }
+    let _ = app.emit(
+        "find_pdfs:progress",
+        FulltextScreenProgress { done: total, total, title: String::new() },
+    );
     db.record_telemetry(
         "library.find_missing_pdfs",
         &serde_json::json!({ "found": res.found, "attempted": res.attempted }),

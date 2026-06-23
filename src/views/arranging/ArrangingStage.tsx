@@ -74,8 +74,8 @@ const tabInfo: Record<Tab, { headline: string; body: string; tip?: string }> = {
   },
   fulltext: {
     headline: "Full-text screening (eligibility)",
-    body: "PRISMA's second screening pass. Read the full text of the articles that passed title & abstract screening and confirm each is eligible.\n\nUse Find PDFs to fetch open-access copies for articles missing one. Keep the eligible articles; exclude the rest — excluded articles leave the corpus and won't be coded.",
-    tip: "This step is optional — articles you don't explicitly exclude here stay in the corpus. Exclude only those that fail on full-text reading.",
+    body: "PRISMA's second, required screening pass. Read the full text of each article that passed title & abstract screening and decide eligibility: Keep the eligible ones, Exclude the rest (with a reason).\n\nThis is a gate — only articles you Keep here proceed to Coding. Excluded articles leave the corpus, and their reasons populate PRISMA's “reports excluded at full text”. Use Find PDFs to fetch open-access copies for articles missing one.",
+    tip: "An article must be explicitly Kept to be coded — anything left “to review” is not yet in the corpus. Record a reason for every full-text exclusion (PRISMA requires it).",
   },
   coding: {
     headline: "Coding included articles",

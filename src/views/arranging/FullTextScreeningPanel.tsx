@@ -29,7 +29,8 @@ export function FullTextScreeningPanel({ refreshKey, onChanged }: { refreshKey: 
   const [excludeFor, setExcludeFor] = useState<number | null>(null);
   const [reason, setReason] = useState("");
   const [aiBusy, setAiBusy] = useState(false);
-  const [aiProgress, setAiProgress] = useState<{ done: number; total: number } | null>(null);
+  const [aiProgress, setAiProgress] = useState<{ done: number; total: number; title?: string } | null>(null);
+  const [findProgress, setFindProgress] = useState<{ done: number; total: number; title?: string } | null>(null);
 
   const reload = async () => {
     try {
@@ -41,13 +42,14 @@ export function FullTextScreeningPanel({ refreshKey, onChanged }: { refreshKey: 
   useEffect(() => { reload(); }, [refreshKey]);
 
   useEffect(() => {
-    const un = listen<{ done: number; total: number }>("fulltext_screen:progress", (e) => setAiProgress(e.payload));
-    return () => { un.then((f) => f()); };
+    const a = listen<{ done: number; total: number; title?: string }>("fulltext_screen:progress", (e) => setAiProgress(e.payload));
+    const b = listen<{ done: number; total: number; title?: string }>("find_pdfs:progress", (e) => setFindProgress(e.payload));
+    return () => { a.then((f) => f()); b.then((f) => f()); };
   }, []);
 
   const screenWithAi = async () => {
     setAiBusy(true);
-    setMsg("AI full-text screening…");
+    setMsg(null);
     setAiProgress({ done: 0, total: 0 });
     try {
       const r = await api.runAiFulltextScreening();
@@ -76,10 +78,11 @@ export function FullTextScreeningPanel({ refreshKey, onChanged }: { refreshKey: 
 
   const findPdfs = async () => {
     setFinding(true);
-    setMsg("Searching Unpaywall for open-access PDFs…");
+    setFindProgress({ done: 0, total: 0 });
+    setMsg(null);
     try {
       const r = await api.findMissingPdfs();
-      const parts = [`${r.found} found`];
+      const parts = [`${r.found} PDF${r.found !== 1 ? "s" : ""} found`];
       if (r.no_oa > 0) parts.push(`${r.no_oa} no open-access copy`);
       if (r.no_doi > 0) parts.push(`${r.no_doi} no DOI`);
       setMsg(parts.join(" · "));
@@ -89,6 +92,7 @@ export function FullTextScreeningPanel({ refreshKey, onChanged }: { refreshKey: 
       setMsg(e?.toString() || String(e));
     } finally {
       setFinding(false);
+      setFindProgress(null);
     }
   };
 
@@ -129,7 +133,7 @@ export function FullTextScreeningPanel({ refreshKey, onChanged }: { refreshKey: 
         <div className="flex items-center gap-2 shrink-0">
           <Button onClick={screenWithAi} variant="secondary" disabled={aiBusy || finding} className="whitespace-nowrap" title="AI reads the full text and suggests keep/exclude for unreviewed articles">
             {aiBusy ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} strokeWidth={1.75} className="text-[var(--color-accent-500)]" />}
-            {aiBusy && aiProgress && aiProgress.total > 0 ? `Screening ${aiProgress.done}/${aiProgress.total}` : "Screen with AI"}
+            {aiBusy ? "Screening…" : "Screen with AI"}
           </Button>
           <Button onClick={findPdfs} variant="secondary" disabled={finding || aiBusy} className="whitespace-nowrap" title="Fetch open-access PDFs (Unpaywall) for articles missing one">
             {finding ? <Loader2 size={14} className="animate-spin" /> : <DownloadCloud size={14} strokeWidth={1.75} />}
@@ -138,7 +142,29 @@ export function FullTextScreeningPanel({ refreshKey, onChanged }: { refreshKey: 
         </div>
       </div>
 
-      {msg && (
+      {(aiBusy || finding) && (() => {
+        const p = aiBusy ? aiProgress : findProgress;
+        const label = aiBusy ? "AI full-text screening" : "Fetching open-access PDFs";
+        const pct = p && p.total > 0 ? Math.round((p.done / p.total) * 100) : 0;
+        return (
+          <div className="mb-4 rounded-[var(--radius-md)] border border-[var(--color-accent-200)] bg-[var(--color-accent-50)] px-4 py-3">
+            <div className="flex items-center justify-between text-[12px]">
+              <span className="font-semibold text-[var(--color-accent-700)] inline-flex items-center gap-2">
+                <Loader2 size={13} className="animate-spin" /> {label}
+              </span>
+              <span className="tabular-nums text-[var(--color-accent-600)]">
+                {p && p.total > 0 ? `${p.done} / ${p.total}` : "starting…"}
+              </span>
+            </div>
+            <div className="mt-2 h-1.5 rounded-full bg-[var(--color-accent-100)] overflow-hidden">
+              <div className="h-full rounded-full bg-[var(--color-accent-500)] transition-all duration-300" style={{ width: `${pct}%` }} />
+            </div>
+            {p?.title && <p className="mt-1.5 text-[11px] text-[var(--color-accent-700)]/70 truncate">{p.title}</p>}
+          </div>
+        );
+      })()}
+
+      {msg && !aiBusy && !finding && (
         <div className="mb-4 px-4 py-2.5 rounded-[var(--radius-sm)] bg-[var(--color-paper-100)] border border-[var(--color-paper-300)] text-[12px] text-[var(--color-paper-600)]">{msg}</div>
       )}
 

@@ -916,7 +916,7 @@ impl ProjectDb {
         .await?;
 
         let articles_included: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM article WHERE status = 'included'",
+            "SELECT COUNT(*) FROM article WHERE status = 'included' AND fulltext_status = 'included'",
         )
         .fetch_one(&self.pool)
         .await?;
@@ -1128,7 +1128,8 @@ impl ProjectDb {
             .collect())
     }
 
-    /// Articles that have been included after screening, paginated for coding.
+    /// Articles eligible for coding: passed title/abstract AND kept at full text
+    /// (the PRISMA eligibility gate).
     pub async fn list_articles_for_coding(
         &self,
         offset: i64,
@@ -1138,7 +1139,7 @@ impl ProjectDb {
             "SELECT id, title, authors, year, journal, abstract, doi, url, source_databases, \
              status, dedup_group_id, exclusion_criterion, created_at, screened_at, \
              ai_rationale, ai_confidence \
-             FROM article WHERE status = 'included' ORDER BY id LIMIT ? OFFSET ?",
+             FROM article WHERE status = 'included' AND fulltext_status = 'included' ORDER BY id LIMIT ? OFFSET ?",
         )
         .bind(limit)
         .bind(offset)
