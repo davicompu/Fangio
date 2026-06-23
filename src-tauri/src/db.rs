@@ -227,6 +227,18 @@ pub struct DecisionLogRow {
     pub superseded_by: Option<i64>,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ReviewEvent {
+    pub id: i64,
+    pub stage: String,
+    pub action: String,
+    pub target: Option<String>,
+    pub detail: Option<String>,
+    pub rationale: Option<String>,
+    pub actor: String,
+    pub created_at: String,
+}
+
 #[derive(Debug, Serialize)]
 pub struct AiCodingCoverage {
     pub ready: i64,
@@ -2855,6 +2867,56 @@ impl ProjectDb {
                 variant_code: r.get("variant_code"),
                 count: r.get("count"),
                 run_id: r.get("run_id"),
+                created_at: r.get("created_at"),
+            })
+            .collect())
+    }
+
+    /// Record a review action (AI-proposal reject, dedup merge, …) for the
+    /// decision report's forward trail.
+    pub async fn log_review_event(
+        &self,
+        stage: &str,
+        action: &str,
+        target: Option<&str>,
+        detail: Option<&str>,
+        rationale: Option<&str>,
+        actor: &str,
+    ) -> Result<()> {
+        let now = chrono::Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT INTO review_event (stage, action, target, detail, rationale, actor, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(stage)
+        .bind(action)
+        .bind(target)
+        .bind(detail)
+        .bind(rationale)
+        .bind(actor)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn list_review_events(&self) -> Result<Vec<ReviewEvent>> {
+        let rows = sqlx::query(
+            "SELECT id, stage, action, target, detail, rationale, actor, created_at \
+             FROM review_event ORDER BY created_at, id",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .iter()
+            .map(|r| ReviewEvent {
+                id: r.get("id"),
+                stage: r.get("stage"),
+                action: r.get("action"),
+                target: r.get("target"),
+                detail: r.get("detail"),
+                rationale: r.get("rationale"),
+                actor: r.get("actor"),
                 created_at: r.get("created_at"),
             })
             .collect())

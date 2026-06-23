@@ -3,6 +3,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   CheckCircle2,
+  DownloadCloud,
   ExternalLink,
   FileText,
   Layers,
@@ -31,7 +32,33 @@ export function PdfLibraryPanel({ refreshKey, onChanged }: Props) {
   const [busyId, setBusyId] = useState<number | null>(null);
   const [indexingAll, setIndexingAll] = useState(false);
   const [indexAllMsg, setIndexAllMsg] = useState<string | null>(null);
+  const [findingPdfs, setFindingPdfs] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Try to fetch open-access PDFs (via Unpaywall) for included articles that
+  // have a DOI but no PDF, saving them in just like a manual drop. Reaches the
+  // internet (open-access copies only).
+  const findPdfs = async () => {
+    setFindingPdfs(true);
+    setError(null);
+    setIndexAllMsg("Searching Unpaywall for open-access PDFs…");
+    try {
+      const r = await api.findMissingPdfs();
+      const parts = [`${r.found} found`];
+      if (r.no_oa > 0) parts.push(`${r.no_oa} no open-access copy`);
+      if (r.no_doi > 0) parts.push(`${r.no_doi} skipped (no DOI)`);
+      setIndexAllMsg(parts.join(" · "));
+      if (r.found > 0) {
+        await reload();
+        onChanged();
+      }
+    } catch (e: any) {
+      setError(e?.toString() || String(e));
+      setIndexAllMsg(null);
+    } finally {
+      setFindingPdfs(false);
+    }
+  };
 
   const reload = async () => {
     const [p, all, batch] = await Promise.all([
@@ -175,6 +202,10 @@ export function PdfLibraryPanel({ refreshKey, onChanged }: Props) {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <Button onClick={findPdfs} variant="secondary" disabled={findingPdfs || busy} title="Fetch open-access PDFs from Unpaywall for included articles that have a DOI but no PDF">
+            {findingPdfs ? <Loader2 size={14} className="animate-spin" /> : <DownloadCloud size={14} strokeWidth={1.75} />}
+            Find PDFs
+          </Button>
           <Button onClick={indexCorpus} variant="secondary" disabled={indexingAll || busy}>
             {indexingAll ? <Loader2 size={14} className="animate-spin" /> : <Layers size={14} strokeWidth={1.75} />}
             Index corpus

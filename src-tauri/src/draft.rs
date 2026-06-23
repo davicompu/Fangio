@@ -471,6 +471,7 @@ pub async fn generate_decision_report(db: &ProjectDb) -> Result<String> {
     let codings = db.list_codings_for_articles(&ids).await?;
     let adjudications = db.list_adjudications_for_articles(&ids).await?;
     let consolidations = db.list_all_consolidations().await?;
+    let review_events = db.list_review_events().await?;
 
     let crit_label: std::collections::HashMap<i64, String> =
         criteria.iter().map(|c| (c.number, c.label.clone())).collect();
@@ -600,5 +601,32 @@ pub async fn generate_decision_report(db: &ProjectDb) -> Result<String> {
         }
     }
 
+    // 5. Review actions (rejects, dedup merges — the forward trail)
+    s.push_str("## 5. Review actions\n\n");
+    if review_events.is_empty() {
+        s.push_str("_No review actions recorded yet (rejected AI suggestions and deduplication merges are logged here)._\n\n");
+    } else {
+        s.push_str("| When | Stage | Action | Detail | By |\n|---|---|---|---|---|\n");
+        for e in &review_events {
+            s.push_str(&format!(
+                "| {} | {} | {} | {} | {} |\n",
+                cell(&short(&e.created_at, 19)),
+                cell(&e.stage),
+                cell(&e.action.replace('_', " ")),
+                cell(&short(e.detail.as_deref().unwrap_or("—"), 80)),
+                cell(&capitalize(&e.actor)),
+            ));
+        }
+        s.push_str("\n");
+    }
+
     Ok(s)
+}
+
+fn capitalize(s: &str) -> String {
+    let mut c = s.chars();
+    match c.next() {
+        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+        None => String::new(),
+    }
 }

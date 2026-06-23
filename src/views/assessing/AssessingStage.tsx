@@ -49,7 +49,7 @@ const tabs: { id: Tab; label: string; icon: any }[] = [
 const tabInfo: Record<Tab, { headline: string; body: string; tip?: string }> = {
   library: {
     headline: "Evaluation · full-text corpus",
-    body: "All included articles with attached PDFs appear here. Upload full-text PDFs, link them to articles, and build the vector index for corpus Q&A.\n\nArticles are auto-included when a PDF is attached — unless you explicitly excluded them during screening.",
+    body: "All included articles with attached PDFs appear here. Upload full-text PDFs, link them to articles, and build the vector index for corpus Q&A.\n\nArticles are auto-included when a PDF is attached — unless you explicitly excluded them during screening.\n\nFind PDFs fetches open-access copies from Unpaywall (unpaywall.org) for included articles that have a DOI but no PDF, and saves them in like a manual drop. This reaches the internet — open-access copies only, never paywalled files.",
     tip: "Index the corpus before using Synthesis. The index is built from your PDFs, not just the abstracts.",
   },
   findings: {

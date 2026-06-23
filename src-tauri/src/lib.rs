@@ -6,6 +6,7 @@ mod clone;
 mod crossref;
 mod db;
 mod dedup;
+mod oa;
 mod draft;
 mod exports;
 mod framework;
@@ -527,6 +528,13 @@ async fn merge_dedup_cluster(
 ) -> Result<(), String> {
     let db = state.current().await.ok_or("no project open")?;
     db.merge_dedup_cluster(&members, keeper_id).await.map_err(err)?;
+    let detail = match keeper_id {
+        Some(k) => format!("Merged {} duplicate records, keeping #{k}", members.len()),
+        None => format!("Merged {} duplicate records", members.len()),
+    };
+    let _ = db
+        .log_review_event("assembling", "dedup_merge", None, Some(&detail), None, "human")
+        .await;
     db.record_telemetry(
         "dedup.merged",
         &serde_json::json!({ "size": members.len(), "keeper_picked": keeper_id.is_some() }),
@@ -909,6 +917,71 @@ async fn drop_pdf_for_article(
         .map_err(err)?;
 
     Ok(stored)
+}
+
+#[derive(Debug, Serialize)]
+struct FindPdfsResult {
+    found: usize,
+    attempted: usize,
+    no_doi: usize,
+    no_oa: usize,
+}
+
+/// For every included article that lacks a linked PDF but has a DOI, look up an
+/// open-access copy via Unpaywall, download it, and save + link it into the
+/// workspace — exactly as if the researcher had dropped the file in. Open-access
+/// only; reaches the internet (Unpaywall + the OA host).
+#[tauri::command]
+async fn find_missing_pdfs(state: State<'_, AppState>) -> Result<FindPdfsResult, String> {
+    let db = state.current().await.ok_or("no project open")?;
+    let articles = db.list_articles().await.map_err(err)?;
+    let pdfs = db.list_pdfs().await.map_err(err)?;
+    let linked: std::collections::HashSet<i64> = pdfs.iter().filter_map(|p| p.article_id).collect();
+
+    let pdfs_dir = db.workspace.join("pdfs");
+    std::fs::create_dir_all(&pdfs_dir).map_err(err)?;
+
+    let mut res = FindPdfsResult { found: 0, attempted: 0, no_doi: 0, no_oa: 0 };
+    for a in articles.iter().filter(|a| a.status == "included" && !linked.contains(&a.id)) {
+        let doi = match a.doi.as_deref().filter(|d| !d.trim().is_empty()) {
+            Some(d) => d,
+            None => {
+                res.no_doi += 1;
+                continue;
+            }
+        };
+        res.attempted += 1;
+        let url = match oa::find_pdf_url(doi).await {
+            Ok(Some(u)) => u,
+            _ => {
+                res.no_oa += 1;
+                continue;
+            }
+        };
+        let bytes = match oa::download(&url).await {
+            Ok(b) => b,
+            Err(_) => {
+                res.no_oa += 1;
+                continue;
+            }
+        };
+        let dest_name = format!("id{}_oa.pdf", a.id);
+        let dest_path = pdfs_dir.join(&dest_name);
+        if std::fs::write(&dest_path, &bytes).is_err() {
+            continue;
+        }
+        let stored = dest_path.to_string_lossy().to_string();
+        if db.insert_pdf_linked(&dest_name, &stored, a.id).await.is_ok() {
+            res.found += 1;
+        }
+    }
+    db.record_telemetry(
+        "library.find_missing_pdfs",
+        &serde_json::json!({ "found": res.found, "attempted": res.attempted }),
+    )
+    .await
+    .ok();
+    Ok(res)
 }
 
 #[derive(Debug, Serialize)]
@@ -1484,6 +1557,20 @@ async fn reject_ai_coding_proposal(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let db = state.current().await.ok_or("no project open")?;
+    // Log the rejection before deleting so the decision trail keeps it.
+    if let Ok(Some(p)) = db.get_ai_coding_proposal_by_id(proposal_id).await {
+        let detail = format!("Rejected code “{}” in {} (rater {})", p.code, p.dimension, p.rater);
+        let _ = db
+            .log_review_event(
+                "arranging",
+                "reject_code",
+                Some(&format!("article {}", p.article_id)),
+                Some(&detail),
+                None,
+                "human",
+            )
+            .await;
+    }
     db.delete_ai_coding_proposal(proposal_id).await.map_err(err)?;
     Ok(())
 }
@@ -4400,6 +4487,7 @@ pub fn run() {
             generate_synthesis,
             export_docx,
             export_decision_report,
+            find_missing_pdfs,
             export_csvs,
             check_project_lock,
             snapshot_now,

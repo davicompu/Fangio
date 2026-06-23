@@ -833,6 +833,9 @@ export const api = {
   exportDecisionReport() {
     return invoke<string>("export_decision_report");
   },
+  findMissingPdfs() {
+    return invoke<{ found: number; attempted: number; no_doi: number; no_oa: number }>("find_missing_pdfs");
+  },
   exportCsvs() {
     return invoke<ExportSummary>("export_csvs");
   },
