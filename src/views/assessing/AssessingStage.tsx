@@ -167,7 +167,7 @@ export function AssessingStage({ project, onLeaveStage, onProjectChanged, onOpen
         </div>
         <button
           onClick={onOpenRag}
-          className="no-drag group inline-flex items-center gap-2 px-4 h-9 rounded-[var(--radius-sm)] text-[12px] font-semibold bg-[var(--color-accent-50)]0 text-white hover:bg-[var(--color-accent-600)] shadow-sm transition-paper"
+          className="no-drag group inline-flex items-center gap-2 px-4 h-9 rounded-[var(--radius-sm)] text-[12px] font-semibold bg-[var(--color-accent-500)] text-white hover:bg-[var(--color-accent-600)] shadow-sm transition-paper"
         >
           <Sparkles size={13} strokeWidth={1.75} className="text-[var(--color-accent-200)] group-hover:text-white" />
           Ask the literature

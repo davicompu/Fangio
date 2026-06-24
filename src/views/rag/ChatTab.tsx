@@ -182,7 +182,7 @@ export function ChatTab({ onOpenSettings }: Props) {
       <div className={cn(
         "rounded-[var(--radius-sm)] border p-5",
         needsRebuild
-          ? "border-stone-200 bg-stone-50"
+          ? "border-[var(--color-warn-200)] bg-[var(--color-warn-50)]"
           : "border-[var(--color-paper-300)] bg-[var(--color-paper-50)]",
       )}>
         <div className="flex items-center justify-between">
@@ -190,7 +190,7 @@ export function ChatTab({ onOpenSettings }: Props) {
             <Database
               size={16}
               strokeWidth={1.75}
-              className={needsRebuild ? "text-amber-800" : "text-[var(--color-paper-500)]"}
+              className={needsRebuild ? "text-[var(--color-warn-700)]" : "text-[var(--color-paper-500)]"}
             />
             <div>
               <p className="text-[13px] font-medium text-[var(--color-ink-800)]">
@@ -203,7 +203,7 @@ export function ChatTab({ onOpenSettings }: Props) {
               {status !== null && status.articles_with_pdf > 0 && (
                 <p className={cn(
                   "text-[12px] mt-0.5",
-                  needsRebuild ? "text-amber-900" : "text-[var(--color-paper-500)]",
+                  needsRebuild ? "text-[var(--color-warn-700)]" : "text-[var(--color-paper-500)]",
                 )}>
                   {!isIndexed
                     ? "Build the index before you can chat with your documents."
@@ -290,7 +290,7 @@ export function ChatTab({ onOpenSettings }: Props) {
                   !isIndexed
                     ? "text-[var(--color-accent-700)] border-[var(--color-accent-300)] bg-[var(--color-accent-50)] hover:bg-[var(--color-accent-100)]"
                     : needsRebuild
-                    ? "text-amber-900 border-stone-200 bg-stone-50 hover:bg-stone-100"
+                    ? "text-[var(--color-warn-700)] border-[var(--color-warn-200)] bg-[var(--color-warn-50)] hover:bg-[var(--color-warn-100)]"
                     : "text-[var(--color-paper-600)] border-[var(--color-paper-300)] hover:border-[var(--color-paper-500)]",
                 )}
               >
@@ -329,7 +329,7 @@ export function ChatTab({ onOpenSettings }: Props) {
         )}
 
         {buildError && (
-          <p className="mt-3 text-[12px] text-amber-900 leading-snug">
+          <p className="mt-3 text-[12px] text-[var(--color-warn-700)] leading-snug">
             {buildError}
           </p>
         )}
@@ -448,7 +448,7 @@ export function ChatTab({ onOpenSettings }: Props) {
         {/* Input */}
         <div className="border-t border-[var(--color-accent-200)] bg-[var(--color-accent-50)]/40 p-4">
           {askError && (
-            <p className="mb-3 text-[12px] text-amber-900">{askError}</p>
+            <p className="mb-3 text-[12px] text-[var(--color-warn-700)]">{askError}</p>
           )}
           <div className="flex gap-3 items-end">
             <textarea
@@ -531,7 +531,7 @@ function CitationsBlock({ citations }: { citations: AskCitation[] }) {
             transition={{ duration: 0.2 }}
             className="overflow-hidden"
           >
-            <div className="divide-y divide-amber-100">
+            <div className="divide-y divide-[var(--color-warn-100)]">
               {(open ? citations : top).map((c, i) => (
                 <div key={i} className="px-3 py-2.5 space-y-1">
                   <div className="flex items-center justify-between gap-2">

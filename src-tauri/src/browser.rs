@@ -71,6 +71,14 @@ pub fn open_panel(
     let parsed_url: url::Url = url
         .parse()
         .map_err(|e: url::ParseError| format!("Invalid URL \"{url}\": {e}. Make sure it starts with https://"))?;
+    // Only ever open real web pages in the panel — never file:, data:, etc.,
+    // which would point a child webview at the local filesystem.
+    if !matches!(parsed_url.scheme(), "http" | "https") {
+        return Err(format!(
+            "Refusing to open a non-web URL (scheme \"{}\"). Only http/https are allowed.",
+            parsed_url.scheme()
+        ));
+    }
 
     let (screen_x, screen_y) = viewport_to_screen(&main_window, x, y)?;
 
@@ -101,9 +109,16 @@ pub fn open_panel(
                 // NOTE: Filename is extracted from the URL path's last segment.
                 // Downloads where the file type is determined by query parameters
                 // (e.g. /export?format=ris) will not be intercepted here.
-                let filename = url
+                let raw = url
                     .path_segments()
                     .and_then(|mut s| s.next_back())
+                    .unwrap_or("download");
+                // Take only the final path component — never separators or
+                // traversal — so a crafted download URL can't escape temp_dir.
+                let filename = std::path::Path::new(raw)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .filter(|n| !n.is_empty() && *n != "." && *n != "..")
                     .unwrap_or("download")
                     .to_string();
                 let ext = std::path::Path::new(&filename)

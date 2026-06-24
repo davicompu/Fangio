@@ -35,6 +35,49 @@ fn client() -> Result<Client> {
         .build()?)
 }
 
+/// True if the URL points at a non-public host (loopback / private / link-local
+/// / unspecified). OA PDF URLs come from arbitrary mirrors chosen by the
+/// Unpaywall response, so this blocks SSRF at internal services and cloud
+/// metadata endpoints — both for the initial URL and every redirect hop.
+fn host_is_blocked(url: &reqwest::Url) -> bool {
+    match url.host() {
+        Some(url::Host::Domain(h)) => {
+            let h = h.to_ascii_lowercase();
+            h == "localhost" || h.ends_with(".localhost")
+        }
+        Some(url::Host::Ipv4(ip)) => {
+            ip.is_loopback() || ip.is_private() || ip.is_link_local() || ip.is_unspecified() || ip.is_broadcast()
+        }
+        Some(url::Host::Ipv6(ip)) => {
+            let seg0 = ip.segments()[0];
+            ip.is_loopback()
+                || ip.is_unspecified()
+                || (seg0 & 0xfe00) == 0xfc00 // unique local fc00::/7
+                || (seg0 & 0xffc0) == 0xfe80 // link-local fe80::/10
+        }
+        None => true,
+    }
+}
+
+/// Download client that refuses to follow a redirect into a non-public host and
+/// caps redirect depth.
+fn download_client() -> Result<Client> {
+    let policy = reqwest::redirect::Policy::custom(|attempt| {
+        if attempt.previous().len() >= 10 {
+            attempt.error("too many redirects")
+        } else if host_is_blocked(attempt.url()) {
+            attempt.error("redirect to a non-public host blocked")
+        } else {
+            attempt.follow()
+        }
+    });
+    Ok(Client::builder()
+        .timeout(Duration::from_secs(30))
+        .user_agent("Reeves/0.1 (https://reeves.app; mailto:hello@reeves.app)")
+        .redirect(policy)
+        .build()?)
+}
+
 /// A direct open-access PDF URL for the DOI, if one exists.
 pub async fn find_pdf_url(doi: &str) -> Result<Option<String>> {
     let d = normalise_doi(doi);
@@ -72,7 +115,14 @@ const MAX_PDF_BYTES: usize = 100 * 1024 * 1024; // 100 MB
 /// Download a PDF, verifying the magic bytes so we never save an HTML error page.
 /// Reads incrementally with a hard size cap so a malicious host can't OOM us.
 pub async fn download(url: &str) -> Result<Vec<u8>> {
-    let mut resp = client()?.get(url).send().await?;
+    let parsed = reqwest::Url::parse(url).map_err(|e| anyhow!("invalid PDF url: {e}"))?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err(anyhow!("refusing to download from a non-http(s) url"));
+    }
+    if host_is_blocked(&parsed) {
+        return Err(anyhow!("refusing to download from a non-public host"));
+    }
+    let mut resp = download_client()?.get(parsed).send().await?;
     if !resp.status().is_success() {
         return Err(anyhow!("download returned {}", resp.status()));
     }

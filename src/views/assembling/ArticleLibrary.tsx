@@ -13,6 +13,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { ArrowUpDown, Check, ExternalLink, Library, Loader2, Pencil, Search, Sparkles, Star, Tags, X } from "lucide-react";
 import { api, type ArticleRow, type JournalRow } from "../../lib/api";
 import { cn } from "../../lib/utils";
+import { parseSources } from "../../lib/articleMeta";
 interface Props {
   refreshKey: number;
   onChanged: () => void;
@@ -411,11 +412,6 @@ function BulkRateModal({
 
 // ── Inline-editable source cell ───────────────────────────────────────────────
 
-function parseSourceDbs(raw: string | null | undefined): string[] {
-  if (!raw) return [];
-  try { return JSON.parse(raw) as string[]; } catch { return [raw]; }
-}
-
 function SourceCell({
   article,
   onSaved,
@@ -428,7 +424,7 @@ function SourceCell({
   const [busy, setBusy] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const names = parseSourceDbs(article.source_databases);
+  const names = parseSources(article.source_databases);
 
   const startEdit = () => {
     setDraft(names.join(", "));

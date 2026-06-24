@@ -12,6 +12,7 @@ export function ConceptOverlapTab() {
   const [terms, setTerms] = useState<GlossaryTerm[]>([]);
   const [articlesById, setArticlesById] = useState<Map<number, ArticleRow>>(new Map());
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [selected, setSelected] = useState<number[]>([]); // term ids, max 3
   const [query, setQuery] = useState("");
 
@@ -24,17 +25,21 @@ export function ConceptOverlapTab() {
       ]);
       setTerms(t);
       setArticlesById(new Map(arts.map((a) => [a.id, a])));
-    } catch { /* ignore */ } finally {
+      setLoadError(null);
+    } catch (e: any) {
+      setLoadError(e?.message ?? String(e));
+    } finally {
       setLoading(false);
     }
   }, []);
 
   useEffect(() => { void load(); }, [load]);
 
+  const atMax = selected.length >= 3;
   const toggle = (id: number) =>
     setSelected((prev) => {
       if (prev.includes(id)) return prev.filter((x) => x !== id);
-      if (prev.length >= 3) return [prev[1], prev[2], id]; // keep most recent 3
+      if (prev.length >= 3) return prev; // cap at 3 — unselected rows are disabled
       return [...prev, id];
     });
 
@@ -66,12 +71,16 @@ export function ConceptOverlapTab() {
             Pick 2–3 concepts to see how the articles discussing them overlap.
           </p>
         </div>
-        <button onClick={() => void load()} className="p-2 rounded-[var(--radius-xs)] text-[var(--color-paper-500)] hover:bg-[var(--color-paper-100)] transition-paper" title="Reload">
+        <button onClick={() => void load()} aria-label="Reload concepts" className="p-2 rounded-[var(--radius-xs)] text-[var(--color-paper-500)] hover:bg-[var(--color-paper-100)] transition-paper" title="Reload">
           {loading ? <Loader2 size={15} className="animate-spin" /> : <RefreshCw size={15} strokeWidth={1.75} />}
         </button>
       </div>
 
-      {terms.length === 0 && !loading ? (
+      {loadError ? (
+        <div className="text-[13px] text-[var(--color-error-600)] py-10 text-center">
+          Couldn’t load concepts: {loadError}
+        </div>
+      ) : terms.length === 0 && !loading ? (
         <div className="text-[13px] text-[var(--color-paper-500)] italic py-10 text-center">
           No concepts yet — build the Glossary first (in the Glossary tab) to extract concepts.
         </div>
@@ -90,14 +99,19 @@ export function ConceptOverlapTab() {
                 const idx = selected.indexOf(t.id);
                 const on = idx >= 0;
                 const count = parseArticleIds(t.article_ids).length;
+                const blocked = !on && atMax;
                 return (
                   <button
                     key={t.id}
                     onClick={() => toggle(t.id)}
+                    disabled={blocked}
+                    title={blocked ? "Deselect a concept first (max 3)" : undefined}
                     className={cn(
                       "w-full flex items-center gap-2 px-2.5 py-1.5 rounded-[var(--radius-xs)] text-left text-[12px] transition-paper border",
                       on
                         ? "bg-[var(--color-paper-50)] border-[var(--color-paper-300)] text-[var(--color-ink-800)]"
+                        : blocked
+                        ? "border-transparent text-[var(--color-paper-400)] opacity-50 cursor-not-allowed"
                         : "border-transparent hover:bg-[var(--color-paper-100)] text-[var(--color-paper-600)]",
                     )}
                   >
@@ -132,7 +146,7 @@ export function ConceptOverlapTab() {
                       const a = articlesById.get(id);
                       if (!a) return null;
                       return (
-                        <div key={id} className="text-[12px] text-[var(--color-ink-700)] leading-snug">
+                        <div key={id} className="text-[12px] text-[var(--color-ink-700)] leading-snug line-clamp-2">
                           {a.title}
                           <span className="text-[var(--color-paper-400)]"> · {[a.authors, a.year].filter(Boolean).join(", ") || "—"}</span>
                         </div>
@@ -170,7 +184,7 @@ function VennDiagram({ sets }: { sets: { term: GlossaryTerm; ids: Set<number> }[
     const ab = count((m) => m[0] && m[1]);
     const r = 92;
     return (
-      <svg viewBox="0 0 380 230" className="w-full max-w-md mx-auto">
+      <svg viewBox="0 0 380 230" className="w-full max-w-md mx-auto" role="img" aria-label={`Overlap of ${sets[0].term.term} (${aOnly} only) and ${sets[1].term.term} (${bOnly} only), ${ab} shared`}>
         <circle cx={150} cy={115} r={r} fill={COLORS[0]} fillOpacity={0.28} stroke={COLORS[0]} strokeWidth={1.5} />
         <circle cx={230} cy={115} r={r} fill={COLORS[1]} fillOpacity={0.28} stroke={COLORS[1]} strokeWidth={1.5} />
         <text x={108} y={120} textAnchor="middle" className="fill-[var(--color-ink-900)]" fontSize={20} fontWeight={600}>{aOnly}</text>
@@ -193,7 +207,7 @@ function VennDiagram({ sets }: { sets: { term: GlossaryTerm; ids: Set<number> }[
   const abc = count(and(m(0, true), m(1, true), m(2, true)));
   const r = 84;
   return (
-    <svg viewBox="0 0 380 300" className="w-full max-w-md mx-auto">
+    <svg viewBox="0 0 380 300" className="w-full max-w-md mx-auto" role="img" aria-label={`Three-way overlap of ${sets.map((s) => s.term.term).join(", ")}; ${abc} shared by all`}>
       <circle cx={190} cy={108} r={r} fill={COLORS[0]} fillOpacity={0.26} stroke={COLORS[0]} strokeWidth={1.5} />
       <circle cx={148} cy={184} r={r} fill={COLORS[1]} fillOpacity={0.26} stroke={COLORS[1]} strokeWidth={1.5} />
       <circle cx={232} cy={184} r={r} fill={COLORS[2]} fillOpacity={0.26} stroke={COLORS[2]} strokeWidth={1.5} />

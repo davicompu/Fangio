@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api, type LmModel, type ProjectRow } from "./api";
 
 export interface DatabaseEntry {
@@ -111,10 +111,17 @@ export function useAppState() {
     }
   }, []);
 
+  // Read settings via a ref so checkLmStudio keeps a stable identity — otherwise
+  // every settings write (temperature, telemetry, endpoint edits) would tear
+  // down and immediately re-fire the 15s poll, hammering the endpoint.
+  const settingsRef = useRef(settings);
+  useEffect(() => { settingsRef.current = settings; }, [settings]);
+
   const checkLmStudio = useCallback(
     async (baseUrl?: string) => {
-      const url = baseUrl || settings["lmstudio.base_url"];
-      const key = settings["lmstudio.api_key"] || undefined;
+      const s = settingsRef.current;
+      const url = baseUrl || s["lmstudio.base_url"];
+      const key = s["lmstudio.api_key"] || undefined;
       const t0 = performance.now();
       try {
         const status = await api.lmStudioTest(url, key);
@@ -138,7 +145,7 @@ export function useAppState() {
         return null;
       }
     },
-    [settings],
+    [],
   );
 
   const updateSetting = useCallback(

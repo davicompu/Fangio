@@ -201,7 +201,7 @@ export function AssemblingStage({ project, settings, onLeaveStage, onAdvanceStag
         <div className="no-drag flex items-center gap-3">
           <button
             onClick={onOpenRag}
-            className="group inline-flex items-center gap-2 px-4 h-9 rounded-[var(--radius-sm)] text-[12px] font-semibold bg-[var(--color-accent-50)]0 text-white hover:bg-[var(--color-accent-600)] shadow-sm transition-paper"
+            className="group inline-flex items-center gap-2 px-4 h-9 rounded-[var(--radius-sm)] text-[12px] font-semibold bg-[var(--color-accent-500)] text-white hover:bg-[var(--color-accent-600)] shadow-sm transition-paper"
           >
             <Sparkles size={13} strokeWidth={1.75} className="text-[var(--color-accent-200)] group-hover:text-white" />
             Ask the literature

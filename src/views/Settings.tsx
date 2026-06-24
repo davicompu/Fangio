@@ -291,7 +291,7 @@ export function Settings({ open: openSetting, onClose, settings, onUpdate, lm, o
                           </option>
                         ))}
                       </Select>
-                      {settings["lmstudio.chat_model"] && !lm.models.some((m) => m.id === settings["lmstudio.chat_model"]) && (
+                      {!testing && settings["lmstudio.chat_model"] && !lm.models.some((m) => m.id === settings["lmstudio.chat_model"]) && (
                         <p className="text-[12px] text-[var(--color-warn-700)] -mt-2">
                           The reasoning model “{settings["lmstudio.chat_model"]}” isn’t available on this endpoint — pick a reasoning model above.
                         </p>
@@ -313,7 +313,7 @@ export function Settings({ open: openSetting, onClose, settings, onUpdate, lm, o
                           </option>
                         ))}
                       </Select>
-                      {settings["lmstudio.embed_model"] && !lm.models.some((m) => m.id === settings["lmstudio.embed_model"]) && (
+                      {!testing && settings["lmstudio.embed_model"] && !lm.models.some((m) => m.id === settings["lmstudio.embed_model"]) && (
                         <p className="text-[12px] text-[var(--color-warn-700)] -mt-2">
                           The embedding model “{settings["lmstudio.embed_model"]}” isn’t available on this endpoint — pick an embedding model above.
                         </p>

@@ -964,11 +964,29 @@ async fn pdf_paths_for_articles(
     db.get_pdf_paths_for_articles(&ids).await.map_err(err)
 }
 
-/// Open a file with the system default application (macOS `open` command).
+/// Open a PDF with the system default application (macOS `open`). This command
+/// is reachable from the webview, so it must NOT become an "open anything"
+/// primitive: only real, existing `.pdf` files are accepted (no arbitrary apps,
+/// URL schemes, or flag-like arguments).
 #[tauri::command]
 async fn open_pdf_path(path: String) -> Result<(), String> {
+    let p = std::path::Path::new(&path);
+    let ext_ok = p
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("pdf"))
+        .unwrap_or(false);
+    if !ext_ok {
+        return Err("Only PDF files can be opened here.".into());
+    }
+    // canonicalize confirms the file exists and yields an absolute path, so the
+    // argument can never be parsed by `open` as a flag.
+    let canonical = std::fs::canonicalize(p).map_err(|e| format!("File not found: {e}"))?;
+    if !canonical.is_file() {
+        return Err("Not a file.".into());
+    }
     std::process::Command::new("open")
-        .arg(&path)
+        .arg(&canonical)
         .spawn()
         .map_err(|e| format!("Failed to open file: {e}"))?;
     Ok(())
@@ -1409,6 +1427,32 @@ fn canonical_code_case(code: &str) -> String {
     }
 }
 
+/// Strip a doi.org URL prefix and whitespace so a stored DOI is the bare
+/// identifier — the UI builds `https://doi.org/{doi}` links from it, which would
+/// otherwise double-prefix.
+fn normalize_doi(doi: Option<String>) -> Option<String> {
+    let d = doi?;
+    let mut t = d.trim();
+    for p in [
+        "https://doi.org/",
+        "http://doi.org/",
+        "https://dx.doi.org/",
+        "http://dx.doi.org/",
+        "doi.org/",
+    ] {
+        if let Some(rest) = t.strip_prefix(p) {
+            t = rest;
+            break;
+        }
+    }
+    let t = t.trim();
+    if t.is_empty() {
+        None
+    } else {
+        Some(t.to_string())
+    }
+}
+
 fn themes_match(a: &str, b: &str) -> bool {
     let ta_v = theme_tokens(a);
     let tb_v = theme_tokens(b);
@@ -1816,7 +1860,7 @@ async fn create_article(fields: ArticleFields, state: State<'_, AppState>) -> Re
         year: fields.year,
         journal: fields.journal,
         abstract_text: fields.abstract_text,
-        doi: fields.doi,
+        doi: normalize_doi(fields.doi),
         url: fields.url,
         source_databases: sources,
         import_batches: vec![],
@@ -1831,8 +1875,11 @@ async fn update_article_fields(article_id: i64, fields: ArticleFields, state: St
     if fields.title.trim().is_empty() {
         return Err("An article needs a title.".into());
     }
+    // Never drop provenance to NULL on edit — keep a visible marker, matching
+    // create_article. (The form pre-fills the existing source, so an empty value
+    // here means the user cleared it deliberately.)
     let sources = if fields.source_databases.is_empty() {
-        None
+        Some(serde_json::json!(["Manually added"]).to_string())
     } else {
         Some(serde_json::json!(fields.source_databases).to_string())
     };
@@ -1842,7 +1889,7 @@ async fn update_article_fields(article_id: i64, fields: ArticleFields, state: St
         fields.authors,
         fields.year,
         fields.journal,
-        fields.doi,
+        normalize_doi(fields.doi),
         fields.url,
         fields.abstract_text,
         sources,

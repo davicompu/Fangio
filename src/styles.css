@@ -42,6 +42,7 @@
   --color-ink-50:   #eef0f4;
   --color-ink-100:  #d7dbe4;
   --color-ink-200:  #aab1c2;
+  --color-ink-300:  #838ca6;
   --color-ink-400:  #5d6986;
   --color-ink-500:  #3e4a68;
   --color-ink-600:  #2a3450;
@@ -76,7 +77,11 @@
   --color-warn-500:  #b08a2e;
   --color-warn-600:  #8a6d24;
   --color-warn-700:  #65501a;
+  --color-error-50:  #f7eaea;
+  --color-error-100: #ecd0d0;
   --color-error-500: #a64141;
+  --color-error-600: #8a3636;
+  --color-error-700: #6e2b2b;
 
   /* Radius — generally generous; this is a calm interface */
   --radius-xs: 0.25rem;

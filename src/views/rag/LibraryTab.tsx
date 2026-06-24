@@ -148,6 +148,7 @@ export function LibraryTab() {
               pdfPath={pdfPaths.get(a.id) ?? null}
               onEdit={() => { setEditingId(a.id); setAdding(false); }}
               onChanged={load}
+              onError={setError}
             />
           ),
         )}
@@ -161,11 +162,13 @@ function LibraryCard({
   pdfPath,
   onEdit,
   onChanged,
+  onError,
 }: {
   article: ArticleRow;
   pdfPath: string | null;
   onEdit: () => void;
   onChanged: () => Promise<void>;
+  onError: (msg: string) => void;
 }) {
   const [attaching, setAttaching] = useState(false);
   const sources = parseSources(article.source_databases);
@@ -177,7 +180,9 @@ function LibraryCard({
     try {
       await api.dropPdfForArticle(selected as string, article.id);
       await onChanged();
-    } catch { /* ignore */ } finally {
+    } catch (e: any) {
+      onError(`Couldn't attach PDF: ${e?.message ?? String(e)}`);
+    } finally {
       setAttaching(false);
     }
   };
@@ -286,6 +291,7 @@ function ArticleForm({
     setErr(null);
     try {
       const r = await api.lookupDoi(d);
+      const found = r.title || r.authors || r.year || r.journal || r.abstract_text;
       setF((p) => ({
         ...p,
         title: r.title ?? p.title,
@@ -295,6 +301,7 @@ function ArticleForm({
         abstract_text: r.abstract_text ?? p.abstract_text,
         doi: d,
       }));
+      if (!found) setErr("No metadata found for that DOI — enter the fields manually.");
     } catch (e: any) {
       setErr(e?.message ?? String(e));
     } finally {

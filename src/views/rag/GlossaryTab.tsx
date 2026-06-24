@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { BookOpen, Loader2, Plus, RefreshCw, Search, Trash2, X } from "lucide-react";
+import { confirm as confirmDialog } from "@tauri-apps/plugin-dialog";
 import { api, type ArticleRow, type GlossaryTerm } from "../../lib/api";
 import { startGlossaryExtract, useGlossaryTask } from "../../lib/bgTasks";
 import { parseArticleIds, parseAliases } from "../../lib/articleMeta";
@@ -67,6 +68,12 @@ export function GlossaryTab() {
   }, [task.finishedAt, load]);
 
   const deleteTerm = async (id: number) => {
+    const term = terms.find((t) => t.id === id);
+    const ok = await confirmDialog(
+      `Delete the concept “${term?.term ?? "this term"}”? It was extracted from the corpus and can only be recovered by re-running the glossary.`,
+      { title: "Delete concept?", kind: "warning", okLabel: "Delete", cancelLabel: "Keep" },
+    );
+    if (!ok) return;
     try {
       await api.deleteGlossaryTerm(id);
       setTerms((prev) => prev.filter((t) => t.id !== id));

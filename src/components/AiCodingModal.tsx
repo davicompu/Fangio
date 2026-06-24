@@ -543,7 +543,7 @@ export function AiCodingModal({
                       <span className="text-[var(--color-ok-600)]">✓ {progress.consensus} consensus</span>
                     )}
                     {progress.disagreements > 0 && (
-                      <span className="text-amber-600">⚠ {progress.disagreements} need review</span>
+                      <span className="text-[var(--color-warn-600)]">⚠ {progress.disagreements} need review</span>
                     )}
                     {progress.skipped_no_pdf > 0 && (
                       <span>⊘ {progress.skipped_no_pdf} skipped</span>
@@ -584,8 +584,8 @@ export function AiCodingModal({
                 )}
                 {coding.result.disagreements > 0 && (
                   <div className="flex justify-between px-3 py-2 text-[12px]">
-                    <span className="text-amber-600">Disagreements to review</span>
-                    <span className="font-medium text-amber-700">{coding.result.disagreements}</span>
+                    <span className="text-[var(--color-warn-600)]">Disagreements to review</span>
+                    <span className="font-medium text-[var(--color-warn-700)]">{coding.result.disagreements}</span>
                   </div>
                 )}
                 {coding.result.skipped_no_pdf > 0 && (
