@@ -320,7 +320,8 @@ export function CriteriaPanel({ project, onChanged, screening }: Props) {
                           type="button"
                           onClick={() => {
                             const criteriaStrings = aiEligible.map((s) => `EC${s.number}: ${s.label}`);
-                            void screening.start(criteriaStrings);
+                            // Purification only excludes — non-matching articles stay pending.
+                            void screening.start(criteriaStrings, true);
                           }}
                           className="shrink-0 inline-flex items-center gap-1.5 px-4 py-2 rounded-[var(--radius-sm)] text-[12px] font-semibold text-white bg-[var(--color-ink-800)] hover:bg-[var(--color-ink-900)] active:bg-[var(--color-ink-900)] transition-paper"
                         >
@@ -397,8 +398,8 @@ export function CriteriaPanel({ project, onChanged, screening }: Props) {
                             <div className="flex-1 min-w-0 text-[12px] text-[var(--color-ok-700)]">
                               <p>
                                 <strong>✓ AI purification complete</strong> — processed {screening.result.processed},
-                                excluded {screening.result.excluded}, included {screening.result.included},
-                                {" "}{screening.result.uncertain} uncertain (left for manual review).
+                                excluded {screening.result.excluded}.
+                                {" "}{screening.result.uncertain} left in pending screening for title &amp; abstract review.
                               </p>
                             </div>
                             <button

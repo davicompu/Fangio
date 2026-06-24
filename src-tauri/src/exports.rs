@@ -97,6 +97,10 @@ fn escape_bib(s: &str) -> String {
         .replace('&', "\\&")
         .replace('#', "\\#")
         .replace('$', "\\$")
+        .replace('_', "\\_")
+        // `^` and `~` are special in LaTeX; the `{}` makes them literal.
+        .replace('^', "\\^{}")
+        .replace('~', "\\~{}")
 }
 
 fn write_retrieved(dir: &Path, articles: &[ArticleRow]) -> Result<PathBuf> {

@@ -34,24 +34,28 @@ export function DedupReview({ refreshKey, onChanged }: Props) {
   const [clusters, setClusters] = useState<ResolvedCluster[] | null>(null);
   const [decisions, setDecisions] = useState<Record<string, Decision>>({});
   const [applying, setApplying] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const reload = async () => {
+    setClusters(null);
+    const [rawClusters, articles] = await Promise.all([
+      api.listDedupClusters(),
+      api.listArticles(),
+    ]);
+    const byId = new Map(articles.map((a) => [a.id, a]));
+    const resolved = rawClusters
+      .map((c) => ({
+        cluster: c,
+        members: c.members.map((id) => byId.get(id)!).filter(Boolean),
+      }))
+      .filter((c) => c.members.length >= 2);
+    setClusters(resolved);
+    setDecisions({});
+  };
 
   useEffect(() => {
-    (async () => {
-      setClusters(null);
-      const [rawClusters, articles] = await Promise.all([
-        api.listDedupClusters(),
-        api.listArticles(),
-      ]);
-      const byId = new Map(articles.map((a) => [a.id, a]));
-      const resolved = rawClusters
-        .map((c) => ({
-          cluster: c,
-          members: c.members.map((id) => byId.get(id)!).filter(Boolean),
-        }))
-        .filter((c) => c.members.length >= 2);
-      setClusters(resolved);
-      setDecisions({});
-    })();
+    reload().catch((e) => setError(e?.toString() ?? String(e)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshKey]);
 
   const setKeeper = (signature: string, keeperId: number) =>
@@ -89,6 +93,7 @@ export function DedupReview({ refreshKey, onChanged }: Props) {
   const applyAll = async () => {
     if (!clusters || counts.total === 0) return;
     setApplying(true);
+    setError(null);
     try {
       const decided = clusters
         .map((c) => ({ cluster: c, decision: decisions[signatureFor(c.cluster.members)] }))
@@ -113,6 +118,12 @@ export function DedupReview({ refreshKey, onChanged }: Props) {
         for (const sig of resolvedSigs) delete next[sig];
         return next;
       });
+      onChanged();
+    } catch (e: any) {
+      // A write may have partially applied — re-fetch from the backend so the UI
+      // reflects what actually committed and the user can't double-merge.
+      setError(`Some merges didn't apply (${e?.message ?? e}). Re-syncing the remaining clusters…`);
+      await reload().catch(() => {});
       onChanged();
     } finally {
       setApplying(false);
@@ -150,6 +161,11 @@ export function DedupReview({ refreshKey, onChanged }: Props) {
 
   return (
     <div className="space-y-5 pb-28">
+      {error && (
+        <div className="px-4 py-2.5 rounded-[var(--radius-sm)] bg-[var(--color-warn-50)] border border-[var(--color-warn-300)] text-[12px] text-[var(--color-warn-700)]">
+          {error}
+        </div>
+      )}
       <div className="flex items-start gap-3">
         <Sparkles size={14} strokeWidth={1.75} className="text-[var(--color-accent-500)] mt-0.5 shrink-0" />
         <p className="text-[13px] text-[var(--color-paper-700)] leading-relaxed">

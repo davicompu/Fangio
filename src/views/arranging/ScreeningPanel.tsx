@@ -38,7 +38,7 @@ interface Props {
   onOpenAiModal: () => void;
 }
 
-const BATCH_SIZE = 20;
+const BATCH_SIZE = 5;
 const TABS: { id: ScreeningTab; label: string }[] = [
   { id: "pending", label: "Pending Screening" },
   { id: "included", label: "Included" },
@@ -92,7 +92,7 @@ export function useAiScreening(): AiScreeningHook {
   const [isPaused, setIsPaused] = useState(false);
   const unlistenRef = useRef<(() => void) | null>(null);
 
-  const start = useCallback(async (exclusionCriteria: string[]) => {
+  const start = useCallback(async (exclusionCriteria: string[], excludeOnly = false) => {
     setStep("running");
     setError(null);
     setProgress(null);
@@ -103,7 +103,7 @@ export function useAiScreening(): AiScreeningHook {
       unlistenRef.current = await listen<AiScreeningProgress>("screen:progress", (e) => {
         setProgress(e.payload);
       });
-      const res = await api.runAiScreening(exclusionCriteria);
+      const res = await api.runAiScreening(exclusionCriteria, excludeOnly);
       setResult(res);
       setStep("done");
     } catch (e: any) {
@@ -166,8 +166,8 @@ export function ScreeningPanel({ project, refreshKey, onChanged, onOpenAiModal }
 
   const jq = parseJournalQuality(project.journal_quality);
 
-  const reload = async (tab = activeTab, off = offset) => {
-    setLoading(true);
+  const reload = async (tab = activeTab, off = offset, silent = false) => {
+    if (!silent) setLoading(true);
     const [arts, cntPending, cntIncluded, cntExcluded, crits, jList] = await Promise.all([
       api.listScreeningTab(tab, off, BATCH_SIZE),
       api.countScreeningTab("pending"),
@@ -188,8 +188,35 @@ export function ScreeningPanel({ project, refreshKey, onChanged, onOpenAiModal }
     } else {
       setScreeningProposals([]);
     }
-    setLoading(false);
+    if (!silent) setLoading(false);
   };
+
+  // Keep the latest reload/onChanged available to the background-progress
+  // listener, which is mounted once and must not capture a stale closure.
+  const reloadRef = useRef(reload);
+  reloadRef.current = reload;
+  const onChangedRef = useRef(onChanged);
+  onChangedRef.current = onChanged;
+
+  // Live-update the pane as AI screening decides each article in the background.
+  // We throttle mid-run refreshes (quietly, no loader flash) and do a full sync
+  // — which also refreshes the parent's progress counts — when the run finishes.
+  useEffect(() => {
+    let lastRefresh = 0;
+    const un = listen<{ done: number; total: number }>("screen:progress", (e) => {
+      const { done, total } = e.payload;
+      if (total > 0 && done >= total) {
+        onChangedRef.current();
+      } else {
+        const now = Date.now();
+        if (now - lastRefresh > 1500) {
+          lastRefresh = now;
+          reloadRef.current(undefined, undefined, true);
+        }
+      }
+    });
+    return () => { un.then((f) => f()); };
+  }, []);
 
   // Reset to page 1 whenever the user switches tabs.
   useEffect(() => {
@@ -256,8 +283,15 @@ export function ScreeningPanel({ project, refreshKey, onChanged, onOpenAiModal }
         <div>
           <div className="eyebrow text-[var(--color-paper-500)]">Title & abstract screening</div>
           <h2 className="font-serif text-[26px] tracking-tight text-[var(--color-ink-900)] mt-1">
-            Decide one at a time
+            Five articles at a time
           </h2>
+          {activeTab === "pending" && tabCounts.pending > 0 && (
+            <p className="mt-1 text-[13px] text-[var(--color-paper-600)]">
+              <span className="font-semibold text-[var(--color-ink-800)] tabular-nums">{tabCounts.pending}</span>{" "}
+              {tabCounts.pending === 1 ? "article" : "articles"} still to screen
+              {totalPages > 1 && <> · page {currentPage} of {totalPages}</>}
+            </p>
+          )}
         </div>
         {activeTab === "pending" && (
           <button
@@ -361,11 +395,13 @@ export function ScreeningPanel({ project, refreshKey, onChanged, onOpenAiModal }
         </div>
       )}
 
-      <div className="space-y-3">
-        {articles.map((a) => (
+      <div className="space-y-4">
+        {articles.map((a, i) => (
           <ScreeningCard
             key={a.id}
             article={a}
+            position={offset + i + 1}
+            totalInTab={total}
             criteria={criteria}
             journalMatch={lookupJournal(a.journal)}
             jq={jq}
@@ -397,6 +433,8 @@ export function ScreeningPanel({ project, refreshKey, onChanged, onOpenAiModal }
 
 function ScreeningCard({
   article,
+  position,
+  totalInTab,
   criteria,
   journalMatch,
   jq,
@@ -406,6 +444,8 @@ function ScreeningCard({
   onDecision,
 }: {
   article: ArticleRow;
+  position?: number;
+  totalInTab?: number;
   criteria: ExclusionCriterionRow[];
   journalMatch: JournalRow | null;
   jq: { abs_min?: string; abdc_min?: string; if_min?: number };
@@ -480,9 +520,9 @@ function ScreeningCard({
   return (
     <Card
       className={cn(
-        "p-5",
-        isDecided && "bg-[var(--color-ok-500)]/5 border-[var(--color-ok-500)]/30",
-        qualityFlagged && !isDecided && article.status !== "included" && "border-[var(--color-warn-500)]/40",
+        "p-5 border-[var(--color-paper-300)] shadow-[var(--shadow-paper-md)]",
+        isDecided && "bg-[var(--color-ok-500)]/5 border-[var(--color-ok-500)]/40",
+        qualityFlagged && !isDecided && article.status !== "included" && "border-[var(--color-warn-500)]/50",
       )}
     >
       {/* Disagreement banner — shown above article content when raters disagree */}
@@ -497,8 +537,21 @@ function ScreeningCard({
       )}
 
       <div className="flex items-start gap-4">
-        <div className="font-mono text-[10px] text-[var(--color-paper-500)] tabular-nums w-8 text-right shrink-0 mt-1">
-          #{article.id}
+        <div className="shrink-0 flex flex-col items-center gap-1 mt-0.5">
+          <div
+            className={cn(
+              "w-8 h-8 rounded-full flex items-center justify-center text-[13px] font-semibold tabular-nums border",
+              isDecided
+                ? "bg-[var(--color-ok-500)]/15 border-[var(--color-ok-500)]/40 text-[var(--color-ok-700)]"
+                : "bg-[var(--color-paper-100)] border-[var(--color-paper-300)] text-[var(--color-ink-700)]",
+            )}
+            title={totalInTab ? `Article ${position} of ${totalInTab}` : undefined}
+          >
+            {position ?? "•"}
+          </div>
+          <div className="font-mono text-[9px] text-[var(--color-paper-400)] tabular-nums">
+            #{article.id}
+          </div>
         </div>
         <div className="flex-1 min-w-0">
           <h3 className="font-serif text-[16px] leading-snug text-[var(--color-ink-900)]">
@@ -506,7 +559,12 @@ function ScreeningCard({
           </h3>
           <div className="mt-1 flex items-baseline gap-3 text-[12px] text-[var(--color-paper-600)]">
             {article.authors && <span className="line-clamp-1">{article.authors}</span>}
-            {article.year && <span className="font-mono tabular-nums">{article.year}</span>}
+            {article.year && <span className="font-mono tabular-nums shrink-0">{article.year}</span>}
+            {article.doi && (
+              <span className="font-mono text-[11px] text-[var(--color-paper-400)] truncate shrink-0" title={article.doi}>
+                {article.doi}
+              </span>
+            )}
           </div>
 
           {/* Journal line with quality badges */}
@@ -559,6 +617,14 @@ function ScreeningCard({
             </div>
           )}
 
+          {/* Provenance note for AI exclusions made during the purification pass */}
+          {article.status === "excluded" && article.ai_rationale && (
+            <div className="mt-2 inline-flex items-center gap-1.5 text-[11px] font-medium text-[var(--color-warn-700)]">
+              <Bot size={11} strokeWidth={2} className="text-[var(--color-warn-600)]" />
+              Excluded during purification (AI judgment) — see logic below
+            </div>
+          )}
+
           {/* AI rationale — shown for AI-screened and AI-uncertain articles */}
           {article.ai_rationale && (
             <>
@@ -578,7 +644,7 @@ function ScreeningCard({
                       AI couldn't decide —
                     </span>
                   )}
-                  <span className="line-clamp-2">{article.ai_rationale}</span>
+                  <span className="line-clamp-2">{cleanScreenerRationale(article.ai_rationale)}</span>
                   {article.ai_confidence !== null && (
                     <span className="ml-1 text-[var(--color-paper-400)] not-italic">
                       ({Math.round(article.ai_confidence * 100)}% confidence)
@@ -741,78 +807,59 @@ function DecisionChip({ decision, criterionNumber }: { decision: string; criteri
   );
 }
 
-/** Split a "Rater 1: ... Rater 2: ..." combined rationale string into per-rater
- *  blocks. Returns one entry per rater label found, in order. If no Rater N
- *  prefix is present, returns a single anonymous entry. */
-function splitRatersInRationale(text: string): { label: string | null; body: string }[] {
-  const t = text.trim();
-  if (!t) return [];
-  const re = /(^|\n+)\s*Rater\s+(\d+):\s*/g;
-  const sections: { label: string | null; body: string }[] = [];
-  const matches: { idx: number; len: number; label: string }[] = [];
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(t)) !== null) {
-    matches.push({ idx: m.index + (m[1] ? m[1].length : 0), len: m[0].length - (m[1] ? m[1].length : 0), label: `Rater ${m[2]}` });
-  }
-  if (matches.length === 0) {
-    return [{ label: null, body: t }];
-  }
-  for (let i = 0; i < matches.length; i++) {
-    const start = matches[i].idx + matches[i].len;
-    const end = i + 1 < matches.length ? matches[i + 1].idx : t.length;
-    sections.push({ label: matches[i].label, body: t.slice(start, end).trim() });
-  }
-  return sections;
+/** The AI screener is a single rater. Legacy rows may have stored a combined
+ *  "Rater 1: …\n\nRater 2: …" string (from the old dual-rater screener); since
+ *  that was one model's output duplicated, collapse to the first block and drop
+ *  the rater labels. New rows have no "Rater N:" prefix and pass through. */
+export function cleanScreenerRationale(text: string): string {
+  const t = (text ?? "").trim();
+  if (!t) return "";
+  const matches = [...t.matchAll(/(^|\n+)\s*Rater\s+\d+:\s*/g)];
+  if (matches.length === 0) return t;
+  const first = matches[0];
+  const firstStart = (first.index ?? 0) + first[0].length;
+  const secondStart = matches[1]?.index ?? t.length;
+  return t.slice(firstStart, secondStart).trim();
 }
 
 function RationaleBody({ text, confidence }: { text: string; confidence: number | null }) {
-  const sections = splitRatersInRationale(text);
+  const rawBody = cleanScreenerRationale(text);
+  const isWeak = rawBody.startsWith("[weak rationale");
+  const cleanBody = isWeak ? rawBody.replace(/^\[weak rationale[^\]]*\]\s*/, "") : rawBody;
+  const sentences = splitSentences(cleanBody);
   return (
     <div className="space-y-4">
-      {sections.map((sec, i) => {
-        const rawBody = sec.body;
-        const isWeak = rawBody.startsWith("[weak rationale");
-        const cleanBody = isWeak ? rawBody.replace(/^\[weak rationale[^\]]*\]\s*/, "") : rawBody;
-        const sentences = splitSentences(cleanBody);
-        return (
-          <div key={i} className="relative pl-3 border-l-2 border-[var(--color-accent-300)]">
-            {sec.label && (
-              <div className="text-[10px] font-semibold uppercase tracking-wider text-[var(--color-paper-500)] mb-1.5">
-                {sec.label}
-              </div>
-            )}
-            {isWeak && (
-              <div className="flex items-start gap-1.5 mb-1.5 text-[11px] text-[var(--color-warn-700)]">
-                <AlertTriangle size={11} strokeWidth={2} className="shrink-0 mt-0.5" />
-                <span>Weak rationale — recommend manual review.</span>
-              </div>
-            )}
-            <ul className="text-[13px] text-[var(--color-ink-800)] leading-relaxed divide-y divide-[var(--color-paper-200)]">
-              {sentences.map((s, j) => (
-                <li key={j} className="flex gap-2 py-1.5 first:pt-0 last:pb-0">
-                  <span className="font-mono text-[10px] text-[var(--color-paper-400)] shrink-0 select-none mt-1 tabular-nums">
-                    {j + 1}
-                  </span>
-                  <span className="flex-1">
-                    {extractEvidence(s).map((frag, k) =>
-                      frag.evidence ? (
-                        <span
-                          key={k}
-                          className="font-medium text-[var(--color-ink-900)] bg-[var(--color-accent-50)] border-b border-[var(--color-accent-300)] px-0.5 rounded-sm"
-                        >
-                          "{frag.text}"
-                        </span>
-                      ) : (
-                        <span key={k}>{frag.text}</span>
-                      ),
-                    )}
-                  </span>
-                </li>
-              ))}
-            </ul>
+      <div className="relative pl-3 border-l-2 border-[var(--color-accent-300)]">
+        {isWeak && (
+          <div className="flex items-start gap-1.5 mb-1.5 text-[11px] text-[var(--color-warn-700)]">
+            <AlertTriangle size={11} strokeWidth={2} className="shrink-0 mt-0.5" />
+            <span>Weak rationale — recommend manual review.</span>
           </div>
-        );
-      })}
+        )}
+        <ul className="text-[13px] text-[var(--color-ink-800)] leading-relaxed divide-y divide-[var(--color-paper-200)]">
+          {sentences.map((s, j) => (
+            <li key={j} className="flex gap-2 py-1.5 first:pt-0 last:pb-0">
+              <span className="font-mono text-[10px] text-[var(--color-paper-400)] shrink-0 select-none mt-1 tabular-nums">
+                {j + 1}
+              </span>
+              <span className="flex-1">
+                {extractEvidence(s).map((frag, k) =>
+                  frag.evidence ? (
+                    <span
+                      key={k}
+                      className="font-medium text-[var(--color-ink-900)] bg-[var(--color-accent-50)] border-b border-[var(--color-accent-300)] px-0.5 rounded-sm"
+                    >
+                      "{frag.text}"
+                    </span>
+                  ) : (
+                    <span key={k}>{frag.text}</span>
+                  ),
+                )}
+              </span>
+            </li>
+          ))}
+        </ul>
+      </div>
       {confidence !== null && (
         <div className="text-[11px] text-[var(--color-paper-500)] font-mono pt-2 border-t border-[var(--color-paper-200)]">
           {Math.round(confidence * 100)}% confidence

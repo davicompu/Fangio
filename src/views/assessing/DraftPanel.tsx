@@ -26,6 +26,16 @@ export function DraftPanel({ project, onSaved }: Props) {
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const [dirty, setDirty] = useState(false);
 
+  // Load any previously-saved draft on mount so reopening the tab shows your work
+  // (and a Generate doesn't look like the only path forward).
+  useEffect(() => {
+    let cancelled = false;
+    api.readDraft()
+      .then((c) => { if (!cancelled) { setContent(c); setLoaded(true); } })
+      .catch(() => { if (!cancelled) setLoaded(true); });
+    return () => { cancelled = true; };
+  }, []);
+
   // Reporting details (SPAR-4-SLR 3b) — woven into the generated draft.
   const [limitations, setLimitations] = useState(project.review_limitations ?? "");
   const [funding, setFunding] = useState(project.sources_of_support ?? "");

@@ -65,13 +65,30 @@ pub async fn find_pdf_url(doi: &str) -> Result<Option<String>> {
     Ok(None)
 }
 
+/// Largest open-access PDF we will accept — guards against a hostile or buggy
+/// mirror returning a multi-GB body and exhausting memory.
+const MAX_PDF_BYTES: usize = 100 * 1024 * 1024; // 100 MB
+
 /// Download a PDF, verifying the magic bytes so we never save an HTML error page.
+/// Reads incrementally with a hard size cap so a malicious host can't OOM us.
 pub async fn download(url: &str) -> Result<Vec<u8>> {
-    let resp = client()?.get(url).send().await?;
+    let mut resp = client()?.get(url).send().await?;
     if !resp.status().is_success() {
         return Err(anyhow!("download returned {}", resp.status()));
     }
-    let bytes = resp.bytes().await?.to_vec();
+    // Reject early when the server advertises an oversized body.
+    if let Some(len) = resp.content_length() {
+        if len as usize > MAX_PDF_BYTES {
+            return Err(anyhow!("PDF too large ({len} bytes)"));
+        }
+    }
+    let mut bytes: Vec<u8> = Vec::new();
+    while let Some(chunk) = resp.chunk().await? {
+        if bytes.len() + chunk.len() > MAX_PDF_BYTES {
+            return Err(anyhow!("PDF exceeded the {MAX_PDF_BYTES}-byte limit"));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
     if bytes.len() < 5 || &bytes[0..5] != b"%PDF-" {
         return Err(anyhow!("response was not a PDF"));
     }

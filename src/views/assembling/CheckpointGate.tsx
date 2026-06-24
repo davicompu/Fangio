@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { ArrowRight, CheckCircle2, Circle, Lock, ShieldCheck } from "lucide-react";
-import type { AssemblingState } from "../../lib/api";
+import { api, type AssemblingState } from "../../lib/api";
 import { Card } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
 import { cn } from "../../lib/utils";
@@ -10,6 +10,8 @@ interface Props {
   assembling: AssemblingState | null;
   onAdvance: () => void;
 }
+
+const SETTING_KEY = "checkpoint.assembling.confirmed";
 
 interface Condition {
   id: string;
@@ -50,6 +52,16 @@ const conditions: Condition[] = [
 export function CheckpointGate({ assembling, onAdvance }: Props) {
   const [checked, setChecked] = useState<Set<string>>(new Set());
 
+  // Seed the manual confirmations from persisted settings so they survive reloads.
+  useEffect(() => {
+    api.getSettings()
+      .then((s) => {
+        const saved = s[SETTING_KEY];
+        if (Array.isArray(saved)) setChecked(new Set(saved.filter((x): x is string => typeof x === "string")));
+      })
+      .catch(() => {});
+  }, []);
+
   const allChecked =
     conditions.every((c) => {
       if (c.auto) return c.auto(assembling);
@@ -61,6 +73,7 @@ export function CheckpointGate({ assembling, onAdvance }: Props) {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
+      api.setSetting(SETTING_KEY, Array.from(next)).catch(() => {});
       return next;
     });
   };

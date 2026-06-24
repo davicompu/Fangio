@@ -10,7 +10,7 @@ const W: i32 = 920;
 const PAD: i32 = 32;
 const LANE_LABEL_W: i32 = 140;
 const BOX_W: i32 = 320;
-const BOX_H: i32 = 96;
+const BOX_H: i32 = 120;
 const GAP: i32 = 60;
 const LANE_GAP: i32 = 36;
 
@@ -174,7 +174,11 @@ fn simple_box(
             ty = y + 54,
         ));
     }
-    let mut iy = y + 70;
+    // Start the reasons list below the count when one is shown, otherwise just
+    // below the title — so boxes without a count (e.g. "Records removed") don't
+    // push their last line past the box edge. 16px line height keeps up to four
+    // lines inside BOX_H.
+    let mut iy = if count.is_some() { y + 74 } else { y + 48 };
     for (label, n) in items {
         s.push_str(&format!(
             r##"    <text x="{tx}" y="{iy}" class="item">{label}</text>
@@ -184,7 +188,7 @@ fn simple_box(
             nx = x + w - 14,
             label = escape(label),
         ));
-        iy += 14;
+        iy += 16;
     }
     s.push_str("  </g>\n");
     s

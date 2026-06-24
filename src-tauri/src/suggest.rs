@@ -9,6 +9,23 @@ use crate::lmstudio::{self, ChatMessage};
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 
+/// The default persona shared by every AI rater (screening + coding). It frames
+/// the model as a careful SLR researcher and is editable by the user in Settings
+/// (`ai_raters.system_prompt`). Task-specific instructions (JSON shape, criteria,
+/// rationale rules) are appended by each function after this persona. When the
+/// stored setting is blank, this constant is used as the fallback.
+pub const DEFAULT_RATER_SYSTEM_PROMPT: &str = "You are a meticulous researcher conducting a systematic literature review to identify themes in the literature, following PRISMA 2020 and established systematic-review (SLR) principles. You reason strictly from the evidence placed in front of you — you never fabricate findings, invent details, or infer beyond what the text supports. You commit to a decision only when the evidence makes you genuinely confident; when the evidence is insufficient, you say so rather than guess. You are precise, consistent, and transparent about the reasoning behind every judgement.";
+
+/// Returns the trimmed base persona, falling back to [`DEFAULT_RATER_SYSTEM_PROMPT`]
+/// when the caller passes an empty/whitespace-only override.
+fn rater_base_prompt(base_prompt: &str) -> &str {
+    if base_prompt.trim().is_empty() {
+        DEFAULT_RATER_SYSTEM_PROMPT
+    } else {
+        base_prompt.trim()
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Suggestion {
     #[serde(alias = "codes", alias = "name", alias = "label")]
@@ -911,10 +928,12 @@ pub async fn screen_article(
     authors: Option<&str>,
     domain: &str,
     exclusion_criteria_labeled: &[(i64, String)], // (criterion_number, label)
+    base_prompt: &str,
     profile: &str,
     temperature: f32,
     api_key: Option<&str>,
 ) -> Result<ScreeningDecision> {
+    let base = rater_base_prompt(base_prompt);
     let domain_block = if domain.trim().is_empty() {
         "(not specified)".to_string()
     } else {
@@ -941,8 +960,9 @@ pub async fn screen_article(
     };
 
     let system = format!(
-        "You are a systematic literature review screener applying title-and-abstract level screening, \
-         with the article's publication metadata available alongside the abstract.{profile_block}\n\
+        "{base}{profile_block}\n\n\
+         YOUR CURRENT TASK: title-and-abstract level screening, \
+         with the article's publication metadata available alongside the abstract. \
          You decide whether each article should be included, excluded, or flagged as uncertain.\n\n\
          Domain scope of this review:\n{domain_block}\n\n\
          Exclusion criteria (exclude the article if it meets ANY of these):\n{exc_block}\n\n\
@@ -1053,10 +1073,12 @@ pub async fn screen_article_fulltext(
     full_text: &str,
     domain: &str,
     exclusion_criteria_labeled: &[(i64, String)],
+    base_prompt: &str,
     profile: &str,
     temperature: f32,
     api_key: Option<&str>,
 ) -> Result<ScreeningDecision> {
+    let base = rater_base_prompt(base_prompt);
     let domain_block = if domain.trim().is_empty() {
         "(not specified)".to_string()
     } else {
@@ -1083,9 +1105,10 @@ pub async fn screen_article_fulltext(
     let body: String = full_text.chars().take(12_000).collect();
 
     let system = format!(
-        "You are a systematic literature review screener applying FULL-TEXT eligibility screening. \
+        "{base}{profile_block}\n\n\
+YOUR CURRENT TASK: FULL-TEXT eligibility screening. \
 You read the full text of an article that already passed title-and-abstract screening, and decide \
-whether it is eligible for inclusion, should be excluded, or is uncertain.{profile_block}\n\n\
+whether it is eligible for inclusion, should be excluded, or is uncertain.\n\n\
 Domain scope of this review:\n{domain_block}\n\n\
 Exclusion criteria (exclude the article if it meets ANY of these):\n{exc_block}\n\n\
 Base your decision on the FULL TEXT below — its methods, sample, setting, and findings — not just \
@@ -1191,10 +1214,16 @@ pub async fn code_article_for_dimensions(
     title: &str,
     authors: Option<&str>,
     context_text: &str,
+    base_prompt: &str,
     profile: &str,
+    // When true, treat each dimension's existing codes as a FIXED codebook and
+    // select from it (closed-set coding); new codes only as a rare exception.
+    // When false, open generation (used to build the codebook in the first place).
+    closed_set: bool,
     temperature: f32,
     api_key: Option<&str>,
 ) -> Result<Vec<DimensionCoding>> {
+    let base = rater_base_prompt(base_prompt);
     let rqs_block = if research_questions.is_empty() {
         "(not specified)".to_string()
     } else {
@@ -1242,12 +1271,22 @@ pub async fn code_article_for_dimensions(
         )
     };
 
+    let task_instruction = if closed_set {
+        "For each dimension, treat its \"Existing codes\" list as a FIXED CODEBOOK. \
+SELECT every code from that list that applies to this article and copy its label VERBATIM \
+(same wording, no rephrasing). Apply zero, one, or several per dimension. \
+Only propose a new code (is_new=true) when the article clearly expresses something the codebook \
+cannot capture — strongly prefer reusing a codebook label over inventing one."
+    } else {
+        "For each dimension you will suggest 1–3 short noun-phrase codes (2–5 words each). \
+Reuse an existing code when it fits; only mark is_new=true when no existing code is appropriate."
+    };
     let system = format!(
-        "You are a meticulous research assistant helping a scholar code articles for a systematic \
-literature review. You suggest codes — you do not make decisions. The researcher always has final say.{coding_profile_block}\n\n\
+        "{base}{coding_profile_block}\n\n\
+YOUR CURRENT TASK: code articles for a systematic literature review against an organising \
+framework. You suggest codes (themes) — you do not make final decisions. The researcher always has final say.\n\n\
 Review domain: {domain}\nOrganising framework: {framework}\nResearch questions:\n{rqs_block}\n\n\
-For each dimension you will suggest 1–3 short noun-phrase codes (2–5 words each). \
-Reuse an existing code when it fits; only mark is_new=true when no existing code is appropriate.\n\n\
+{task_instruction}\n\n\
 Respond ONLY with a JSON object. The keys are the exact dimension names provided. \
 Each value is a JSON array of objects with keys: code (string), rationale (string, one sentence), is_new (boolean).\n\
 No prose before or after the JSON."

@@ -56,8 +56,8 @@ interface Props {
   onOpenAiCodingModal?: () => void;
 }
 
-type ToggleFilter = "uncoded" | "coded" | "with-pdf" | "no-pdf";
-const OPPOSITES: Record<ToggleFilter, ToggleFilter> = {
+type ToggleFilter = "uncoded" | "coded" | "with-pdf" | "no-pdf" | "conflicts";
+const OPPOSITES: Partial<Record<ToggleFilter, ToggleFilter>> = {
   coded: "uncoded", uncoded: "coded",
   "with-pdf": "no-pdf", "no-pdf": "with-pdf",
 };
@@ -136,6 +136,7 @@ export function CodingPanel({ project, refreshKey, onChanged, initialCodeFilter,
     reload();
   }, [refreshKey, reload]);
 
+
   const codingsByArticle = useMemo(() => {
     const m = new Map<number, CodingRow[]>();
     for (const c of codings) {
@@ -183,6 +184,7 @@ export function CodingPanel({ project, refreshKey, onChanged, initialCodeFilter,
     if (activeFilters.has("uncoded"))  result = result.filter((a) => !codedIds.has(a.id));
     if (activeFilters.has("with-pdf")) result = result.filter((a) => !!pdfMap[String(a.id)]);
     if (activeFilters.has("no-pdf"))   result = result.filter((a) => !pdfMap[String(a.id)]);
+    if (activeFilters.has("conflicts")) result = result.filter((a) => articleIdsWithProposals.has(a.id));
     if (codeFilters.size > 0) {
       result = result.filter((a) => {
         const codes = articleCodeSet.get(a.id);
@@ -192,13 +194,13 @@ export function CodingPanel({ project, refreshKey, onChanged, initialCodeFilter,
       });
     }
     return result;
-  }, [articles, codedIds, pdfMap, activeFilters, codeFilters, articleCodeSet]);
+  }, [articles, codedIds, pdfMap, activeFilters, codeFilters, articleCodeSet, articleIdsWithProposals]);
 
   const toggleFilter = (key: ToggleFilter) => {
     setActiveFilters((prev) => {
       const next = new Set(prev);
       if (next.has(key)) { next.delete(key); }
-      else { next.delete(OPPOSITES[key]); next.add(key); }
+      else { const opp = OPPOSITES[key]; if (opp) next.delete(opp); next.add(key); }
       return next;
     });
     setCardIndex(0);
@@ -541,6 +543,9 @@ export function CodingPanel({ project, refreshKey, onChanged, initialCodeFilter,
             { key: "coded"    as ToggleFilter, label: "Coded",    count: codedCount },
             { key: "with-pdf" as ToggleFilter, label: "Has PDF",  count: withPdfCount },
             { key: "no-pdf"   as ToggleFilter, label: "No PDF",   count: total - withPdfCount },
+            ...(articleIdsWithProposals.size > 0
+              ? [{ key: "conflicts" as ToggleFilter, label: "Rater conflicts", count: articleIdsWithProposals.size }]
+              : []),
           ]).map(({ key, label, count }) => (
             <button
               key={key}

@@ -5,6 +5,19 @@
 
 import { invoke } from "@tauri-apps/api/core";
 
+export interface CodingAgreement {
+  /** Average Jaccard overlap of the raters' canonical code sets (0..1). */
+  overlap: number;
+  exact_match: number;
+  units: number;
+  kappa: number;
+  observed_agreement: number;
+  articles: number;
+  /** True once a codebook exists → κ is chance-valid and shown as the headline. */
+  codebook_based: boolean;
+  note: string | null;
+}
+
 export interface ProjectRow {
   id: number;
   name: string;
@@ -193,10 +206,16 @@ export interface FulltextCandidate {
   title: string;
   authors: string | null;
   year: number | null;
+  journal: string | null;
   abstract_text: string | null;
   doi: string | null;
   /** null = not yet full-text reviewed, "included" = kept, "excluded". */
   fulltext_status: string | null;
+  /** Title/abstract status: "included", "retrieved" (pending T&A), or "excluded" (removed earlier). */
+  ta_status: string;
+  exclusion_criterion: number | null;
+  ai_rationale: string | null;
+  exclusion_rationale: string | null;
   pdf_path: string | null;
 }
 
@@ -611,6 +630,12 @@ export const api = {
   deleteFrameworkCodeDef(id: number) {
     return invoke<void>("delete_framework_code_def", { id });
   },
+  renameFrameworkCodeDef(id: number, code: string) {
+    return invoke<void>("rename_framework_code_def", { id, code });
+  },
+  normalizeCodebookCasing() {
+    return invoke<number>("normalize_codebook_casing");
+  },
   listCodingBatch(offset: number, limit: number) {
     return invoke<CodingBatchResult>("list_coding_batch", { args: { offset, limit } });
   },
@@ -694,14 +719,25 @@ export const api = {
   countScreeningTab(tab: ScreeningTab) {
     return invoke<number>("count_screening_tab", { tab });
   },
-  runAiScreening(exclusionCriteria: string[]) {
+  runAiScreening(exclusionCriteria: string[], excludeOnly = false) {
     return invoke<AiScreeningResult>("run_ai_screening", {
-      args: { exclusion_criteria: exclusionCriteria },
+      args: { exclusion_criteria: exclusionCriteria, exclude_only: excludeOnly },
     });
   },
   pauseAiScreening() { return invoke<void>("pause_ai_screening"); },
   resumeAiScreening() { return invoke<void>("resume_ai_screening"); },
   cancelAiScreening() { return invoke<void>("cancel_ai_screening"); },
+  computeCodingAgreement() {
+    return invoke<CodingAgreement>("compute_coding_agreement");
+  },
+  buildCodebook(rater1Model: string, rater2Model: string | null, dimensions: string[], opts?: { onlyMissing?: boolean; sampleSize?: number }) {
+    return invoke<{ sampled: number; codes_added: number; dimensions: number }>("build_codebook", {
+      args: { rater1_model: rater1Model, rater2_model: rater2Model, dimensions, sample_size: opts?.sampleSize ?? null, only_missing: opts?.onlyMissing ?? false },
+    });
+  },
+  codebookCoverage() {
+    return invoke<{ total_with_pdf: number; participated: number; missing: number; has_codebook: boolean; any_coded: boolean }>("codebook_coverage");
+  },
   listAiScreeningProposalsForArticle(articleId: number) {
     return invoke<AiScreeningProposal[]>("list_ai_screening_proposals_for_article", { articleId });
   },
@@ -836,6 +872,9 @@ export const api = {
   generateDraft() {
     return invoke<string>("generate_draft");
   },
+  readDraft() {
+    return invoke<string>("read_draft");
+  },
   generateAgenda(args?: { guidance?: string; current?: string; instruction?: string }) {
     return invoke<string>("generate_agenda", { args: args ?? {} });
   },
@@ -848,8 +887,10 @@ export const api = {
   exportDecisionReport() {
     return invoke<string>("export_decision_report");
   },
-  findMissingPdfs() {
-    return invoke<{ found: number; attempted: number; no_doi: number; no_oa: number }>("find_missing_pdfs");
+  findMissingPdfs(statuses: string[] = []) {
+    return invoke<{ found: number; attempted: number; no_doi: number; no_oa: number }>("find_missing_pdfs", {
+      args: { statuses },
+    });
   },
   listFulltextCandidates() {
     return invoke<FulltextCandidate[]>("list_fulltext_candidates");
@@ -857,8 +898,10 @@ export const api = {
   fulltextKeepArticle(articleId: number) {
     return invoke<void>("fulltext_keep_article", { articleId });
   },
-  fulltextExcludeArticle(articleId: number, rationale?: string) {
-    return invoke<void>("fulltext_exclude_article", { args: { article_id: articleId, rationale } });
+  fulltextExcludeArticle(articleId: number, criterionNumber?: number, rationale?: string) {
+    return invoke<void>("fulltext_exclude_article", {
+      args: { article_id: articleId, criterion_number: criterionNumber ?? null, rationale },
+    });
   },
   resetFulltextArticle(articleId: number) {
     return invoke<void>("reset_fulltext_article", { articleId });
@@ -866,6 +909,9 @@ export const api = {
   runAiFulltextScreening() {
     return invoke<{ processed: number; kept: number; excluded: number; uncertain: number; skipped_no_pdf: number }>("run_ai_fulltext_screening");
   },
+  pauseAiFulltextScreening() { return invoke<void>("pause_ai_fulltext_screening"); },
+  resumeAiFulltextScreening() { return invoke<void>("resume_ai_fulltext_screening"); },
+  cancelAiFulltextScreening() { return invoke<void>("cancel_ai_fulltext_screening"); },
   exportCsvs() {
     return invoke<ExportSummary>("export_csvs");
   },

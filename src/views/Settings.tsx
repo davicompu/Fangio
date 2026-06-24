@@ -15,6 +15,7 @@ import {
   Pencil,
   Plus,
   Radio,
+  RotateCcw,
   Thermometer,
   Users,
   X,
@@ -24,7 +25,7 @@ import { api, type BackupInfo } from "../lib/api";
 import { Button } from "../components/ui/Button";
 import { TextField, TextArea } from "../components/ui/TextField";
 import { Select } from "../components/ui/Select";
-import type { AppSettings, DatabaseEntry, LmEndpoint, LmState } from "../lib/useAppState";
+import { DEFAULT_RATER_SYSTEM_PROMPT, type AppSettings, type DatabaseEntry, type LmEndpoint, type LmState } from "../lib/useAppState";
 import { cn, formatRelative } from "../lib/utils";
 import { Markdown } from "../components/Markdown";
 import { useVersion } from "../lib/useVersion";
@@ -46,6 +47,7 @@ export function Settings({ open: openSetting, onClose, settings, onUpdate, lm, o
   const version = useVersion();
   const [localUrl, setLocalUrl] = useState(settings["lmstudio.base_url"]);
   const [localApiKey, setLocalApiKey] = useState(settings["lmstudio.api_key"]);
+  const [localSystemPrompt, setLocalSystemPrompt] = useState(settings["ai_raters.system_prompt"]);
   const [localRater1Profile, setLocalRater1Profile] = useState(settings["ai_raters.rater1.profile"]);
   const [localRater2Profile, setLocalRater2Profile] = useState(settings["ai_raters.rater2.profile"]);
   const [testing, setTesting] = useState(false);
@@ -67,6 +69,7 @@ export function Settings({ open: openSetting, onClose, settings, onUpdate, lm, o
     if (openSetting && lastOpenSeen.current !== true) {
       setLocalUrl(settings["lmstudio.base_url"]);
       setLocalApiKey(settings["lmstudio.api_key"]);
+      setLocalSystemPrompt(settings["ai_raters.system_prompt"]);
       setLocalRater1Profile(settings["ai_raters.rater1.profile"]);
       setLocalRater2Profile(settings["ai_raters.rater2.profile"]);
     }
@@ -385,18 +388,47 @@ export function Settings({ open: openSetting, onClose, settings, onUpdate, lm, o
                 <SectionHeader
                   icon={<Users size={14} strokeWidth={1.75} />}
                   title="AI raters"
-                  description="Reeves runs each AI screening or coding pass twice — once per rater profile — and surfaces disagreements for you to resolve."
+                  description="Screening (title/abstract + full text) runs a single AI assistant using Rater 1's profile. Coding/theming runs two raters — once per profile, sharing the system prompt below — and surfaces disagreements for you to resolve."
                 />
 
                 <div className="space-y-4 mt-5">
+                  <div>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <label className="text-[13px] font-medium text-[var(--color-ink-800)]">
+                        Shared rater system prompt
+                      </label>
+                      {(localSystemPrompt ?? "").trim() !== DEFAULT_RATER_SYSTEM_PROMPT && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setLocalSystemPrompt(DEFAULT_RATER_SYSTEM_PROMPT);
+                            onUpdate("ai_raters.system_prompt", DEFAULT_RATER_SYSTEM_PROMPT);
+                          }}
+                          className="inline-flex items-center gap-1 text-[11px] font-medium text-[var(--color-accent-600)] hover:text-[var(--color-accent-700)] transition-paper"
+                        >
+                          <RotateCcw size={11} strokeWidth={2} />
+                          Restore default
+                        </button>
+                      )}
+                    </div>
+                    <TextArea
+                      rows={7}
+                      value={localSystemPrompt}
+                      onChange={(e) => setLocalSystemPrompt(e.target.value)}
+                      onBlur={() => onUpdate("ai_raters.system_prompt", localSystemPrompt)}
+                      placeholder={DEFAULT_RATER_SYSTEM_PROMPT}
+                      hint="The persona every rater shares before its individual profile and the task-specific instructions. Leave blank to use Reeves' built-in default (shown above as placeholder). Edit it to change how all raters reason — e.g. stricter evidence standards or a different review tradition."
+                    />
+                  </div>
+                  <div className="hairline" />
                   <TextArea
                     label="Rater 1 profile"
                     rows={6}
                     value={localRater1Profile}
                     onChange={(e) => setLocalRater1Profile(e.target.value)}
                     onBlur={() => onUpdate("ai_raters.rater1.profile", localRater1Profile)}
-                    placeholder="Methodological purist: weight rigour and transparency over novelty. Prefer empirical studies with clear methods. Flag papers with sample sizes < 30 or unclear analytic strategy."
-                    hint="Leave blank for a neutral default. Describes how this rater should evaluate articles."
+                    placeholder="(optional) e.g. weight methodological rigour and transparency"
+                    hint="Optional. Used by the single screening assistant and by coding rater 1. Leave blank — recommended for SLR — so it follows only the shared system prompt above."
                   />
                   <TextArea
                     label="Rater 2 profile"
@@ -404,8 +436,8 @@ export function Settings({ open: openSetting, onClose, settings, onUpdate, lm, o
                     value={localRater2Profile}
                     onChange={(e) => setLocalRater2Profile(e.target.value)}
                     onBlur={() => onUpdate("ai_raters.rater2.profile", localRater2Profile)}
-                    placeholder="Theory builder: weight conceptual contribution and integrative framing. Prefer papers that build or extend constructs."
-                    hint="Leave blank for a neutral default. Describes how this rater should evaluate articles."
+                    placeholder="(optional) e.g. weight conceptual / theoretical contribution"
+                    hint="Optional. Used only by coding/theming (the second rater). Leave blank for a consistent protocol; add a lean only if you deliberately want a second perspective to surface disagreements for adjudication."
                   />
                 </div>
               </section>

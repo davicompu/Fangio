@@ -1,11 +1,14 @@
 import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { listen } from "@tauri-apps/api/event";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   AlertTriangle,
   CheckCircle2,
+  ExternalLink,
   FileText,
+  Globe,
   Loader2,
   Sparkles,
   Upload,
@@ -21,9 +24,21 @@ interface Props {
   /** Labels of the databases the researcher selected on the Acquisition tab.
    *  When non-empty, the Source database dropdown is restricted to this list. */
   availableDatabases?: string[];
+  /** Selected databases that have a search URL — rendered as quick-launch buttons,
+   *  mirroring the "Run searches" row on the Acquisition tab. */
+  launchDatabases?: { label: string; url: string }[];
 }
 
-export function ImportPanel({ onCommitted, availableDatabases = [] }: Props) {
+export function ImportPanel({ onCommitted, availableDatabases = [], launchDatabases = [] }: Props) {
+  const handleOpenDatabase = async (url: string) => {
+    let target = url;
+    if (!/^https?:\/\//i.test(target)) target = "https://" + target;
+    try {
+      await openUrl(target);
+    } catch (e) {
+      console.error("Failed to open URL:", e);
+    }
+  };
   const [preview, setPreview] = useState<ParsePreview | null>(null);
   const [filePath, setFilePath] = useState<string | null>(null);
   const [database, setDatabase] = useState("");
@@ -299,7 +314,31 @@ export function ImportPanel({ onCommitted, availableDatabases = [] }: Props) {
       </div>
 
       <aside>
-        <div className="sticky top-12">
+        <div className="sticky top-12 space-y-3">
+          {launchDatabases.length > 0 && (
+            <Card className="p-5">
+              <div className="flex items-center gap-2 mb-3">
+                <Globe size={13} strokeWidth={1.75} className="text-[var(--color-accent-500)]" />
+                <span className="eyebrow text-[var(--color-paper-500)]">Run another search</span>
+              </div>
+              <p className="text-[12px] text-[var(--color-paper-600)] leading-relaxed mb-3">
+                Reopen a database to gather more results, then export and drop them here.
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {launchDatabases.map((d) => (
+                  <button
+                    key={d.label}
+                    type="button"
+                    onClick={() => handleOpenDatabase(d.url)}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-[var(--radius-sm)] text-[12px] font-medium bg-[var(--color-paper-100)] border border-[var(--color-paper-300)] text-[var(--color-ink-800)] hover:border-[var(--color-paper-500)] transition-paper"
+                  >
+                    {d.label}
+                    <ExternalLink size={11} strokeWidth={1.75} className="text-[var(--color-paper-400)]" />
+                  </button>
+                ))}
+              </div>
+            </Card>
+          )}
           <Card className="p-5">
             <div className="eyebrow mb-3 text-[var(--color-paper-500)]">Supported formats</div>
             <ul className="space-y-2.5 text-[13px] text-[var(--color-paper-700)]">

@@ -15,6 +15,7 @@ mod lockfile;
 mod parsers;
 mod pdf;
 mod recent;
+mod stats;
 mod suggest;
 mod svg;
 mod vector;
@@ -47,6 +48,9 @@ struct AppState {
     coding_paused: Arc<AtomicBool>,
     /// Set to true by cancel_ai_coding; cleared at start of each run.
     coding_cancelled: Arc<AtomicBool>,
+    /// Full-text screening pause/cancel; cleared at start of each run.
+    fulltext_paused: Arc<AtomicBool>,
+    fulltext_cancelled: Arc<AtomicBool>,
 }
 
 impl Default for AppState {
@@ -57,6 +61,8 @@ impl Default for AppState {
             screening_cancelled: Arc::new(AtomicBool::new(false)),
             coding_paused: Arc::new(AtomicBool::new(false)),
             coding_cancelled: Arc::new(AtomicBool::new(false)),
+            fulltext_paused: Arc::new(AtomicBool::new(false)),
+            fulltext_cancelled: Arc::new(AtomicBool::new(false)),
         }
     }
 }
@@ -134,6 +140,60 @@ mod smalltalk_tests {
         assert!(!is_smalltalk("Tell me about cognitive presence"));
         assert!(!is_smalltalk("What does the literature say about AI tutoring?"));
         assert!(!is_smalltalk("hi can you summarise paper 3"));
+    }
+}
+
+#[cfg(test)]
+mod journal_case_tests {
+    use super::canonical_code_case;
+    use super::normalize_journal_name;
+
+    #[test]
+    fn all_caps_becomes_title_case() {
+        assert_eq!(normalize_journal_name("JOURNAL OF MARKETING"), "Journal of Marketing");
+        assert_eq!(
+            normalize_journal_name("INTERNATIONAL JOURNAL OF INFORMATION MANAGEMENT"),
+            "International Journal of Information Management"
+        );
+    }
+
+    #[test]
+    fn lowercase_becomes_title_case() {
+        assert_eq!(normalize_journal_name("journal of business research"), "Journal of Business Research");
+    }
+
+    #[test]
+    fn code_case_capitalizes_first_preserves_rest() {
+        assert_eq!(canonical_code_case("bounded rationality"), "Bounded rationality");
+        assert_eq!(canonical_code_case("weakness-of-will"), "Weakness-of-will");
+        // Proper nouns / acronyms / digits in the remainder survive untouched.
+        assert_eq!(canonical_code_case("Business and Management"), "Business and Management");
+        assert_eq!(canonical_code_case("industry 4.0 logistics"), "Industry 4.0 logistics");
+        assert_eq!(canonical_code_case("  moral hazard  "), "Moral hazard");
+        assert_eq!(canonical_code_case(""), "");
+    }
+
+    #[test]
+    fn acronyms_preserved() {
+        assert_eq!(normalize_journal_name("MIS QUARTERLY"), "MIS Quarterly");
+        assert_eq!(normalize_journal_name("IEEE TRANSACTIONS ON COMPUTERS"), "IEEE Transactions on Computers");
+    }
+
+    #[test]
+    fn first_and_last_small_words_capitalized() {
+        assert_eq!(normalize_journal_name("OF MICE AND MEN"), "Of Mice and Men");
+    }
+
+    #[test]
+    fn mixed_case_left_untouched() {
+        assert_eq!(normalize_journal_name("MIS Quarterly"), "MIS Quarterly");
+        assert_eq!(normalize_journal_name("Journal of the AIS"), "Journal of the AIS");
+    }
+
+    #[test]
+    fn trims_and_handles_empty() {
+        assert_eq!(normalize_journal_name("  JOURNAL OF X  "), "Journal of X");
+        assert_eq!(normalize_journal_name("   "), "");
     }
 }
 
@@ -441,11 +501,16 @@ async fn commit_import(
     let mut inserted = 0usize;
     for rec in &parsed.records {
         let normalized_doi = rec.doi.as_ref().and_then(|d| parsers::normalize_doi(d));
+        let normalized_journal = rec
+            .journal
+            .as_deref()
+            .map(normalize_journal_name)
+            .filter(|s| !s.is_empty());
         let new = NewArticle {
             title: rec.title.clone(),
             authors: rec.authors.clone(),
             year: rec.year,
-            journal: rec.journal.clone(),
+            journal: normalized_journal,
             abstract_text: rec.abstract_text.clone(),
             doi: normalized_doi,
             url: rec.url.clone(),
@@ -569,39 +634,54 @@ struct EnrichResult {
     error_messages: Vec<String>,
 }
 
+#[derive(Clone, Serialize)]
+struct EnrichProgress {
+    done: usize,
+    total: usize,
+    title: String,
+}
+
 #[tauri::command]
 async fn enrich_articles_from_doi(
+    app: tauri::AppHandle<tauri::Wry>,
     state: State<'_, AppState>,
 ) -> Result<EnrichResult, String> {
     let db = state.current().await.ok_or("no project open")?;
     let articles = db.list_articles().await.map_err(err)?;
 
-    let mut processed = 0usize;
     let mut updated = 0usize;
     let mut skipped_no_doi = 0usize;
     let mut failures = 0usize;
     let mut error_messages: Vec<String> = Vec::new();
 
-    for a in articles {
-        // Skip articles without DOI or with no target fields missing.
-        let doi = match a.doi.as_deref().filter(|s| !s.trim().is_empty()) {
-            Some(d) => d,
-            None => {
-                skipped_no_doi += 1;
-                continue;
-            }
-        };
-
+    // Build the worklist first so the UI can show a determinate progress bar:
+    // only articles that have a DOI and are missing at least one field.
+    let mut candidates: Vec<&db::ArticleRow> = Vec::new();
+    for a in &articles {
+        let doi_ok = a.doi.as_deref().map(|s| !s.trim().is_empty()).unwrap_or(false);
+        if !doi_ok {
+            skipped_no_doi += 1;
+            continue;
+        }
         let needs_title = a.title.trim().is_empty();
         let needs_authors = a.authors.as_deref().map(|s| s.trim().is_empty()).unwrap_or(true);
         let needs_year = a.year.is_none();
         let needs_journal = a.journal.as_deref().map(|s| s.trim().is_empty()).unwrap_or(true);
         let needs_abstract = a.abstract_text.as_deref().map(|s| s.trim().is_empty()).unwrap_or(true);
-
-        if !(needs_title || needs_authors || needs_year || needs_journal || needs_abstract) {
-            continue;
+        if needs_title || needs_authors || needs_year || needs_journal || needs_abstract {
+            candidates.push(a);
         }
+    }
 
+    let total = candidates.len();
+    let mut processed = 0usize;
+
+    for a in candidates {
+        let doi = a.doi.as_deref().unwrap_or("").trim();
+        let _ = app.emit(
+            "enrich:progress",
+            EnrichProgress { done: processed, total, title: a.title.clone() },
+        );
         processed += 1;
         match crossref::fetch(doi).await {
             Ok(rec) => {
@@ -628,6 +708,11 @@ async fn enrich_articles_from_doi(
             }
         }
     }
+
+    let _ = app.emit(
+        "enrich:progress",
+        EnrichProgress { done: total, total, title: String::new() },
+    );
 
     db.record_telemetry(
         "library.enrich_from_doi",
@@ -759,6 +844,22 @@ async fn delete_framework_code_def(id: i64, state: State<'_, AppState>) -> Resul
     db.delete_framework_code_def(id).await.map_err(err)
 }
 
+/// Sentence-case every code in the codebook (and applied codings) so the whole
+/// codebook reads uniformly. Idempotent. Returns the number of rows changed.
+#[tauri::command]
+async fn normalize_codebook_casing(state: State<'_, AppState>) -> Result<u64, String> {
+    let db = state.current().await.ok_or("no project open")?;
+    db.normalize_codebook_case().await.map_err(err)
+}
+
+/// Rephrase a codebook code, keeping its casing uniform and carrying applied
+/// codings along so the relabel propagates across the corpus.
+#[tauri::command]
+async fn rename_framework_code_def(id: i64, code: String, state: State<'_, AppState>) -> Result<(), String> {
+    let db = state.current().await.ok_or("no project open")?;
+    db.rename_framework_code_def(id, &canonical_code_case(&code)).await.map_err(err)
+}
+
 /// Deserializer that accepts either a JSON array of strings or null/missing → empty Vec.
 fn deserialize_string_vec<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
 where
@@ -811,6 +912,11 @@ struct AiScreeningResult {
 struct RunAiScreeningArgs {
     #[serde(default, deserialize_with = "deserialize_string_vec")]
     exclusion_criteria: Vec<String>,
+    /// Purification mode: only apply confident EXCLUDE decisions. Articles the AI
+    /// would include or is unsure about are left pending (status='retrieved') with
+    /// no decision recorded — inclusion happens later at title/abstract screening.
+    #[serde(default)]
+    exclude_only: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -927,12 +1033,21 @@ struct FindPdfsResult {
     no_oa: usize,
 }
 
-/// For every included article that lacks a linked PDF but has a DOI, look up an
+#[derive(Debug, Deserialize)]
+struct FindPdfsArgs {
+    /// Article statuses to fetch PDFs for. The UI passes the active full-text tab's
+    /// status (e.g. ["included"]). Empty → included + retrieved (the whole list).
+    #[serde(default)]
+    statuses: Vec<String>,
+}
+
+/// For every article in scope that lacks a linked PDF but has a DOI, look up an
 /// open-access copy via Unpaywall, download it, and save + link it into the
 /// workspace — exactly as if the researcher had dropped the file in. Open-access
 /// only; reaches the internet (Unpaywall + the OA host).
 #[tauri::command]
 async fn find_missing_pdfs(
+    args: FindPdfsArgs,
     app: tauri::AppHandle<tauri::Wry>,
     state: State<'_, AppState>,
 ) -> Result<FindPdfsResult, String> {
@@ -944,9 +1059,16 @@ async fn find_missing_pdfs(
     let pdfs_dir = db.workspace.join("pdfs");
     std::fs::create_dir_all(&pdfs_dir).map_err(err)?;
 
+    // Scope to the requested statuses (the active full-text tab); default to the
+    // whole full-text list (included + still-pending) when none are supplied.
+    let want: Vec<String> = if args.statuses.is_empty() {
+        vec!["included".into(), "retrieved".into()]
+    } else {
+        args.statuses.clone()
+    };
     let candidates: Vec<_> = articles
         .iter()
-        .filter(|a| a.status == "included" && !linked.contains(&a.id))
+        .filter(|a| want.iter().any(|s| s == &a.status) && !linked.contains(&a.id))
         .collect();
     let total = candidates.len();
 
@@ -1013,6 +1135,69 @@ fn normalize_for_match(s: &str) -> String {
         .filter(|c| c.is_alphanumeric())
         .map(|c| c.to_ascii_lowercase())
         .collect()
+}
+
+/// Normalize a journal name to the title casing academic reference lists expect.
+///
+/// Databases export journal names inconsistently — Web of Science yields ALL
+/// CAPS ("JOURNAL OF MARKETING"), some sources lowercase everything. We only
+/// touch names that are clearly mono-case (all upper or all lower); a name that
+/// is already mixed-case is assumed intentional and returned untouched, so
+/// "MIS Quarterly" or "Journal of the AIS" survive verbatim. For mono-case
+/// names we apply title case: small connecting words stay lowercase (unless
+/// first/last), and a list of well-known acronyms is forced uppercase.
+fn normalize_journal_name(raw: &str) -> String {
+    let s = raw.trim();
+    if s.is_empty() {
+        return String::new();
+    }
+    let has_lower = s.chars().any(|c| c.is_lowercase());
+    let has_upper = s.chars().any(|c| c.is_uppercase());
+    // Already intentionally mixed-case → respect it.
+    if has_lower && has_upper {
+        return s.to_string();
+    }
+
+    const SMALL: &[&str] = &[
+        "a", "an", "the", "and", "but", "or", "nor", "for", "of", "on", "in", "to", "from", "by",
+        "at", "as", "with", "into", "via", "per", "vs",
+    ];
+    const ACRONYMS: &[&str] = &[
+        "ieee", "acm", "mis", "ais", "it", "ai", "hci", "ict", "erp", "crm", "scm", "b2b", "b2c",
+        "rd", "ngo", "gdp", "ceo", "cfo", "cio", "usa", "uk", "eu", "os", "ux", "ui", "api", "sme",
+        "smes", "ml", "nlp", "iot", "saas", "kpi", "roi",
+    ];
+
+    let words: Vec<&str> = s.split_whitespace().collect();
+    let last = words.len().saturating_sub(1);
+    words
+        .iter()
+        .enumerate()
+        .map(|(i, w)| {
+            // Match on the alphabetic core (ignore surrounding punctuation).
+            let core: String = w.chars().filter(|c| c.is_alphanumeric()).collect();
+            let core_lower = core.to_lowercase();
+            if ACRONYMS.contains(&core_lower.as_str()) {
+                return w.to_uppercase();
+            }
+            if i != 0 && i != last && SMALL.contains(&core_lower.as_str()) {
+                return w.to_lowercase();
+            }
+            // Title-case: uppercase the first alphabetic char, lowercase the rest.
+            let mut out = String::with_capacity(w.len());
+            let mut capped = false;
+            for c in w.chars() {
+                if !capped && c.is_alphabetic() {
+                    out.extend(c.to_uppercase());
+                    capped = true;
+                } else {
+                    out.extend(c.to_lowercase());
+                }
+            }
+            out
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn match_pdf_filename(filename: &str, article_id: i64, doi: Option<&str>, title: &str) -> bool {
@@ -1203,6 +1388,18 @@ fn theme_tokens(s: &str) -> Vec<String> {
 /// True when two theme labels refer to the same theme despite casing or minor
 /// wording differences: identical token streams, one token set contained in the
 /// other (qualifier words), or high token overlap (Jaccard ≥ 0.6).
+/// Sentence-case a code label for a uniform codebook: capitalise the first
+/// character and leave the remainder as-is, so acronyms and proper nouns
+/// (PRISMA, Industry 4.0, Bayesian) survive intact.
+fn canonical_code_case(code: &str) -> String {
+    let trimmed = code.trim();
+    let mut chars = trimmed.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
+}
+
 fn themes_match(a: &str, b: &str) -> bool {
     let ta_v = theme_tokens(a);
     let tb_v = theme_tokens(b);
@@ -1309,6 +1506,16 @@ async fn exclude_article(
     )
     .await
     .ok();
+    let _ = db
+        .log_review_event(
+            "arranging",
+            "titleabstract_exclude",
+            Some(&format!("article {}", args.article_id)),
+            Some(&format!("Excluded at title/abstract screening (criterion {})", args.criterion_number)),
+            args.rationale.as_deref(),
+            "human",
+        )
+        .await;
     Ok(())
 }
 
@@ -1319,6 +1526,16 @@ async fn keep_article(article_id: i64, state: State<'_, AppState>) -> Result<(),
     db.record_telemetry("screen.kept", &serde_json::json!({ "article_id": article_id }))
         .await
         .ok();
+    let _ = db
+        .log_review_event(
+            "arranging",
+            "titleabstract_include",
+            Some(&format!("article {}", article_id)),
+            Some("Included at title/abstract screening"),
+            None,
+            "human",
+        )
+        .await;
     Ok(())
 }
 
@@ -1336,12 +1553,24 @@ async fn list_fulltext_candidates(
 async fn fulltext_keep_article(article_id: i64, state: State<'_, AppState>) -> Result<(), String> {
     let db = state.current().await.ok_or("no project open")?;
     db.fulltext_keep(article_id).await.map_err(err)?;
+    let _ = db
+        .log_review_event(
+            "arranging",
+            "fulltext_include",
+            Some(&format!("article {}", article_id)),
+            Some("Kept at full-text eligibility screening"),
+            None,
+            "human",
+        )
+        .await;
     Ok(())
 }
 
 #[derive(Debug, Deserialize)]
 struct FulltextExcludeArgs {
     article_id: i64,
+    #[serde(default)]
+    criterion_number: Option<i64>,
     #[serde(default)]
     rationale: Option<String>,
 }
@@ -1352,10 +1581,15 @@ async fn fulltext_exclude_article(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let db = state.current().await.ok_or("no project open")?;
-    db.fulltext_exclude(args.article_id).await.map_err(err)?;
+    db.fulltext_exclude(args.article_id, args.criterion_number, args.rationale.as_deref())
+        .await
+        .map_err(err)?;
     // Keep the RAG corpus consistent.
     let _ = db.delete_chunks_for_article(args.article_id).await;
-    let detail = format!("Excluded article {} at full-text screening", args.article_id);
+    let detail = match args.criterion_number {
+        Some(n) => format!("Excluded article {} at full-text screening (criterion {})", args.article_id, n),
+        None => format!("Excluded article {} at full-text screening", args.article_id),
+    };
     let _ = db
         .log_review_event(
             "arranging",
@@ -1412,6 +1646,7 @@ async fn run_ai_fulltext_screening(
     let threshold: f64 = settings.get("screening.confidence_threshold").and_then(|v| v.as_f64()).unwrap_or(0.90);
     let temperature = load_temperature(&settings, "temperature.decisions", 0.0);
     let profile = settings.get("ai_raters.rater1.profile").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let base_prompt = settings.get("ai_raters.system_prompt").and_then(|v| v.as_str()).unwrap_or("").to_string();
 
     let project = db.get_project().await.map_err(err)?;
     let domain = project.domain.unwrap_or_default();
@@ -1428,12 +1663,27 @@ async fn run_ai_fulltext_screening(
         .await
         .map_err(err)?
         .into_iter()
-        .filter(|c| c.fulltext_status.is_none())
+        // Only review articles not yet full-text-decided AND still in the corpus —
+        // never re-screen ones already excluded upstream (e.g. at purification).
+        .filter(|c| c.fulltext_status.is_none() && c.ta_status != "excluded")
         .collect();
     let total = candidates.len();
 
+    // Reset pause/cancel flags so this run starts clean, then watch them so the
+    // run can be paused/cancelled from the background banner.
+    state.fulltext_paused.store(false, Ordering::SeqCst);
+    state.fulltext_cancelled.store(false, Ordering::SeqCst);
+    let paused = Arc::clone(&state.fulltext_paused);
+    let cancelled = Arc::clone(&state.fulltext_cancelled);
+
     let mut res = FulltextScreenResult { processed: 0, kept: 0, excluded: 0, uncertain: 0, skipped_no_pdf: 0 };
     for (i, c) in candidates.iter().enumerate() {
+        if cancelled.load(Ordering::SeqCst) { break; }
+        while paused.load(Ordering::SeqCst) {
+            if cancelled.load(Ordering::SeqCst) { break; }
+            tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+        }
+        if cancelled.load(Ordering::SeqCst) { break; }
         let _ = app.emit(
             "fulltext_screen:progress",
             FulltextScreenProgress { done: i, total, title: c.title.clone() },
@@ -1453,7 +1703,7 @@ async fn run_ai_fulltext_screening(
             }
         };
         let decision = match suggest::screen_article_fulltext(
-            &base_url, &model, &c.title, &text, &domain, &criteria, &profile, temperature, api_key.as_deref(),
+            &base_url, &model, &c.title, &text, &domain, &criteria, &base_prompt, &profile, temperature, api_key.as_deref(),
         )
         .await
         {
@@ -1471,7 +1721,7 @@ async fn run_ai_fulltext_screening(
                 res.kept += 1;
             }
             "exclude" if confident => {
-                if db.fulltext_exclude(c.id).await.is_ok() {
+                if db.fulltext_exclude(c.id, decision.criterion_number, Some(decision.rationale.as_str())).await.is_ok() {
                     let _ = db.delete_chunks_for_article(c.id).await;
                     let _ = db
                         .log_review_event(
@@ -1573,6 +1823,24 @@ async fn cancel_ai_screening(state: State<'_, AppState>) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+async fn pause_ai_fulltext_screening(state: State<'_, AppState>) -> Result<(), String> {
+    state.fulltext_paused.store(true, Ordering::SeqCst);
+    Ok(())
+}
+
+#[tauri::command]
+async fn resume_ai_fulltext_screening(state: State<'_, AppState>) -> Result<(), String> {
+    state.fulltext_paused.store(false, Ordering::SeqCst);
+    Ok(())
+}
+
+#[tauri::command]
+async fn cancel_ai_fulltext_screening(state: State<'_, AppState>) -> Result<(), String> {
+    state.fulltext_cancelled.store(true, Ordering::SeqCst);
+    Ok(())
+}
+
 // ── AI Coding ──────────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
@@ -1659,6 +1927,385 @@ async fn list_ai_coding_proposals_for_articles(
 ) -> Result<Vec<db::AiCodingProposal>, String> {
     let db = state.current().await.ok_or("no project open")?;
     db.list_ai_coding_proposals_for_articles(&article_ids).await.map_err(err)
+}
+
+#[derive(serde::Serialize)]
+struct CodingAgreement {
+    /// Average Jaccard overlap of the two raters' canonical code sets per
+    /// (article, dimension). This is the honest interim metric while raters still
+    /// generate free-text codes; once coding is constrained to a shared codebook
+    /// (see the codebook redesign), `kappa` becomes the valid measure.
+    overlap: f64,
+    /// Fraction of (article, dimension) units where the two code sets are identical.
+    exact_match: f64,
+    /// (article × dimension) units compared.
+    units: i64,
+    /// Cohen's kappa over per-code presence/absence. NOTE: not chance-valid for
+    /// open free-text coding (no "neither assigned" cells) — kept for the upcoming
+    /// codebook phase, not surfaced as the headline number yet.
+    kappa: f64,
+    observed_agreement: f64,
+    /// Distinct articles both AI raters coded.
+    articles: i64,
+    /// True when a codebook exists, so κ is computed over a fixed code universe
+    /// (chance-valid) and should be shown as the headline; otherwise show overlap.
+    codebook_based: bool,
+    /// Set when there isn't enough dual-rater data to compute agreement.
+    note: Option<String>,
+}
+
+/// Inter-rater agreement across every article coded by the two AI coding raters.
+///
+/// When a codebook exists (Phase 1+), the code universe per dimension is fixed, so
+/// presence/absence has real "neither assigned" cells and **Cohen's κ is
+/// chance-valid** — that's the headline. Without a codebook (open free-text coding)
+/// there are no true negatives, so we report only set-overlap (Jaccard) and flag
+/// `codebook_based = false` so the UI doesn't show a misleading κ.
+#[tauri::command]
+async fn compute_coding_agreement(state: State<'_, AppState>) -> Result<CodingAgreement, String> {
+    use std::collections::{BTreeSet, HashMap, HashSet};
+    let db = state.current().await.ok_or("no project open")?;
+    let props = db.list_all_ai_coding_proposals().await.map_err(err)?;
+    let codebook_defs = db.list_framework_code_defs().await.map_err(err)?;
+    let codebook_present = !codebook_defs.is_empty();
+
+    let not_enough = |msg: &str| CodingAgreement {
+        overlap: 0.0, exact_match: 0.0, units: 0,
+        kappa: 0.0, observed_agreement: 0.0, articles: 0,
+        codebook_based: false, note: Some(msg.to_string()),
+    };
+    if !props.iter().any(|p| p.rater == 1) || !props.iter().any(|p| p.rater == 2) {
+        return Ok(not_enough("Run AI coding with two raters to measure inter-rater agreement."));
+    }
+
+    // (article, dimension) -> (rater1 labels, rater2 labels), lowercased.
+    let mut groups: HashMap<(i64, String), (Vec<String>, Vec<String>)> = HashMap::new();
+    for p in &props {
+        let label = p.code.trim().to_lowercase();
+        if label.is_empty() { continue; }
+        let g = groups.entry((p.article_id, p.dimension.clone())).or_default();
+        if p.rater == 1 { g.0.push(label); } else if p.rater == 2 { g.1.push(label); }
+    }
+
+    // Per-dimension code universe: seed with the codebook (canonical, fixed), then
+    // extend with any off-codebook codes raters used (clustered via themes_match).
+    let mut universe: HashMap<String, Vec<String>> = HashMap::new();
+    for d in &codebook_defs {
+        universe.entry(d.dimension.clone()).or_default().push(d.code.trim().to_lowercase());
+    }
+    // Ensure every rater code maps to a universe slot (add new ones as we go).
+    let map_to_universe = |uni: &mut Vec<String>, label: &str| -> usize {
+        if let Some(i) = uni.iter().position(|u| u == label || themes_match(label, u)) {
+            return i;
+        }
+        uni.push(label.to_string());
+        uni.len() - 1
+    };
+    // First pass: grow each dimension's universe to cover all observed codes.
+    for ((_, dim), (r1, r2)) in &groups {
+        let uni = universe.entry(dim.clone()).or_default();
+        for lab in r1.iter().chain(r2.iter()) { map_to_universe(uni, lab); }
+    }
+    let to_set = |uni: &[String], labels: &[String]| -> HashSet<usize> {
+        labels.iter().filter_map(|l| uni.iter().position(|u| u == l || themes_match(l, u))).collect()
+    };
+
+    let mut pairs: Vec<(String, String)> = Vec::new();
+    let mut articles: HashSet<i64> = HashSet::new();
+    let mut jaccard_sum = 0.0f64;
+    let mut exact = 0i64;
+    let mut units = 0i64;
+    for ((article_id, dim), (r1, r2)) in &groups {
+        if r1.is_empty() && r2.is_empty() { continue; }
+        let uni = match universe.get(dim) { Some(u) if !u.is_empty() => u, _ => continue };
+        articles.insert(*article_id);
+        let s1 = to_set(uni, r1);
+        let s2 = to_set(uni, r2);
+
+        // Set-overlap (always meaningful).
+        let inter = s1.intersection(&s2).count();
+        let union_used: BTreeSet<usize> = s1.union(&s2).copied().collect();
+        if !union_used.is_empty() {
+            jaccard_sum += inter as f64 / union_used.len() as f64;
+            if s1 == s2 { exact += 1; }
+            units += 1;
+        }
+
+        // Presence/absence per code.
+        if codebook_present {
+            // Closed-set: iterate the FULL dimension universe → real negatives → valid κ.
+            for idx in 0..uni.len() {
+                pairs.push((
+                    if s1.contains(&idx) { "1".into() } else { "0".into() },
+                    if s2.contains(&idx) { "1".into() } else { "0".into() },
+                ));
+            }
+        } else {
+            // Open coding: only the union of used codes (κ not chance-valid here).
+            for idx in union_used {
+                pairs.push((
+                    if s1.contains(&idx) { "1".into() } else { "0".into() },
+                    if s2.contains(&idx) { "1".into() } else { "0".into() },
+                ));
+            }
+        }
+    }
+
+    if units == 0 {
+        return Ok(not_enough("No AI coding proposals to compare yet."));
+    }
+    let (kappa, po) = stats::cohens_kappa(&pairs).unwrap_or((0.0, 0.0));
+    Ok(CodingAgreement {
+        overlap: jaccard_sum / units as f64,
+        exact_match: exact as f64 / units as f64,
+        units,
+        kappa,
+        observed_agreement: po,
+        articles: articles.len() as i64,
+        codebook_based: codebook_present,
+        note: None,
+    })
+}
+
+#[derive(Debug, Deserialize)]
+struct BuildCodebookArgs {
+    rater1_model: String,
+    #[serde(default)]
+    rater2_model: Option<String>,
+    dimensions: Vec<String>,
+    /// Optional cap on articles considered (default: all included articles with a PDF).
+    #[serde(default)]
+    sample_size: Option<usize>,
+    /// Extend mode: only consider articles with a PDF that didn't participate in the
+    /// existing codebook (adds inferred codes rather than rebuilding from scratch).
+    #[serde(default)]
+    only_missing: bool,
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct CodebookProgress {
+    done: usize,
+    total: usize,
+    /// "proposing" | "consolidating"
+    phase: String,
+    detail: String,
+}
+
+#[derive(Debug, Serialize)]
+struct BuildCodebookResult {
+    sampled: usize,
+    codes_added: usize,
+    dimensions: usize,
+}
+
+/// Phase 1 of the shared-codebook design: build one canonical codebook per
+/// dimension before coding. Both raters propose codes over a sample of the
+/// included corpus; proposals are pooled with the researcher's existing codes
+/// (kept as anchors) and clustered into canonical forms with the same fuzzy
+/// matcher used for consensus. New canonical codes are written into the
+/// Organisation codebook (`framework_code_definition`); nothing is deleted.
+#[tauri::command]
+async fn build_codebook(
+    args: BuildCodebookArgs,
+    app: tauri::AppHandle<tauri::Wry>,
+    state: State<'_, AppState>,
+) -> Result<BuildCodebookResult, String> {
+    use std::collections::{HashMap, HashSet};
+    let db = state.current().await.ok_or("no project open")?;
+    let settings = db.all_settings().await.map_err(err)?;
+    let base_url = settings.get("lmstudio.base_url").and_then(|v| v.as_str()).unwrap_or("http://127.0.0.1:1234/v1").to_string();
+    let api_key = settings.get("lmstudio.api_key").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let base_prompt = settings.get("ai_raters.system_prompt").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let profile1 = settings.get("ai_raters.rater1.profile").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let profile2 = settings.get("ai_raters.rater2.profile").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    // Low temperature → a more stable vocabulary for the codebook.
+    let temperature = load_temperature(&settings, "temperature.decisions", 0.0).min(0.2);
+
+    let project = db.get_project().await.map_err(err)?;
+    let domain = project.domain.clone().unwrap_or_default();
+    let framework = project.framework.clone().unwrap_or_default();
+    let rqs: Vec<String> = [project.rq_what.clone(), project.rq_how.clone(), project.rq_where.clone()]
+        .into_iter().flatten().collect();
+    let rq_refs: Vec<&str> = rqs.iter().map(|s| s.as_str()).collect();
+
+    // Resolve the dimensions to build (mirror run_ai_coding).
+    let all_dims: Vec<(String, String)> = if framework == "Custom" {
+        let defs = db.list_framework_code_defs().await.map_err(err)?;
+        let mut seen = HashSet::new();
+        let mut result = Vec::new();
+        for def in &defs { if seen.insert(def.dimension.clone()) { result.push((def.dimension.clone(), String::new())); } }
+        result
+    } else {
+        framework::dimensions_for(framework.as_str()).into_iter()
+            .map(|d| (d.to_string(), framework::description_for(framework.as_str(), d).to_string())).collect()
+    };
+    let dims_to_code: Vec<(String, String)> = all_dims.into_iter().filter(|(n, _)| args.dimensions.contains(n)).collect();
+    if dims_to_code.is_empty() { return Err("No valid dimensions selected.".into()); }
+
+    // Existing codebook = anchors; also the "reuse these" list shown to raters.
+    let existing_defs = db.list_framework_code_defs().await.map_err(err)?;
+    let prompt_existing: HashMap<String, Vec<String>> = {
+        let mut m: HashMap<String, Vec<String>> = HashMap::new();
+        for d in &existing_defs { m.entry(d.dimension.clone()).or_default().push(d.code.clone()); }
+        m
+    };
+
+    // Codebook is built from the included articles that have a PDF (the set that
+    // will actually be coded). Abstract is used as the cheap proposal context.
+    let with_pdf: HashSet<i64> = db
+        .included_articles_with_pdf()
+        .await
+        .map_err(err)?
+        .into_iter()
+        .map(|(_, article_id, _, _)| article_id)
+        .collect();
+    // Articles already represented in the codebook (for extend / coverage).
+    let participated: HashSet<i64> = db
+        .get_setting("codebook.participated")
+        .await
+        .ok()
+        .flatten()
+        .and_then(|v| serde_json::from_value::<Vec<i64>>(v).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
+
+    let mut articles: Vec<_> = db
+        .list_articles_for_coding(0, i64::MAX)
+        .await
+        .map_err(err)?
+        .into_iter()
+        .filter(|a| with_pdf.contains(&a.id))
+        .filter(|a| !args.only_missing || !participated.contains(&a.id))
+        .collect();
+    if let Some(cap) = args.sample_size {
+        if articles.len() > cap.max(1) { articles.truncate(cap.max(1)); }
+    }
+    let sampled = articles.len();
+    let processed_ids: Vec<i64> = articles.iter().map(|a| a.id).collect();
+
+    // dim -> lower_label -> (original_label, count) pooled across raters/articles.
+    let mut proposed: HashMap<String, HashMap<String, (String, i64)>> = HashMap::new();
+    let raters: Vec<(&str, &str)> = {
+        let mut v = vec![(args.rater1_model.as_str(), profile1.as_str())];
+        if let Some(m2) = args.rater2_model.as_deref() { if !m2.is_empty() { v.push((m2, profile2.as_str())); } }
+        v
+    };
+
+    for (i, a) in articles.iter().enumerate() {
+        let _ = app.emit("codebook:progress", CodebookProgress { done: i, total: sampled, phase: "proposing".into(), detail: a.title.clone() });
+        let context = a.abstract_text.clone().unwrap_or_default();
+        for (model, profile) in &raters {
+            let codings = suggest::code_article_for_dimensions(
+                &base_url, model, &framework, &domain, &rq_refs, &dims_to_code,
+                &prompt_existing, &a.title, a.authors.as_deref(), &context,
+                &base_prompt, profile, false /* open generation — building the codebook */, temperature, api_key.as_deref(),
+            ).await;
+            if let Ok(codings) = codings {
+                for dc in codings {
+                    let entry = proposed.entry(dc.dimension.clone()).or_default();
+                    for s in dc.suggestions {
+                        let orig = s.code.trim().to_string();
+                        if orig.is_empty() { continue; }
+                        let e = entry.entry(orig.to_lowercase()).or_insert((orig.clone(), 0));
+                        e.1 += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    // Consolidate per dimension into canonical codes, anchored on existing codes.
+    let mut codes_added = 0usize;
+    for (di, (dim, _)) in dims_to_code.iter().enumerate() {
+        let _ = app.emit("codebook:progress", CodebookProgress { done: di, total: dims_to_code.len(), phase: "consolidating".into(), detail: dim.clone() });
+
+        // Candidates: anchors first (researcher codes, highest priority), then proposals by frequency.
+        let mut candidates: Vec<(String, i64, bool)> = Vec::new();
+        for d in existing_defs.iter().filter(|d| &d.dimension == dim) {
+            candidates.push((d.code.trim().to_string(), i64::MAX, true));
+        }
+        if let Some(map) = proposed.get(dim) {
+            for (_lc, (orig, cnt)) in map { candidates.push((orig.clone(), *cnt, false)); }
+        }
+        candidates.sort_by(|a, b| b.2.cmp(&a.2).then(b.1.cmp(&a.1)));
+
+        // Greedy cluster by themes_match; first-seen in each cluster is canonical.
+        let mut reps: Vec<(String, bool)> = Vec::new();
+        for (orig, _cnt, anchor) in candidates {
+            let matched = reps.iter().any(|(rep, _)| rep.eq_ignore_ascii_case(&orig) || themes_match(&orig, rep));
+            if !matched { reps.push((orig, anchor)); }
+        }
+
+        // Write new canonical codes (non-anchors not already in the codebook).
+        for (rep, anchor) in reps {
+            if anchor || rep.is_empty() { continue; }
+            let exists = existing_defs.iter().any(|d| &d.dimension == dim && d.code.eq_ignore_ascii_case(&rep));
+            if exists { continue; }
+            if db.add_framework_code_def(dim, &canonical_code_case(&rep), None).await.is_ok() { codes_added += 1; }
+        }
+    }
+
+    // Unify casing across the whole codebook — including pre-existing anchor codes
+    // that weren't rewritten above — so every code reads in the same sentence case.
+    let _ = db.normalize_codebook_case().await;
+
+    // Record which articles are now represented in the codebook. A full build
+    // replaces the set; an extend merges the newly-processed articles in.
+    let mut participants: HashSet<i64> = if args.only_missing { participated.clone() } else { HashSet::new() };
+    participants.extend(processed_ids.iter().copied());
+    let mut participant_vec: Vec<i64> = participants.into_iter().collect();
+    participant_vec.sort_unstable();
+    let _ = db.set_setting("codebook.participated", &serde_json::json!(participant_vec)).await;
+
+    let _ = app.emit("codebook:progress", CodebookProgress { done: dims_to_code.len(), total: dims_to_code.len(), phase: "consolidating".into(), detail: String::new() });
+    db.record_telemetry("coding.build_codebook", &serde_json::json!({ "sampled": sampled, "codes_added": codes_added, "only_missing": args.only_missing })).await.ok();
+
+    Ok(BuildCodebookResult { sampled, codes_added, dimensions: dims_to_code.len() })
+}
+
+#[derive(Debug, Serialize)]
+struct CodebookCoverage {
+    /// Included articles that have a PDF (the codeable set).
+    total_with_pdf: i64,
+    /// Of those, how many participated in building the codebook.
+    participated: i64,
+    /// With-PDF articles not yet represented in the codebook.
+    missing: i64,
+    /// Whether a codebook exists at all.
+    has_codebook: bool,
+    /// Whether any articles have already been coded (→ re-coding recommended on change).
+    any_coded: bool,
+}
+
+/// Coverage of the current codebook over the codeable corpus, so the coding flow
+/// can offer to extend it (add codes from articles that didn't participate) and
+/// recommend re-coding when the codebook changes.
+#[tauri::command]
+async fn codebook_coverage(state: State<'_, AppState>) -> Result<CodebookCoverage, String> {
+    use std::collections::HashSet;
+    let db = state.current().await.ok_or("no project open")?;
+    let with_pdf: HashSet<i64> = db
+        .included_articles_with_pdf().await.map_err(err)?
+        .into_iter().map(|(_, id, _, _)| id).collect();
+    let coding_ids: HashSet<i64> = db
+        .list_articles_for_coding(0, i64::MAX).await.map_err(err)?
+        .into_iter().map(|a| a.id).filter(|id| with_pdf.contains(id)).collect();
+    let participated: HashSet<i64> = db
+        .get_setting("codebook.participated").await.ok().flatten()
+        .and_then(|v| serde_json::from_value::<Vec<i64>>(v).ok())
+        .unwrap_or_default().into_iter().collect();
+    let has_codebook = !db.list_framework_code_defs().await.map_err(err)?.is_empty();
+    let any_coded = !db.list_all_ai_coding_proposals().await.map_err(err)?.is_empty()
+        || db.arranging_progress().await.map(|p| p.articles_coded > 0).unwrap_or(false);
+    let missing = coding_ids.iter().filter(|id| !participated.contains(id)).count() as i64;
+    Ok(CodebookCoverage {
+        total_with_pdf: coding_ids.len() as i64,
+        participated: coding_ids.iter().filter(|id| participated.contains(id)).count() as i64,
+        missing,
+        has_codebook,
+        any_coded,
+    })
 }
 
 #[tauri::command]
@@ -1800,6 +2447,7 @@ async fn list_ai_screening_proposals_for_articles(
     db.list_ai_screening_proposals_for_articles(&article_ids).await.map_err(err)
 }
 
+
 #[tauri::command]
 async fn accept_ai_screening_proposal(
     proposal_id: i64,
@@ -1863,6 +2511,11 @@ async fn run_ai_coding(
         .to_string();
     let rater2_profile = settings
         .get("ai_raters.rater2.profile")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let base_prompt = settings
+        .get("ai_raters.system_prompt")
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
@@ -2076,7 +2729,9 @@ async fn run_ai_coding(
             &article.title,
             article.authors.as_deref(),
             &context_text,
+            &base_prompt,
             &rater1_profile,
+            true, // closed-set: code against the shared codebook
             temperature,
             api_key.as_deref(),
         )
@@ -2116,7 +2771,9 @@ async fn run_ai_coding(
                 &article.title,
                 article.authors.as_deref(),
                 &context_text,
+                &base_prompt,
                 &rater2_profile,
+                true, // closed-set: code against the shared codebook
                 temperature,
                 api_key.as_deref(),
             )
@@ -2442,6 +3099,12 @@ async fn run_ai_coding(
         }
     }
 
+    // A cancelled run is reverted: the researcher never reviewed it, so AI codes
+    // applied so far are removed to avoid leaving a partially-coded corpus.
+    if cancelled.load(Ordering::SeqCst) {
+        let _ = db.revert_ai_coding().await;
+    }
+
     Ok(AiCodingResult {
         processed,
         consensus,
@@ -2484,21 +3147,21 @@ async fn run_ai_screening(
         .get("screening.confidence_threshold")
         .and_then(|v| v.as_f64())
         .unwrap_or(0.90);
-    // Sampling temperature for judgment calls. 0.0 = fully deterministic
-    // (same prompt → same decision); higher values inject sampling noise that
-    // can produce useful disagreement signal between identical-profile raters.
+    // Sampling temperature for judgment calls. 0.0 = fully deterministic.
     let temperature: f32 = settings
         .get("temperature.decisions")
         .and_then(|v| v.as_f64())
         .map(|f| f.clamp(0.0, 2.0) as f32)
         .unwrap_or(0.0);
+    // Screening runs a SINGLE rater ("AI assistant"), using rater 1's profile.
+    // (Multi-rater agreement applies to coding/theming, not screening.)
     let profile1 = settings
         .get("ai_raters.rater1.profile")
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
-    let profile2 = settings
-        .get("ai_raters.rater2.profile")
+    let base_prompt = settings
+        .get("ai_raters.system_prompt")
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
@@ -2567,8 +3230,8 @@ async fn run_ai_screening(
             },
         );
 
-        // ── Rater 1 ───────────────────────────────────────────────────────
-        let result1 = suggest::screen_article(
+        // ── Single rater (the "AI assistant") ─────────────────────────────
+        let result = suggest::screen_article(
             &base_url,
             &model,
             &article.title,
@@ -2578,16 +3241,17 @@ async fn run_ai_screening(
             article.authors.as_deref(),
             &domain,
             &exc_labeled,
+            &base_prompt,
             &profile1,
             temperature,
             api_key.as_deref(),
         )
         .await;
 
-        let decision1 = match result1 {
+        let decision = match result {
             Ok(d) => d,
             Err(e) => {
-                eprintln!("AI screening rater 1 error for article {}: {e}", article.id);
+                eprintln!("AI screening error for article {}: {e}", article.id);
                 let _ = app.emit(
                     "screen:progress",
                     AiScreeningProgress {
@@ -2601,128 +3265,74 @@ async fn run_ai_screening(
             }
         };
 
-        // Save rater 1 proposal
-        let _ = db.save_ai_screening_proposal(
-            article.id,
-            1,
-            &decision1.decision,
-            decision1.criterion_number,
-            &decision1.rationale,
-            decision1.confidence,
-            Some(&model),
-            &run_id,
-        ).await;
+        let confident_exclude =
+            decision.decision == "exclude" && decision.confidence >= threshold;
 
-        let _ = app.emit(
-            "screen:progress",
-            AiScreeningProgress {
-                done: i,
-                total,
-                article_title: article.title.clone(),
-                decision: decision1.decision.clone(),
-            },
-        );
-
-        // ── Rater 2 ───────────────────────────────────────────────────────
-        let result2 = suggest::screen_article(
-            &base_url,
-            &model,
-            &article.title,
-            article.abstract_text.as_deref(),
-            article.journal.as_deref(),
-            article.year,
-            article.authors.as_deref(),
-            &domain,
-            &exc_labeled,
-            &profile2,
-            temperature,
-            api_key.as_deref(),
-        )
-        .await;
-
-        let decision2 = match result2 {
-            Ok(d) => d,
-            Err(e) => {
-                eprintln!("AI screening rater 2 error for article {}: {e}", article.id);
-                let _ = app.emit(
-                    "screen:progress",
-                    AiScreeningProgress {
-                        done: i + 1,
-                        total,
-                        article_title: article.title.clone(),
-                        decision: "error".into(),
-                    },
-                );
-                continue;
+        if confident_exclude {
+            // A confident exclusion applies in either mode.
+            db.save_ai_screening_proposal(
+                article.id, 1, &decision.decision, decision.criterion_number,
+                &decision.rationale, decision.confidence, Some(&model), &run_id,
+            ).await.ok();
+            db.apply_ai_outcome(
+                article.id,
+                "exclude",
+                decision.criterion_number,
+                &decision.rationale,
+                decision.confidence,
+            )
+            .await
+            .map_err(err)?;
+            excluded += 1;
+            if let Some(n) = decision.criterion_number {
+                *excluded_per_criterion.entry(n).or_insert(0) += 1;
             }
-        };
-
-        // Save rater 2 proposal
-        let _ = db.save_ai_screening_proposal(
-            article.id,
-            2,
-            &decision2.decision,
-            decision2.criterion_number,
-            &decision2.rationale,
-            decision2.confidence,
-            Some(&model),
-            &run_id,
-        ).await;
-
-        // ── Consensus logic ───────────────────────────────────────────────
-        let consensus = if decision1.decision == "include" && decision2.decision == "include" {
-            Some(("include", None::<i64>, format!(
-                "Rater 1: {}\n\nRater 2: {}",
-                decision1.rationale, decision2.rationale
-            ), f64::min(decision1.confidence, decision2.confidence)))
-        } else if decision1.decision == "exclude"
-            && decision2.decision == "exclude"
-            && decision1.criterion_number == decision2.criterion_number
-        {
-            Some(("exclude", decision1.criterion_number, format!(
-                "Rater 1: {}\n\nRater 2: {}",
-                decision1.rationale, decision2.rationale
-            ), f64::min(decision1.confidence, decision2.confidence)))
+            let _ = app.emit(
+                "screen:progress",
+                AiScreeningProgress {
+                    done: i + 1, total, article_title: article.title.clone(),
+                    decision: "exclude".into(),
+                },
+            );
+        } else if args.exclude_only {
+            // Purification: only excludes. The article isn't excluded, so leave it
+            // pending (status='retrieved') untouched — no decision, no note.
+            uncertain += 1;
+            let _ = app.emit(
+                "screen:progress",
+                AiScreeningProgress {
+                    done: i + 1, total, article_title: article.title.clone(),
+                    decision: "pending".into(),
+                },
+            );
         } else {
-            None
-        };
-
-        if let Some((decision_str, criterion, rationale, confidence)) = consensus {
-            let applies = confidence >= threshold && decision_str != "uncertain";
-            if applies {
+            // Title/abstract screening: record the rater's proposal and apply a
+            // confident include; uncertain / low-confidence stay pending with the
+            // rationale kept so the researcher sees the AI's reasoning.
+            db.save_ai_screening_proposal(
+                article.id, 1, &decision.decision, decision.criterion_number,
+                &decision.rationale, decision.confidence, Some(&model), &run_id,
+            ).await.ok();
+            let confident_include =
+                decision.decision == "include" && decision.confidence >= threshold;
+            if confident_include {
                 db.apply_ai_outcome(
-                    article.id,
-                    decision_str,
-                    criterion,
-                    &rationale,
-                    confidence,
+                    article.id, "include", None, &decision.rationale, decision.confidence,
                 )
                 .await
                 .map_err(err)?;
-                match decision_str {
-                    "include" => included += 1,
-                    "exclude" => {
-                        excluded += 1;
-                        if let Some(n) = criterion {
-                            *excluded_per_criterion.entry(n).or_insert(0) += 1;
-                        }
-                    }
-                    _ => uncertain += 1,
-                }
+                included += 1;
                 let _ = app.emit(
                     "screen:progress",
                     AiScreeningProgress {
-                        done: i + 1,
-                        total,
-                        article_title: article.title.clone(),
-                        decision: decision_str.to_string(),
+                        done: i + 1, total, article_title: article.title.clone(),
+                        decision: "include".into(),
                     },
                 );
             } else {
-                // Consensus but below threshold — flag as uncertain
-                db.set_ai_disagreement(
-                    article.id,
-                    "AI raters disagree — see proposals",
+                db.apply_ai_outcome(
+                    article.id, "uncertain", decision.criterion_number,
+                    &decision.rationale, decision.confidence,
                 )
                 .await
                 .map_err(err)?;
@@ -2730,31 +3340,11 @@ async fn run_ai_screening(
                 let _ = app.emit(
                     "screen:progress",
                     AiScreeningProgress {
-                        done: i + 1,
-                        total,
-                        article_title: article.title.clone(),
+                        done: i + 1, total, article_title: article.title.clone(),
                         decision: "uncertain".into(),
                     },
                 );
             }
-        } else {
-            // Disagreement — leave in 'retrieved' for manual resolution
-            db.set_ai_disagreement(
-                article.id,
-                "AI raters disagree — see proposals",
-            )
-            .await
-            .map_err(err)?;
-            uncertain += 1;
-            let _ = app.emit(
-                "screen:progress",
-                AiScreeningProgress {
-                    done: i + 1,
-                    total,
-                    article_title: article.title.clone(),
-                    decision: "uncertain".into(),
-                },
-            );
         }
     }
 
@@ -4169,8 +4759,17 @@ async fn build_rag_index(
 async fn generate_draft(state: State<'_, AppState>) -> Result<String, String> {
     let db = state.current().await.ok_or("no project open")?;
     let content = draft::generate(&db).await.map_err(err)?;
-    draft::write_to_workspace(&db.workspace, &content).map_err(err)?;
+    // Archive any existing draft before overwriting so a generate never silently
+    // destroys hand-edited prose.
+    draft::write_with_archive(&db.workspace, &content).map_err(err)?;
     Ok(content)
+}
+
+/// Read the saved draft markdown (empty string if none yet).
+#[tauri::command]
+async fn read_draft(state: State<'_, AppState>) -> Result<String, String> {
+    let db = state.current().await.ok_or("no project open")?;
+    draft::read_from_workspace(&db.workspace).map_err(err)
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -4617,6 +5216,8 @@ pub fn run() {
             list_framework_dimensions,
             list_framework_code_defs,
             add_framework_code_def,
+            normalize_codebook_casing,
+            rename_framework_code_def,
             delete_framework_code_def,
             list_coding_batch,
             save_coding,
@@ -4644,6 +5245,9 @@ pub fn run() {
             get_ai_coding_coverage,
             list_ai_coding_proposals,
             list_ai_coding_proposals_for_articles,
+            compute_coding_agreement,
+            build_codebook,
+            codebook_coverage,
             list_adjudications_for_articles,
             undo_adjudication,
             undo_consolidation,
@@ -4676,6 +5280,7 @@ pub fn run() {
             get_rag_status,
             build_rag_index,
             generate_draft,
+            read_draft,
             generate_agenda,
             generate_synthesis,
             export_docx,
@@ -4686,6 +5291,9 @@ pub fn run() {
             fulltext_exclude_article,
             reset_fulltext_article,
             run_ai_fulltext_screening,
+            pause_ai_fulltext_screening,
+            resume_ai_fulltext_screening,
+            cancel_ai_fulltext_screening,
             export_csvs,
             check_project_lock,
             snapshot_now,

@@ -57,8 +57,10 @@ export function FindingsPanel({ project, onSaved }: { project: ProjectRow; onSav
   const totalCodes = codings.length;
   const codedArticles = useMemo(() => new Set(codings.map((c) => c.article_id)).size, [codings]);
 
+  const [methodError, setMethodError] = useState<string | null>(null);
   const saveMethod = async (value: string) => {
     setMethod(value);
+    setMethodError(null);
     try {
       await api.saveDecision({
         stage: "assessing",
@@ -70,8 +72,9 @@ export function FindingsPanel({ project, onSaved }: { project: ProjectRow; onSav
       await onSaved?.();
       setSavedMethod(true);
       setTimeout(() => setSavedMethod(false), 1500);
-    } catch {
-      // ignore — non-fatal
+    } catch (e: any) {
+      // Surface the failure — don't imply a save that didn't happen.
+      setMethodError(`Couldn't save: ${e?.message ?? e}`);
     }
   };
 
@@ -86,6 +89,9 @@ export function FindingsPanel({ project, onSaved }: { project: ProjectRow; onSav
             <span className="inline-flex items-center gap-1 text-[11px] text-[var(--color-ok-600)]">
               <Check size={11} strokeWidth={2.5} /> saved
             </span>
+          )}
+          {methodError && (
+            <span className="text-[11px] text-[var(--color-warn-600)]">{methodError}</span>
           )}
         </div>
         {/* Derived from the framework — not a required choice */}

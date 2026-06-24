@@ -12,6 +12,7 @@ import { AssessingStage } from "./views/assessing/AssessingStage";
 import { RagChatView } from "./views/RagChatView";
 import { Settings } from "./views/Settings";
 import { StatusBar } from "./components/StatusBar";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 
 type Route = "hub" | "assembling" | "arranging" | "assessing" | "rag";
 
@@ -29,6 +30,14 @@ function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [route, setRoute] = useState<Route>("hub");
   const [ragReturn, setRagReturn] = useState<Route>("hub");
+
+  // When the open project changes (switch / close / clone-open), return to the
+  // hub and close any open Settings so we never land inside a stale stage.
+  const projectId = project?.id ?? null;
+  useEffect(() => {
+    setRoute("hub");
+    setSettingsOpen(false);
+  }, [projectId]);
 
   const openRag = (from: Route) => {
     setRagReturn(from);
@@ -92,6 +101,7 @@ function App() {
           </div>
         </div>
       )}
+      <ErrorBoundary key={route} label="Reeves">
       <AnimatePresence mode="wait">
         {!project && (
           <motion.div
@@ -117,7 +127,7 @@ function App() {
         )}
         {project && project.onboarding_complete && route === "hub" && (
           <motion.div
-            key="hub"
+            key={`hub-${projectId}`}
             initial={{ opacity: 0, y: 16 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0 }}
@@ -142,7 +152,7 @@ function App() {
         )}
         {project && project.onboarding_complete && route === "assembling" && (
           <motion.div
-            key="assembling"
+            key={`assembling-${projectId}`}
             initial={{ opacity: 0, x: 24 }}
             animate={{ opacity: 1, x: 0 }}
             exit={{ opacity: 0 }}
@@ -176,7 +186,7 @@ function App() {
         )}
         {project && project.onboarding_complete && route === "arranging" && (
           <motion.div
-            key="arranging"
+            key={`arranging-${projectId}`}
             initial={{ opacity: 0, x: 24 }}
             animate={{ opacity: 1, x: 0 }}
             exit={{ opacity: 0 }}
@@ -204,7 +214,7 @@ function App() {
         )}
         {project && project.onboarding_complete && route === "assessing" && (
           <motion.div
-            key="assessing"
+            key={`assessing-${projectId}`}
             initial={{ opacity: 0, x: 24 }}
             animate={{ opacity: 1, x: 0 }}
             exit={{ opacity: 0 }}
@@ -215,7 +225,7 @@ function App() {
         )}
         {project && project.onboarding_complete && route === "rag" && (
           <motion.div
-            key="rag"
+            key={`rag-${projectId}`}
             initial={{ opacity: 0, x: 24 }}
             animate={{ opacity: 1, x: 0 }}
             exit={{ opacity: 0 }}
@@ -228,6 +238,7 @@ function App() {
           </motion.div>
         )}
       </AnimatePresence>
+      </ErrorBoundary>
 
       {project && (
         <StatusBar

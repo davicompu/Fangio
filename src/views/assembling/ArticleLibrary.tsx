@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import {
   flexRender,
   getCoreRowModel,
@@ -657,11 +658,21 @@ export function ArticleLibrary({ refreshKey, onChanged }: Props) {
   const [bulkRating, setBulkRating] = useState(false);
   const [enriching, setEnriching] = useState(false);
   const [enrichStatus, setEnrichStatus] = useState<string | null>(null);
+  const [enrichProgress, setEnrichProgress] = useState<{ done: number; total: number; title: string } | null>(null);
   const enrichStatusTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Live progress for the Crossref enrichment pass.
+  useEffect(() => {
+    const un = listen<{ done: number; total: number; title: string }>("enrich:progress", (e) => {
+      setEnrichProgress(e.payload);
+    });
+    return () => { un.then((f) => f()); };
+  }, []);
 
   const handleEnrich = async () => {
     setEnriching(true);
     setEnrichStatus(null);
+    setEnrichProgress({ done: 0, total: 0, title: "" });
     try {
       const result = await api.enrichArticlesFromDoi();
       let msg = `Updated ${result.updated} · processed ${result.processed} · skipped ${result.skipped_no_doi} (no DOI)`;
@@ -682,6 +693,7 @@ export function ArticleLibrary({ refreshKey, onChanged }: Props) {
       });
     } finally {
       setEnriching(false);
+      setEnrichProgress(null);
     }
   };
 
@@ -914,11 +926,60 @@ export function ArticleLibrary({ refreshKey, onChanged }: Props) {
           Enrich from DOI
         </button>
       </div>
-      {enrichStatus && (
+      {/* Live progress while Crossref enrichment runs */}
+      {enriching && (
+        <div className="mb-3 px-3.5 py-3 rounded-[var(--radius-sm)] bg-[var(--color-accent-50)] border border-[var(--color-accent-200)]">
+          <div className="flex items-center justify-between mb-1.5">
+            <span className="text-[12px] font-medium text-[var(--color-accent-700)] flex items-center gap-1.5">
+              <Loader2 size={12} className="animate-spin" />
+              Enriching from Crossref…
+            </span>
+            <span className="text-[11px] tabular-nums text-[var(--color-accent-600)]">
+              {enrichProgress && enrichProgress.total > 0
+                ? `${enrichProgress.done} / ${enrichProgress.total}`
+                : "preparing…"}
+            </span>
+          </div>
+          <div className="h-1.5 w-full rounded-full bg-[var(--color-accent-100)] overflow-hidden">
+            <div
+              className="h-full bg-[var(--color-accent-500)] transition-[width] duration-300"
+              style={{
+                width:
+                  enrichProgress && enrichProgress.total > 0
+                    ? `${Math.round((enrichProgress.done / enrichProgress.total) * 100)}%`
+                    : "8%",
+              }}
+            />
+          </div>
+          {enrichProgress?.title && (
+            <p className="mt-1.5 text-[11px] text-[var(--color-accent-600)] truncate" title={enrichProgress.title}>
+              {enrichProgress.title}
+            </p>
+          )}
+        </div>
+      )}
+      {enrichStatus && !enriching && (
         <div className="mb-3 px-3 py-2 rounded-[var(--radius-sm)] bg-[var(--color-accent-50)] border border-[var(--color-accent-200)] text-[11px] text-[var(--color-accent-700)] leading-relaxed">
           {enrichStatus}
         </div>
       )}
+      {/* How enrichment works — visible note, not just a tooltip */}
+      <div className="mb-3 px-3 py-2 rounded-[var(--radius-sm)] bg-[var(--color-paper-100)] border border-[var(--color-paper-200)] text-[11px] text-[var(--color-paper-600)] leading-relaxed flex gap-2">
+        <ExternalLink size={12} strokeWidth={1.75} className="shrink-0 mt-0.5 text-[var(--color-paper-500)]" />
+        <span>
+          <strong className="text-[var(--color-paper-700)]">Enrich from DOI</strong> looks up each article's DOI on{" "}
+          <a
+            href="https://www.crossref.org"
+            target="_blank"
+            rel="noreferrer"
+            className="underline hover:text-[var(--color-ink-700)]"
+          >
+            Crossref
+          </a>{" "}
+          (the scholarly DOI registry) and fills in any missing title, authors, year, journal, or abstract.
+          Articles without a DOI are skipped, and values you already have are never overwritten.
+        </span>
+      </div>
 
       <div className="border border-[var(--color-paper-200)] rounded-[var(--radius-md)] overflow-hidden bg-[var(--color-paper-50)]">
         <table className="w-full">

@@ -1,6 +1,9 @@
 import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
+import { listen } from "@tauri-apps/api/event";
+import { confirm as confirmDialog } from "@tauri-apps/plugin-dialog";
 import {
+  BookText,
   Check,
   ChevronDown,
   ChevronUp,
@@ -10,7 +13,7 @@ import {
   Sparkles,
   X,
 } from "lucide-react";
-import { api, type AiCodingCoverage, type DimensionInfo, type LmModel } from "../lib/api";
+import { api, type AiCodingCoverage, type DimensionInfo, type FrameworkCodeDefinition, type LmModel } from "../lib/api";
 import type { AiCodingHook } from "../hooks/useAiCoding";
 import { cn } from "../lib/utils";
 import { Button } from "./ui/Button";
@@ -53,6 +56,74 @@ export function AiCodingModal({
   const [loadingCoverage, setLoadingCoverage] = useState(false);
   const [undoneConsolidations, setUndoneConsolidations] = useState<Set<number>>(new Set());
 
+  // Codebook construction (Step 1) — runs before coding to agree a shared vocabulary.
+  const [building, setBuilding] = useState(false);
+  const [cbProgress, setCbProgress] = useState<{ done: number; total: number; phase: string; detail: string } | null>(null);
+  const [cbMsg, setCbMsg] = useState<string | null>(null);
+  const [codebookReady, setCodebookReady] = useState(false);
+  const [codebookDefs, setCodebookDefs] = useState<FrameworkCodeDefinition[]>([]);
+  const [newCode, setNewCode] = useState<Record<string, string>>({});
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editingValue, setEditingValue] = useState("");
+  useEffect(() => {
+    const un = listen<{ done: number; total: number; phase: string; detail: string }>("codebook:progress", (e) => setCbProgress(e.payload));
+    return () => { un.then((f) => f()); };
+  }, []);
+  const [cbCoverage, setCbCoverage] = useState<{ total_with_pdf: number; participated: number; missing: number; has_codebook: boolean; any_coded: boolean } | null>(null);
+  const loadCodebook = async () => {
+    try {
+      // Unify code casing so the codebook reads consistently regardless of which
+      // rater proposed each label (and fixes codebooks built before this).
+      await api.normalizeCodebookCasing().catch(() => {});
+      const [defs, cov] = await Promise.all([api.listFrameworkCodeDefs(), api.codebookCoverage()]);
+      setCodebookDefs(defs);
+      setCbCoverage(cov);
+      setCodebookReady(defs.some((d) => selectedDims.has(d.dimension)));
+    } catch { /* ignore */ }
+  };
+  // Detect whether a codebook already exists for the selected dimensions (Step 1 done).
+  useEffect(() => { if (open) void loadCodebook(); }, [open]);
+
+  const addCodeToBook = async (dim: string) => {
+    const code = (newCode[dim] ?? "").trim();
+    if (!code) return;
+    try { await api.addFrameworkCodeDef(dim, code); setNewCode((m) => ({ ...m, [dim]: "" })); await loadCodebook(); } catch { /* ignore */ }
+  };
+  const removeCodeFromBook = async (id: number) => {
+    try { await api.deleteFrameworkCodeDef(id); await loadCodebook(); } catch { /* ignore */ }
+  };
+  const commitRename = async () => {
+    if (editingId == null) return;
+    const next = editingValue.trim();
+    const current = codebookDefs.find((d) => d.id === editingId);
+    setEditingId(null);
+    if (!next || !current || next === current.code) return;
+    try { await api.renameFrameworkCodeDef(editingId, next); await loadCodebook(); } catch { /* ignore */ }
+  };
+
+  const handleBuildCodebook = async (onlyMissing = false) => {
+    if (selectedDims.size === 0) return;
+    setBuilding(true);
+    setCbMsg(null);
+    setCbProgress({ done: 0, total: 0, phase: "proposing", detail: "" });
+    try {
+      const r = await api.buildCodebook(rater1Model, dualRater ? rater2Model : null, [...selectedDims], { onlyMissing });
+      await loadCodebook();
+      setCodebookReady(true);
+      const base = onlyMissing
+        ? `Extended the codebook from ${r.sampled} new article${r.sampled === 1 ? "" : "s"} — ${r.codes_added} code${r.codes_added === 1 ? "" : "s"} added.`
+        : `Codebook built from ${r.sampled} article${r.sampled === 1 ? "" : "s"} — ${r.codes_added} new code${r.codes_added === 1 ? "" : "s"} added.`;
+      const recode = r.codes_added > 0 && cbCoverage?.any_coded ? " The codebook changed — re-run coding so every article is coded against it." : " Review and edit the codes below, then start coding.";
+      setCbMsg(base + recode);
+    } catch (e: any) {
+      const m: string = e?.message ?? String(e);
+      setCbMsg(m.includes("reasoning model") ? "Pick a reasoning model in Settings first." : `Couldn't build codebook: ${m}`);
+    } finally {
+      setBuilding(false);
+      setCbProgress(null);
+    }
+  };
+
   // Load coverage when the modal opens in idle state
   useEffect(() => {
     if (!open || coding.step !== "idle") return;
@@ -90,6 +161,26 @@ export function AiCodingModal({
     });
   };
 
+  // Closing mid-run STOPS the work (distinct from "Send to background", which
+  // keeps it going). Warn first, and only stop + close on confirmation.
+  const requestClose = async () => {
+    if (coding.step === "running") {
+      const ok = await confirmDialog(
+        "Closing will stop the coding run — you'll have to start it again from the beginning. To keep it going instead, use “Send to background”.",
+        { title: "Stop coding and close?", kind: "warning", okLabel: "Stop & close", cancelLabel: "Keep running" },
+      );
+      if (!ok) return;
+      await coding.cancel();
+    } else if (building) {
+      const ok = await confirmDialog(
+        "A codebook build is still running and can't be cancelled — closing will leave it to finish on its own. Close anyway?",
+        { title: "Build in progress", kind: "warning", okLabel: "Close", cancelLabel: "Wait" },
+      );
+      if (!ok) return;
+    }
+    onClose();
+  };
+
   if (!open) return null;
 
   const progress = coding.progress;
@@ -117,16 +208,16 @@ export function AiCodingModal({
         animate={{ opacity: 1, scale: 1, y: 0 }}
         exit={{ opacity: 0, scale: 0.97, y: 8 }}
         transition={{ duration: 0.18 }}
-        className="w-full max-w-lg bg-white rounded-[var(--radius-lg)] border border-[var(--color-paper-300)] shadow-[var(--shadow-paper-lg)] overflow-hidden"
+        className="w-full max-w-2xl bg-white rounded-[var(--radius-lg)] border border-[var(--color-paper-300)] shadow-[var(--shadow-paper-lg)] overflow-hidden flex flex-col max-h-[88vh]"
       >
         {/* Header */}
-        <div className="flex items-center gap-2.5 px-5 py-4 border-b border-[var(--color-paper-200)]">
+        <div className="flex items-center gap-2.5 px-5 py-4 border-b border-[var(--color-paper-200)] shrink-0">
           <Sparkles size={16} strokeWidth={1.75} className="text-[var(--color-accent-500)]" />
           <h2 className="font-semibold text-[15px] text-[var(--color-ink-900)] flex-1">
             Code with AI Raters
           </h2>
           <button
-            onClick={onClose}
+            onClick={requestClose}
             className="p-1 rounded-[var(--radius-xs)] hover:bg-[var(--color-paper-200)] text-[var(--color-paper-500)] transition-paper"
           >
             <X size={14} strokeWidth={2} />
@@ -134,143 +225,214 @@ export function AiCodingModal({
         </div>
 
         {/* Body */}
-        <div className="px-5 py-4 space-y-5">
+        <div className="px-5 py-4 space-y-5 flex-1 overflow-y-auto min-h-0">
+
+          {/* Codebook build progress — prominent, at the top while it runs. */}
+          {coding.step === "idle" && building && (
+            <div className="rounded-[var(--radius-md)] border border-[var(--color-accent-200)] bg-[var(--color-accent-50)] px-4 py-3">
+              <div className="flex items-center justify-between mb-1.5">
+                <span className="text-[12px] font-semibold text-[var(--color-accent-700)] inline-flex items-center gap-2">
+                  <Loader2 size={13} className="animate-spin" />
+                  {cbProgress?.phase === "consolidating" ? "Consolidating codes…" : "Raters proposing codes…"}
+                </span>
+                {cbProgress && cbProgress.total > 0 && (
+                  <span className="text-[11px] tabular-nums text-[var(--color-accent-600)]">{cbProgress.done} / {cbProgress.total}</span>
+                )}
+              </div>
+              <div className="h-1.5 w-full rounded-full bg-[var(--color-accent-100)] overflow-hidden">
+                <div
+                  className="h-full bg-[var(--color-accent-500)] transition-[width] duration-300"
+                  style={{ width: cbProgress && cbProgress.total > 0 ? `${Math.round((cbProgress.done / cbProgress.total) * 100)}%` : "8%" }}
+                />
+              </div>
+              {cbProgress?.detail && <p className="mt-1.5 text-[11px] text-[var(--color-accent-700)]/70 truncate">{cbProgress.detail}</p>}
+            </div>
+          )}
+
+          {/* Codebook result message (after a build completes). */}
+          {coding.step === "idle" && !building && cbMsg && (
+            <div className="rounded-[var(--radius-sm)] border border-[var(--color-ok-200)] bg-[var(--color-ok-50)] px-3.5 py-2.5 text-[12px] text-[var(--color-ok-700)]">
+              {cbMsg}
+            </div>
+          )}
 
           {/* ── Config form (idle) ── */}
-          {coding.step === "idle" && (
-            <>
-              {/* Coverage summary */}
-              <div className="rounded-[var(--radius-sm)] border border-[var(--color-paper-200)] bg-[var(--color-paper-50)] px-4 py-3 space-y-1.5">
-                <p className="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-paper-500)] mb-2">
-                  Coverage
-                </p>
-                {loadingCoverage && (
-                  <div className="flex items-center gap-2 text-[12px] text-[var(--color-paper-500)]">
-                    <Loader2 size={12} className="animate-spin" /> Loading…
-                  </div>
-                )}
-                {coverage && !loadingCoverage && (
-                  <>
-                    <div className="flex items-center gap-2 text-[12px] text-[var(--color-ok-700)]">
-                      <Check size={12} strokeWidth={2.5} />
-                      <span>{coverage.ready} article{coverage.ready !== 1 ? "s" : ""} ready to code</span>
-                    </div>
-                    {coverage.needs_indexing > 0 && (
-                      <p className="text-[12px] text-[var(--color-warn-700)]">
-                        ↻ {coverage.needs_indexing} article{coverage.needs_indexing !== 1 ? "s" : ""} need indexing — will be done automatically
-                      </p>
-                    )}
-                    {coverage.no_pdf > 0 && (
-                      <p className="text-[12px] text-[var(--color-paper-500)]">
-                        ⊘ {coverage.no_pdf} article{coverage.no_pdf !== 1 ? "s" : ""} missing PDF — will be skipped
-                      </p>
-                    )}
-                  </>
-                )}
-              </div>
-
-              {/* Dimensions */}
+          {coding.step === "idle" && (() => {
+            const marker = (state: "done" | "active" | "upcoming", n: number) => (
+              <span className={cn(
+                "inline-flex items-center justify-center w-6 h-6 rounded-full text-[11px] font-semibold shrink-0",
+                state === "done" ? "bg-[var(--color-ok-500)] text-white" : state === "active" ? "bg-[var(--color-ink-800)] text-white" : "bg-[var(--color-paper-200)] text-[var(--color-paper-500)]",
+              )}>
+                {state === "done" ? <Check size={12} strokeWidth={3} /> : n}
+              </span>
+            );
+            const line = <div className="w-px flex-1 bg-[var(--color-paper-300)] my-1.5" />;
+            const title = (text: string, on: boolean) => (
+              <div className={cn("text-[13px] font-semibold leading-6", on ? "text-[var(--color-ink-900)]" : "text-[var(--color-paper-500)]")}>{text}</div>
+            );
+            return (
               <div>
-                <p className="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-paper-500)] mb-2">
-                  Dimensions
-                </p>
-                <div className="flex flex-wrap gap-1.5">
-                  {availableDimensions.map((d) => (
-                    <button
-                      key={d.name}
-                      onClick={() => toggleDim(d.name)}
-                      className={cn(
-                        "px-2.5 py-1 rounded-full text-[11px] font-medium border transition-paper",
-                        selectedDims.has(d.name)
-                          ? "bg-[var(--color-ink-800)] border-[var(--color-ink-800)] text-white"
-                          : "bg-white border-[var(--color-paper-300)] text-[var(--color-paper-600)] hover:border-[var(--color-ink-400)]",
-                      )}
-                    >
-                      {d.name}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Raters */}
-              <div>
-                <p className="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-paper-500)] mb-2">
-                  Raters
-                </p>
-
-                <div className="space-y-2">
-                  {/* Rater 1 */}
-                  <div className="rounded-[var(--radius-sm)] border border-[var(--color-paper-200)] px-3 py-2.5">
-                    <p className="text-[11px] font-semibold text-[var(--color-paper-500)] mb-1.5">
-                      Rater 1
-                    </p>
-                    <select
-                      value={rater1Model}
-                      onChange={(e) => setRater1Model(e.target.value)}
-                      className="w-full text-[12px] px-2.5 py-1.5 rounded-[var(--radius-xs)] border border-[var(--color-paper-300)] bg-white text-[var(--color-ink-800)] focus:outline-none focus:ring-1 focus:ring-[var(--color-accent-400)] transition-paper"
-                    >
-                      {availableModels.length === 0 && (
-                        <option value={rater1Model}>{rater1Model}</option>
-                      )}
-                      {availableModels.map((m) => (
-                        <option key={m.id} value={m.id}>{m.id}</option>
-                      ))}
-                    </select>
+                {/* ── Step 1 · Build codebook ───────────────────────────── */}
+                <div className="flex gap-3">
+                  <div className="flex flex-col items-center">
+                    {marker(codebookReady ? "done" : "active", 1)}
+                    {line}
                   </div>
-
-                  {/* Rater 2 toggle */}
-                  <div className="rounded-[var(--radius-sm)] border border-[var(--color-paper-200)] overflow-hidden">
-                    <button
-                      onClick={() => setDualRater((v) => !v)}
-                      className="w-full flex items-center justify-between px-3 py-2.5 text-left hover:bg-[var(--color-paper-50)] transition-paper"
-                    >
-                      <div>
-                        <p className="text-[11px] font-semibold text-[var(--color-paper-500)]">
-                          Rater 2 {dualRater ? "" : "(disabled)"}
+                  <div className="flex-1 min-w-0 pb-5">
+                    {title("Build codebook", true)}
+                    {!codebookReady ? (
+                      <div className="mt-2 space-y-4">
+                        <p className="text-[12px] text-[var(--color-paper-500)] leading-relaxed">
+                          The raters agree a shared codebook over the included articles that have a PDF, so both code against the same vocabulary.
                         </p>
-                        {!dualRater && (
-                          <p className="text-[10px] text-[var(--color-paper-400)] mt-0.5">
-                            All codes will be applied automatically
-                          </p>
-                        )}
-                      </div>
-                      {dualRater
-                        ? <ChevronUp size={13} className="text-[var(--color-paper-400)]" />
-                        : <ChevronDown size={13} className="text-[var(--color-paper-400)]" />
-                      }
-                    </button>
-                    <AnimatePresence>
-                      {dualRater && (
-                        <motion.div
-                          initial={{ height: 0, opacity: 0 }}
-                          animate={{ height: "auto", opacity: 1 }}
-                          exit={{ height: 0, opacity: 0 }}
-                          transition={{ duration: 0.15 }}
-                          className="overflow-hidden border-t border-[var(--color-paper-200)] px-3 py-2.5"
-                        >
-                          <select
-                            value={rater2Model}
-                            onChange={(e) => setRater2Model(e.target.value)}
-                            className="w-full text-[12px] px-2.5 py-1.5 rounded-[var(--radius-xs)] border border-[var(--color-paper-300)] bg-white text-[var(--color-ink-800)] focus:outline-none focus:ring-1 focus:ring-[var(--color-accent-400)] transition-paper"
-                          >
-                            {availableModels.length === 0 && (
-                              <option value={rater2Model}>{rater2Model}</option>
-                            )}
-                            {availableModels.map((m) => (
-                              <option key={m.id} value={m.id}>{m.id}</option>
+                        {/* Coverage */}
+                        <div className="rounded-[var(--radius-sm)] border border-[var(--color-paper-200)] bg-[var(--color-paper-50)] px-3.5 py-2.5 space-y-1.5">
+                          {loadingCoverage && (
+                            <div className="flex items-center gap-2 text-[12px] text-[var(--color-paper-500)]"><Loader2 size={12} className="animate-spin" /> Loading…</div>
+                          )}
+                          {coverage && !loadingCoverage && (
+                            <>
+                              <div className="flex items-center gap-2 text-[12px] text-[var(--color-ok-700)]">
+                                <Check size={12} strokeWidth={2.5} />
+                                <span>{coverage.ready} article{coverage.ready !== 1 ? "s" : ""} ready to code</span>
+                              </div>
+                              {coverage.needs_indexing > 0 && (
+                                <p className="text-[12px] text-[var(--color-warn-700)]">↻ {coverage.needs_indexing} need indexing — done automatically</p>
+                              )}
+                              {coverage.no_pdf > 0 && (
+                                <p className="text-[12px] text-[var(--color-paper-500)]">⊘ {coverage.no_pdf} missing PDF — will be skipped</p>
+                              )}
+                            </>
+                          )}
+                        </div>
+                        {/* Dimensions */}
+                        <div>
+                          <p className="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-paper-500)] mb-1.5">Dimensions</p>
+                          <div className="flex flex-wrap gap-1.5">
+                            {availableDimensions.map((d) => (
+                              <button key={d.name} onClick={() => toggleDim(d.name)} className={cn(
+                                "px-2.5 py-1 rounded-full text-[11px] font-medium border transition-paper",
+                                selectedDims.has(d.name) ? "bg-[var(--color-ink-800)] border-[var(--color-ink-800)] text-white" : "bg-white border-[var(--color-paper-300)] text-[var(--color-paper-600)] hover:border-[var(--color-ink-400)]",
+                              )}>{d.name}</button>
                             ))}
-                          </select>
-                          <p className="mt-1.5 text-[10px] text-[var(--color-paper-500)] leading-relaxed">
-                            Agreed codes are applied automatically. Disagreements are flagged for your review.
-                          </p>
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
+                          </div>
+                        </div>
+                        {/* Raters */}
+                        <div>
+                          <p className="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-paper-500)] mb-1.5">Raters</p>
+                          <div className="space-y-2">
+                            <div className="rounded-[var(--radius-sm)] border border-[var(--color-paper-200)] px-3 py-2.5">
+                              <p className="text-[11px] font-semibold text-[var(--color-paper-500)] mb-1.5">Rater 1</p>
+                              <select value={rater1Model} onChange={(e) => setRater1Model(e.target.value)} className="w-full text-[12px] px-2.5 py-1.5 rounded-[var(--radius-xs)] border border-[var(--color-paper-300)] bg-white text-[var(--color-ink-800)] focus:outline-none focus:ring-1 focus:ring-[var(--color-accent-400)]">
+                                {availableModels.length === 0 && <option value={rater1Model}>{rater1Model}</option>}
+                                {availableModels.map((m) => <option key={m.id} value={m.id}>{m.id}</option>)}
+                              </select>
+                            </div>
+                            <div className="rounded-[var(--radius-sm)] border border-[var(--color-paper-200)] overflow-hidden">
+                              <button onClick={() => setDualRater((v) => !v)} className="w-full flex items-center justify-between px-3 py-2.5 text-left hover:bg-[var(--color-paper-50)] transition-paper">
+                                <div>
+                                  <p className="text-[11px] font-semibold text-[var(--color-paper-500)]">Rater 2 {dualRater ? "" : "(disabled)"}</p>
+                                  {!dualRater && <p className="text-[10px] text-[var(--color-paper-400)] mt-0.5">With one rater there's no agreement to measure — its codes apply directly.</p>}
+                                </div>
+                                {dualRater ? <ChevronUp size={13} className="text-[var(--color-paper-400)]" /> : <ChevronDown size={13} className="text-[var(--color-paper-400)]" />}
+                              </button>
+                              <AnimatePresence>
+                                {dualRater && (
+                                  <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.15 }} className="overflow-hidden border-t border-[var(--color-paper-200)] px-3 py-2.5">
+                                    <select value={rater2Model} onChange={(e) => setRater2Model(e.target.value)} className="w-full text-[12px] px-2.5 py-1.5 rounded-[var(--radius-xs)] border border-[var(--color-paper-300)] bg-white text-[var(--color-ink-800)] focus:outline-none focus:ring-1 focus:ring-[var(--color-accent-400)]">
+                                      {availableModels.length === 0 && <option value={rater2Model}>{rater2Model}</option>}
+                                      {availableModels.map((m) => <option key={m.id} value={m.id}>{m.id}</option>)}
+                                    </select>
+                                    <p className="mt-1.5 text-[10px] text-[var(--color-paper-500)] leading-relaxed">Both raters code against the codebook. Agreement (Cohen's κ) is reported, and articles where the raters conflict are highlighted for your review afterward.</p>
+                                  </motion.div>
+                                )}
+                              </AnimatePresence>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    ) : (
+                      <p className="mt-1 text-[12px] text-[var(--color-paper-500)]">
+                        {cbCoverage ? `Built from ${cbCoverage.participated} of ${cbCoverage.total_with_pdf} articles with a PDF.` : "Codebook ready."}
+                        <button onClick={() => handleBuildCodebook(false)} disabled={building} className="ml-2 text-[var(--color-accent-600)] hover:text-[var(--color-accent-700)] font-medium disabled:opacity-40">{building ? "Rebuilding…" : "Rebuild"}</button>
+                      </p>
+                    )}
+                  </div>
+                </div>
+
+                {/* ── Step 2 · Review proposed codes ────────────────────── */}
+                <div className="flex gap-3">
+                  <div className="flex flex-col items-center">
+                    {marker(codebookReady ? "active" : "upcoming", 2)}
+                    {line}
+                  </div>
+                  <div className="flex-1 min-w-0 pb-5">
+                    {title("Review proposed codes", codebookReady)}
+                    {codebookReady ? (
+                      <div className="mt-2">
+                        {cbCoverage && cbCoverage.missing > 0 && (
+                          <button onClick={() => handleBuildCodebook(true)} disabled={building} className="mb-2 inline-flex items-center gap-1 text-[11px] font-medium text-[var(--color-accent-600)] hover:text-[var(--color-accent-700)] disabled:opacity-40">
+                            {building ? <Loader2 size={11} className="animate-spin" /> : <BookText size={11} strokeWidth={1.75} />}
+                            Add codes from {cbCoverage.missing} new article{cbCoverage.missing === 1 ? "" : "s"}
+                          </button>
+                        )}
+                        <div className="space-y-4">
+                          {[...selectedDims].map((dim) => {
+                            const codes = codebookDefs.filter((d) => d.dimension === dim);
+                            return (
+                              <div key={dim}>
+                                <div className="text-[12px] font-medium text-[var(--color-ink-800)] mb-1.5">{dim}</div>
+                                <div className="flex flex-wrap gap-1.5">
+                                  {codes.length === 0 && <span className="text-[11px] text-[var(--color-paper-400)] italic">No codes yet — add some below.</span>}
+                                  {codes.map((c) => (
+                                    <span key={c.id} className="inline-flex items-center gap-1 pl-2.5 pr-1.5 py-1 rounded-full text-[11px] bg-[var(--color-paper-100)] border border-[var(--color-paper-300)] text-[var(--color-ink-700)]">
+                                      {editingId === c.id ? (
+                                        <input
+                                          autoFocus
+                                          type="text"
+                                          value={editingValue}
+                                          onChange={(e) => setEditingValue(e.target.value)}
+                                          onBlur={commitRename}
+                                          onKeyDown={(e) => { if (e.key === "Enter") commitRename(); else if (e.key === "Escape") setEditingId(null); }}
+                                          className="bg-transparent border-0 p-0 m-0 text-[11px] text-[var(--color-ink-800)] focus:outline-none"
+                                          style={{ width: `${Math.max(editingValue.length, 4) + 1}ch` }}
+                                        />
+                                      ) : (
+                                        <button onClick={() => { setEditingId(c.id); setEditingValue(c.code); }} className="hover:text-[var(--color-ink-900)] hover:underline decoration-dotted underline-offset-2" title="Click to rephrase">{c.code}</button>
+                                      )}
+                                      <button onClick={() => removeCodeFromBook(c.id)} className="rounded-full p-0.5 hover:bg-[var(--color-paper-300)] text-[var(--color-paper-500)] hover:text-[var(--color-error-500)]" title="Remove from codebook"><X size={10} strokeWidth={2.5} /></button>
+                                    </span>
+                                  ))}
+                                </div>
+                                <div className="mt-1.5 flex items-center gap-1.5">
+                                  <input type="text" value={newCode[dim] ?? ""} onChange={(e) => setNewCode((m) => ({ ...m, [dim]: e.target.value }))} onKeyDown={(e) => { if (e.key === "Enter") addCodeToBook(dim); }} placeholder="Add a code…" className="flex-1 px-2.5 py-1 text-[11px] rounded-[var(--radius-xs)] border border-[var(--color-paper-300)] bg-white focus:outline-none focus:ring-1 focus:ring-[var(--color-paper-400)]" />
+                                  <button onClick={() => addCodeToBook(dim)} className="px-2 py-1 text-[11px] font-medium text-[var(--color-accent-600)] hover:text-[var(--color-accent-700)]">Add</button>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                        <p className="mt-2 text-[10px] text-[var(--color-paper-400)] leading-relaxed">Click a code to rephrase it; the × removes it. Edits apply to the Organisation codebook, and coding will use exactly these codes.</p>
+                      </div>
+                    ) : (
+                      <p className="mt-1 text-[12px] text-[var(--color-paper-500)]">Edit and confirm the proposed codebook before coding.</p>
+                    )}
+                  </div>
+                </div>
+
+                {/* ── Step 3 · Code corpus ──────────────────────────────── */}
+                <div className="flex gap-3">
+                  <div className="flex flex-col items-center">{marker("upcoming", 3)}</div>
+                  <div className="flex-1 min-w-0">
+                    {title("Code corpus", false)}
+                    <p className="mt-1 text-[12px] text-[var(--color-paper-500)] leading-relaxed">
+                      Both raters code every article against the codebook. Agreement (Cohen's κ) is reported, and conflicting articles are highlighted for your review.
+                    </p>
                   </div>
                 </div>
               </div>
-            </>
-          )}
+            );
+          })()}
 
           {/* ── Running ── */}
           {coding.step === "running" && (
@@ -413,20 +575,42 @@ export function AiCodingModal({
           )}
         </div>
 
+
         {/* Footer */}
-        <div className="flex items-center justify-between gap-2 px-5 py-3 border-t border-[var(--color-paper-200)] bg-[var(--color-paper-50)]">
+        <div className="flex items-center justify-between gap-2 px-5 py-3 border-t border-[var(--color-paper-200)] bg-[var(--color-paper-50)] shrink-0">
           {coding.step === "idle" && (
             <>
               <Button variant="ghost" size="sm" onClick={onClose}>Cancel</Button>
-              <Button
-                variant="primary"
-                size="sm"
-                onClick={handleStart}
-                disabled={selectedDims.size === 0 || loadingCoverage || (coverage !== null && coverage.ready === 0 && coverage.needs_indexing === 0)}
-              >
-                <Sparkles size={13} strokeWidth={1.75} />
-                Run in background
-              </Button>
+              {!codebookReady ? (
+                // Step 1 — build the shared codebook.
+                <Button
+                  variant="primary"
+                  size="sm"
+                  onClick={() => handleBuildCodebook(false)}
+                  disabled={building || selectedDims.size === 0}
+                  title="Sample the corpus and build a shared codebook. You'll review the codes before coding."
+                >
+                  {building ? <Loader2 size={13} className="animate-spin" /> : <BookText size={13} strokeWidth={1.75} />}
+                  {building ? "Building…" : "Step 1 · Build codebook"}
+                </Button>
+              ) : (
+                // Step 2 — code against the reviewed codebook (rebuild available).
+                <div className="flex items-center gap-2">
+                  <Button variant="ghost" size="sm" onClick={() => handleBuildCodebook(false)} disabled={building}>
+                    {building ? <Loader2 size={13} className="animate-spin" /> : <BookText size={13} strokeWidth={1.75} />}
+                    {building ? "Rebuilding…" : "Rebuild"}
+                  </Button>
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    onClick={handleStart}
+                    disabled={building || selectedDims.size === 0 || loadingCoverage || (coverage !== null && coverage.ready === 0 && coverage.needs_indexing === 0)}
+                  >
+                    <Sparkles size={13} strokeWidth={1.75} />
+                    Step 3 · Start coding
+                  </Button>
+                </div>
+              )}
             </>
           )}
 

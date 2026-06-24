@@ -34,7 +34,7 @@ pub async fn generate(db: &ProjectDb) -> Result<String> {
     s.push_str(&format!(
         "Records were identified across multiple bibliographic databases ({} retrieved, {} retained after deduplication, {} included after title and abstract screening).",
         prisma.identified_databases,
-        prisma.identified_databases - prisma.duplicates_removed,
+        prisma.records_screened,
         prisma.records_included
     ));
     s.push_str(" Included articles were coded against the ");
@@ -80,7 +80,7 @@ pub async fn generate(db: &ProjectDb) -> Result<String> {
         "Database searches identified {} records. {} duplicate records were removed before screening, leaving {} records for title and abstract screening. {} records were excluded against pre-registered criteria, leaving {} included in the final review pool.\n\n",
         prisma.identified_databases,
         prisma.duplicates_removed,
-        prisma.identified_databases - prisma.duplicates_removed,
+        prisma.records_screened,
         prisma.records_excluded,
         prisma.records_included,
     ));
@@ -88,7 +88,7 @@ pub async fn generate(db: &ProjectDb) -> Result<String> {
     s.push_str("| PRISMA stage | Records |\n|---|---|\n");
     s.push_str(&format!("| Identified (databases) | {} |\n", prisma.identified_databases));
     s.push_str(&format!("| Duplicates removed | {} |\n", prisma.duplicates_removed));
-    s.push_str(&format!("| Screened | {} |\n", prisma.identified_databases - prisma.duplicates_removed));
+    s.push_str(&format!("| Screened | {} |\n", prisma.records_screened));
     s.push_str(&format!("| Excluded | {} |\n", prisma.records_excluded));
     s.push_str(&format!("| Included | {} |\n\n", prisma.records_included));
     if !prisma.by_criterion.is_empty() {
@@ -207,6 +207,16 @@ pub fn write_to_workspace(workspace: &std::path::Path, content: &str) -> Result<
     Ok(path)
 }
 
+/// Read the saved draft markdown if one exists (empty string when none).
+pub fn read_from_workspace(workspace: &std::path::Path) -> Result<String> {
+    let path = workspace.join("drafts").join("slr_draft.md");
+    if path.exists() {
+        Ok(std::fs::read_to_string(&path)?)
+    } else {
+        Ok(String::new())
+    }
+}
+
 /// Save a draft, but first archive any existing draft so the user can recover.
 pub fn write_with_archive(
     workspace: &std::path::Path,
@@ -274,7 +284,7 @@ pub async fn generate_checklist(db: &ProjectDb) -> Result<String> {
         &format!(
             "Describe the results of the search and selection process. Identified n = {}; deduplicated n = {}; included n = {}.",
             prisma.identified_databases,
-            prisma.identified_databases - prisma.duplicates_removed,
+            prisma.records_screened,
             prisma.records_included
         ),
         auto,
@@ -322,8 +332,26 @@ pub fn write_checklist_to_workspace(
 
 use docx_rs::{Docx, Paragraph, Run, Table, TableCell, TableRow, WidthType};
 
+/// Is there a closing marker for `c` ahead of `start`? (`double` = look for `cc`).
+fn has_closing_marker(chars: &[char], start: usize, c: char, double: bool) -> bool {
+    let mut j = start;
+    while j < chars.len() {
+        if double {
+            if j + 1 < chars.len() && chars[j] == c && chars[j + 1] == c {
+                return true;
+            }
+        } else if chars[j] == c {
+            return true;
+        }
+        j += 1;
+    }
+    false
+}
+
 /// Split inline markdown into (text, bold, italic) runs. Handles **bold**,
-/// *italic*/_italic_, and drops backticks.
+/// *italic*/_italic_, and drops backticks. A marker only toggles emphasis when a
+/// matching closing marker exists ahead — so a lone `*` or `_` (e.g. "max_value",
+/// "5*3") is treated as a literal character instead of flipping the rest of the line.
 fn parse_runs(text: &str) -> Vec<(String, bool, bool)> {
     let chars: Vec<char> = text.chars().collect();
     let mut runs: Vec<(String, bool, bool)> = Vec::new();
@@ -332,23 +360,67 @@ fn parse_runs(text: &str) -> Vec<(String, bool, bool)> {
     let mut i = 0;
     while i < chars.len() {
         if i + 1 < chars.len() && chars[i] == '*' && chars[i + 1] == '*' {
-            if !buf.is_empty() { runs.push((std::mem::take(&mut buf), bold, italic)); }
-            bold = !bold;
+            // Close an open bold, or open one only if it closes later.
+            if bold || has_closing_marker(&chars, i + 2, '*', true) {
+                if !buf.is_empty() { runs.push((std::mem::take(&mut buf), bold, italic)); }
+                bold = !bold;
+                i += 2;
+                continue;
+            }
+            buf.push('*');
+            buf.push('*');
             i += 2;
             continue;
         }
-        if chars[i] == '*' || chars[i] == '_' {
-            if !buf.is_empty() { runs.push((std::mem::take(&mut buf), bold, italic)); }
-            italic = !italic;
+        let c = chars[i];
+        if c == '*' || c == '_' {
+            if italic || has_closing_marker(&chars, i + 1, c, false) {
+                if !buf.is_empty() { runs.push((std::mem::take(&mut buf), bold, italic)); }
+                italic = !italic;
+                i += 1;
+                continue;
+            }
+            buf.push(c);
             i += 1;
             continue;
         }
-        if chars[i] == '`' { i += 1; continue; }
-        buf.push(chars[i]);
+        if c == '`' { i += 1; continue; }
+        buf.push(c);
         i += 1;
     }
     if !buf.is_empty() { runs.push((buf, bold, italic)); }
     runs
+}
+
+#[cfg(test)]
+mod parse_runs_tests {
+    use super::parse_runs;
+
+    #[test]
+    fn lone_markers_are_literal() {
+        assert_eq!(parse_runs("max_value here"), vec![("max_value here".to_string(), false, false)]);
+        assert_eq!(parse_runs("5 * 3 = 15"), vec![("5 * 3 = 15".to_string(), false, false)]);
+    }
+
+    #[test]
+    fn paired_markers_toggle() {
+        let r = parse_runs("a **b** c");
+        assert_eq!(r, vec![
+            ("a ".into(), false, false),
+            ("b".into(), true, false),
+            (" c".into(), false, false),
+        ]);
+    }
+
+    #[test]
+    fn paired_italic_toggles() {
+        let r = parse_runs("x _y_ z");
+        assert_eq!(r, vec![
+            ("x ".into(), false, false),
+            ("y".into(), false, true),
+            (" z".into(), false, false),
+        ]);
+    }
 }
 
 fn para(text: &str, size: usize, force_bold: bool) -> Paragraph {
@@ -472,6 +544,7 @@ pub async fn generate_decision_report(db: &ProjectDb) -> Result<String> {
     let adjudications = db.list_adjudications_for_articles(&ids).await?;
     let consolidations = db.list_all_consolidations().await?;
     let review_events = db.list_review_events().await?;
+    let fulltext_status = db.fulltext_status_map().await?;
 
     let crit_label: std::collections::HashMap<i64, String> =
         criteria.iter().map(|c| (c.number, c.label.clone())).collect();
@@ -512,7 +585,7 @@ pub async fn generate_decision_report(db: &ProjectDb) -> Result<String> {
     if screened.is_empty() {
         s.push_str("_No screening decisions recorded yet._\n\n");
     } else {
-        s.push_str("| Article | Decision | Criterion | Decided by | When |\n|---|---|---|---|---|\n");
+        s.push_str("| Article | Decision | Stage | Criterion | Decided by | When |\n|---|---|---|---|---|---|\n");
         for a in &screened {
             let decided_by = if a.ai_rationale.is_some() {
                 "AI"
@@ -520,6 +593,15 @@ pub async fn generate_decision_report(db: &ProjectDb) -> Result<String> {
                 "Human"
             } else {
                 "Auto (PDF attached)"
+            };
+            // Which screening pass produced the final decision, derived from the
+            // article's full-text status: a full-text exclusion/inclusion is
+            // marked on `fulltext_status`; otherwise the call was at title/abstract.
+            let ft = fulltext_status.get(&a.id).cloned().flatten();
+            let stage = match (a.status.as_str(), ft.as_deref()) {
+                ("excluded", Some("excluded")) => "Full text",
+                ("included", Some("included")) => "Full text",
+                _ => "Title & abstract",
             };
             let criterion = if a.status == "excluded" {
                 a.exclusion_criterion
@@ -529,9 +611,10 @@ pub async fn generate_decision_report(db: &ProjectDb) -> Result<String> {
                 "—".into()
             };
             s.push_str(&format!(
-                "| {} | {} | {} | {} | {} |\n",
+                "| {} | {} | {} | {} | {} | {} |\n",
                 cell(&short(&a.title, 60)),
                 if a.status == "included" { "Included" } else { "Excluded" },
+                stage,
                 cell(&criterion),
                 decided_by,
                 cell(&a.screened_at.clone().map(|t| short(&t, 19)).unwrap_or_else(|| "—".into())),

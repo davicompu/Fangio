@@ -2,7 +2,6 @@ import { useState, useEffect, useRef } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   ArrowLeft,
-  ArrowRight,
   Binoculars,
   Boxes,
   ChevronDown,
@@ -16,13 +15,16 @@ import {
   Pause,
   Play,
   Quote,
+  Scale,
+  ShieldCheck,
   Sparkles,
   Tags,
   X,
 } from "lucide-react";
-import type { AiScreeningResult, ArrangingProgress, DimensionInfo, LmModel, ProjectRow } from "../../lib/api";
+import type { AiScreeningResult, ArrangingProgress, CodingAgreement, DimensionInfo, LmModel, ProjectRow } from "../../lib/api";
 import { api } from "../../lib/api";
 import { ProgressionTabStrip, type ProgressionTab } from "../../components/ProgressionTabStrip";
+import { ErrorBoundary } from "../../components/ErrorBoundary";
 import { useTabProgress, readManualFlags } from "../../lib/useTabProgress";
 import { MarkStepComplete } from "../../components/MarkStepComplete";
 import { Button } from "../../components/ui/Button";
@@ -33,8 +35,9 @@ import { OrganizationPanel } from "./OrganizationPanel";
 import { CodingPanel } from "./CodingPanel";
 import { CriteriaPanel } from "./CriteriaPanel";
 import { ScreeningPanel, useAiScreening } from "./ScreeningPanel";
-import { FullTextScreeningPanel } from "./FullTextScreeningPanel";
+import { FullTextScreeningPanel, useAiFulltextScreening } from "./FullTextScreeningPanel";
 import { PrismaPanel } from "./PrismaPanel";
+import { ArrangingCheckpoint } from "./ArrangingCheckpoint";
 
 interface Props {
   project: ProjectRow;
@@ -45,7 +48,7 @@ interface Props {
   defaultChatModel: string;
 }
 
-type Tab = "organization" | "coding" | "criteria" | "screening" | "fulltext" | "prisma";
+type Tab = "organization" | "coding" | "criteria" | "screening" | "fulltext" | "prisma" | "finish";
 
 const tabs: { id: Tab; label: string; icon: any }[] = [
   { id: "organization", label: "Organisation", icon: Layers },
@@ -54,6 +57,7 @@ const tabs: { id: Tab; label: string; icon: any }[] = [
   { id: "fulltext", label: "Full text", icon: FileSearch },
   { id: "coding", label: "Coding", icon: Tags },
   { id: "prisma", label: "PRISMA flow", icon: GitBranch },
+  { id: "finish", label: "Review & finish", icon: ShieldCheck },
 ];
 
 const tabInfo: Record<Tab, { headline: string; body: string; tip?: string }> = {
@@ -87,6 +91,11 @@ const tabInfo: Record<Tab, { headline: string; body: string; tip?: string }> = {
     body: "PRISMA (Preferred Reporting Items for Systematic Reviews and Meta-Analyses) requires you to report how many records were identified, screened, assessed, and included at each stage.\n\nThis panel auto-generates the flow from your actual decisions. Any gaps in the counts indicate steps that still need completing.",
     tip: "The PRISMA flow is a journal requirement for most systematic reviews. Keep it up to date as you screen.",
   },
+  finish: {
+    headline: "Review & finish Stage 2",
+    body: "A consolidated summary of every decision you made while arranging the corpus — codes, criteria, and screening/coding counts.\n\nWork through the checklist to confirm the corpus is settled, then close Stage 2 and open Stage 3 (Assessing). Nothing here is destructive; you can return to any earlier tab before finishing.",
+    tip: "Finishing Stage 2 is a deliberate gate, not an automatic jump — it keeps you from advancing with articles still pending or uncoded.",
+  },
 };
 
 export function ArrangingStage({ project, onLeaveStage, onProjectChanged, onAdvanceStage, lmModels, defaultChatModel }: Props) {
@@ -100,15 +109,23 @@ export function ArrangingStage({ project, onLeaveStage, onProjectChanged, onAdva
   const [domainExpanded, setDomainExpanded] = useState(false);
   const [aiModalOpen, setAiModalOpen] = useState(false);
   const screening = useAiScreening();
+  const fulltextScreening = useAiFulltextScreening();
   const coding = useAiCoding();
   const [aiCodingModalOpen, setAiCodingModalOpen] = useState(false);
   const [dimensions, setDimensions] = useState<DimensionInfo[]>([]);
+  const [codingAgreement, setCodingAgreement] = useState<CodingAgreement | null>(null);
   const lastTabHydrated = useRef(false);
-  const ALL_TAB_IDS: Tab[] = ["organization", "criteria", "screening", "fulltext", "coding", "prisma"];
+  const ALL_TAB_IDS: Tab[] = ["organization", "criteria", "screening", "fulltext", "coding", "prisma", "finish"];
 
   useEffect(() => {
     api.listFrameworkDimensions().then(setDimensions).catch(() => {});
   }, [project.id, refreshTick]);
+
+  // Inter-rater agreement for AI coding — shown in the Coding tab's sidebar.
+  useEffect(() => {
+    if (tab !== "coding") return;
+    api.computeCodingAgreement().then(setCodingAgreement).catch(() => setCodingAgreement(null));
+  }, [tab, refreshTick]);
 
   useEffect(() => {
     api.arrangingProgress().then(setProgress).catch(() => {});
@@ -137,7 +154,7 @@ export function ArrangingStage({ project, onLeaveStage, onProjectChanged, onAdva
     setRefreshTick((t) => t + 1);
   };
 
-  const TAB_IDS: Tab[] = ["organization", "criteria", "screening", "fulltext", "coding", "prisma"];
+  const TAB_IDS: Tab[] = ["organization", "criteria", "screening", "fulltext", "coding", "prisma", "finish"];
   const manualFlags = readManualFlags("arranging", TAB_IDS, progressSettings);
   const status = useTabProgress<Tab>(tab, {
     organization: () => (progress?.codes_count ?? 0) >= 1,
@@ -146,6 +163,7 @@ export function ArrangingStage({ project, onLeaveStage, onProjectChanged, onAdva
     fulltext: () => false, // optional pass — no hard completion
     coding: () => progress != null && progress.articles_included > 0 && progress.articles_coded >= progress.articles_included,
     prisma: () => false, // manual only
+    finish: () => false, // gate — completed by advancing
   }, manualFlags);
 
   const numberedTabs: ProgressionTab<Tab>[] = tabs.map((t, i) => ({
@@ -206,22 +224,6 @@ export function ArrangingStage({ project, onLeaveStage, onProjectChanged, onAdva
             </h1>
           </div>
         </div>
-        <button
-          onClick={async () => {
-            setAdvancing(true);
-            try {
-              await onAdvanceStage("assessing");
-            } finally {
-              setAdvancing(false);
-            }
-          }}
-          disabled={advancing}
-          className="no-drag inline-flex items-center gap-2 px-4 h-9 rounded-[var(--radius-sm)] text-[12px] font-semibold bg-[var(--color-ink-800)] text-white hover:bg-[var(--color-ink-900)] shadow-sm transition-paper disabled:opacity-50"
-          title="Mark Stage 2 complete and open Stage 3 (Assessing)"
-        >
-          {advancing ? <Loader2 size={13} className="animate-spin" /> : <ArrowRight size={13} strokeWidth={2} />}
-          Proceed to Stage 3
-        </button>
       </header>
 
       <nav className="px-6 xl:px-12 mb-6">
@@ -243,6 +245,7 @@ export function ArrangingStage({ project, onLeaveStage, onProjectChanged, onAdva
               exit={{ opacity: 0, y: -8 }}
               transition={{ duration: 0.25, ease: [0.2, 0.7, 0.2, 1] }}
             >
+              <ErrorBoundary label={`Stage 2 · ${tab}`}>
               {tab === "organization" && <OrganizationPanel project={project} refreshKey={refreshTick} onChanged={onChanged} onJumpToCode={handleJumpToCode} />}
               {tab === "coding" && <CodingPanel project={project} refreshKey={refreshTick} onChanged={onChanged} initialCodeFilter={jumpCodeFilter} onCodeFilterConsumed={() => setJumpCodeFilter(null)} lastEditedArticleId={lastEditedArticleId} onArticleEdited={setLastEditedArticleId} onOpenAiCodingModal={() => setAiCodingModalOpen(true)} />}
               {tab === "criteria" && (
@@ -254,8 +257,23 @@ export function ArrangingStage({ project, onLeaveStage, onProjectChanged, onAdva
                 />
               )}
               {tab === "screening" && <ScreeningPanel project={project} refreshKey={refreshTick} onChanged={onChanged} onOpenAiModal={() => setAiModalOpen(true)} />}
-              {tab === "fulltext" && <FullTextScreeningPanel refreshKey={refreshTick} onChanged={onChanged} />}
+              {tab === "fulltext" && <FullTextScreeningPanel refreshKey={refreshTick} onChanged={onChanged} screening={fulltextScreening} />}
               {tab === "prisma" && <PrismaPanel refreshKey={refreshTick} />}
+              {tab === "finish" && (
+                <ArrangingCheckpoint
+                  progress={progress}
+                  advancing={advancing}
+                  onAdvance={async () => {
+                    setAdvancing(true);
+                    try {
+                      await onAdvanceStage("assessing");
+                    } finally {
+                      setAdvancing(false);
+                    }
+                  }}
+                />
+              )}
+              </ErrorBoundary>
             </motion.div>
           </AnimatePresence>
         </div>
@@ -271,6 +289,55 @@ export function ArrangingStage({ project, onLeaveStage, onProjectChanged, onAdva
               transition={{ duration: 0.3, delay: 0.05 }}
               className="sticky top-8"
             >
+              {/* Inter-rater agreement (AI coding) — sits above "About this step". */}
+              {tab === "coding" && codingAgreement && (codingAgreement.units > 0 || codingAgreement.note) && (() => {
+                const a = codingAgreement;
+                const pct = Math.round(a.overlap * 100);
+                const color = pct >= 70 ? "var(--color-ok-600)" : pct >= 45 ? "var(--color-ok-500)" : pct >= 25 ? "var(--color-warn-600)" : "var(--color-accent-600)";
+                return (
+                  <div className="mb-3 rounded-[var(--radius-md)] border border-[var(--color-paper-300)] bg-[var(--color-paper-50)] overflow-hidden">
+                    <div className="flex items-center gap-2 px-4 py-3 bg-[var(--color-paper-100)] border-b border-[var(--color-paper-200)]">
+                      <Scale size={13} strokeWidth={1.75} className="text-[var(--color-ink-600)]" />
+                      <span className="eyebrow text-[var(--color-paper-600)]">Inter-rater agreement</span>
+                    </div>
+                    <div className="px-4 py-3">
+                      {a.units > 0 ? (
+                        a.codebook_based ? (() => {
+                          const k = a.kappa;
+                          const kc = k >= 0.8 ? "var(--color-ok-600)" : k >= 0.6 ? "var(--color-ok-500)" : k >= 0.4 ? "var(--color-warn-600)" : "var(--color-accent-600)";
+                          const band = k < 0 ? "Poor" : k <= 0.2 ? "Slight" : k <= 0.4 ? "Fair" : k <= 0.6 ? "Moderate" : k <= 0.8 ? "Substantial" : "Almost perfect";
+                          return (
+                            <>
+                              <div className="flex items-baseline gap-2">
+                                <span className="text-[24px] font-semibold tabular-nums leading-none" style={{ color: kc }}>{k.toFixed(2)}</span>
+                                <span className="text-[12px] font-medium" style={{ color: kc }}>{band}</span>
+                              </div>
+                              <p className="mt-1.5 text-[11px] text-[var(--color-paper-500)] leading-relaxed">
+                                Cohen's κ over the shared codebook · {pct}% code-set overlap · {Math.round(a.observed_agreement * 100)}% raw agreement across {a.articles} articles.
+                              </p>
+                            </>
+                          );
+                        })() : (
+                          <>
+                            <div className="flex items-baseline gap-2">
+                              <span className="text-[24px] font-semibold tabular-nums leading-none" style={{ color }}>{pct}%</span>
+                              <span className="text-[12px] font-medium text-[var(--color-paper-600)]">code-set overlap</span>
+                            </div>
+                            <p className="mt-1.5 text-[11px] text-[var(--color-paper-500)] leading-relaxed">
+                              Avg overlap of the two raters' code sets · identical on {Math.round(a.exact_match * 100)}% of {a.units} dimension units across {a.articles} articles.
+                            </p>
+                            <p className="mt-1.5 text-[10px] text-[var(--color-paper-400)] leading-relaxed">
+                              Build a codebook (in the AI coding modal) for a chance-corrected Cohen's κ.
+                            </p>
+                          </>
+                        )
+                      ) : (
+                        <p className="text-[12px] text-[var(--color-paper-600)] leading-relaxed">{a.note}</p>
+                      )}
+                    </div>
+                  </div>
+                );
+              })()}
               <div className="rounded-[var(--radius-md)] border border-[var(--color-paper-300)] bg-[var(--color-paper-50)] overflow-hidden">
                 <div className="flex items-center gap-2 px-4 py-3 bg-[var(--color-paper-100)] border-b border-[var(--color-paper-200)]">
                   <Lightbulb size={13} strokeWidth={1.75} className="text-[var(--color-accent-500)]" />
@@ -391,7 +458,7 @@ export function ArrangingStage({ project, onLeaveStage, onProjectChanged, onAdva
                           ? <Pause size={11} strokeWidth={2} className="shrink-0 text-[var(--color-warn-500)]" />
                           : <Loader2 size={11} className="animate-spin shrink-0 text-[var(--color-accent-500)]" />}
                         <span className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-paper-500)]">
-                          {screening.isPaused ? "Screening paused" : "Screening in background"}
+                          {screening.isPaused ? "Exclusion criteria — paused" : "Applying exclusion criteria"}
                         </span>
                       </div>
                       <p className="text-[12px] text-[var(--color-ink-700)] truncate">
@@ -449,7 +516,7 @@ export function ArrangingStage({ project, onLeaveStage, onProjectChanged, onAdva
               {screening.step === "done" && screening.result && (
                 <div className="flex items-center justify-between gap-3">
                   <div className="flex items-center gap-3 text-[12px]">
-                    <span className="text-[var(--color-ink-800)] font-medium">Screening complete</span>
+                    <span className="text-[var(--color-ink-800)] font-medium">Exclusion criteria applied</span>
                     <span className="text-[var(--color-ok-600)]">{screening.result.included} included</span>
                     <span className="text-[var(--color-warn-600)]">{screening.result.excluded} excluded</span>
                     <span className="text-[var(--color-paper-500)]">{screening.result.uncertain} review</span>
@@ -460,6 +527,98 @@ export function ArrangingStage({ project, onLeaveStage, onProjectChanged, onAdva
                     </Button>
                     <button
                       onClick={() => { onChanged(); screening.reset(); }}
+                      className="p-1.5 rounded-[var(--radius-xs)] hover:bg-[var(--color-paper-100)] transition-paper text-[var(--color-paper-500)]"
+                      title="Dismiss"
+                    >
+                      <X size={13} strokeWidth={2} />
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* ── Persistent background full-text screening banner ── */}
+      <AnimatePresence>
+        {(fulltextScreening.step === "running" || fulltextScreening.step === "done") && (
+          <motion.div
+            key="fulltext-banner"
+            initial={{ opacity: 0, y: 16 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 16 }}
+            transition={{ duration: 0.2 }}
+            className="fixed bottom-6 left-1/2 -translate-x-1/2 z-30 w-full max-w-lg px-4 pointer-events-none"
+          >
+            <div className="pointer-events-auto rounded-[var(--radius-md)] border border-[var(--color-paper-300)] bg-white shadow-[var(--shadow-paper-md)] px-4 py-3">
+              {fulltextScreening.step === "running" && !fulltextScreening.error && (
+                <>
+                  <div className="flex items-center gap-3 mb-2">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-1.5 mb-1">
+                        {fulltextScreening.isPaused
+                          ? <Pause size={11} strokeWidth={2} className="shrink-0 text-[var(--color-warn-500)]" />
+                          : <Loader2 size={11} className="animate-spin shrink-0 text-[var(--color-accent-500)]" />}
+                        <span className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-paper-500)]">
+                          {fulltextScreening.isPaused ? "Full-text screening paused" : "Full-text screening in background"}
+                        </span>
+                      </div>
+                      <p className="text-[12px] text-[var(--color-ink-700)] truncate">
+                        {fulltextScreening.progress
+                          ? `${fulltextScreening.progress.done} / ${fulltextScreening.progress.total}${fulltextScreening.progress.title ? ` — ${fulltextScreening.progress.title}` : ""}`
+                          : "Starting…"}
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-1 shrink-0">
+                      <button
+                        onClick={() => (fulltextScreening.isPaused ? fulltextScreening.resume() : fulltextScreening.pause())}
+                        className="p-1.5 rounded-[var(--radius-xs)] hover:bg-[var(--color-paper-100)] transition-paper"
+                        title={fulltextScreening.isPaused ? "Resume" : "Pause"}
+                      >
+                        {fulltextScreening.isPaused ? <Play size={13} strokeWidth={2} /> : <Pause size={13} strokeWidth={2} />}
+                      </button>
+                      <button
+                        onClick={() => { fulltextScreening.cancel(); }}
+                        className="p-1.5 rounded-[var(--radius-xs)] hover:bg-[var(--color-paper-100)] transition-paper text-[var(--color-paper-500)] hover:text-[var(--color-error-500)]"
+                        title="Cancel full-text screening"
+                      >
+                        <X size={13} strokeWidth={2} />
+                      </button>
+                      <Button variant="ghost" size="sm" onClick={() => setTab("fulltext")}>View</Button>
+                    </div>
+                  </div>
+                  {fulltextScreening.progress && fulltextScreening.progress.total > 0 && (
+                    <div className="w-full h-1 rounded-full bg-[var(--color-paper-200)] overflow-hidden">
+                      <motion.div
+                        className="h-full rounded-full bg-[var(--color-accent-500)]"
+                        animate={{ width: `${(fulltextScreening.progress.done / fulltextScreening.progress.total) * 100}%` }}
+                        transition={{ ease: "easeOut", duration: 0.3 }}
+                      />
+                    </div>
+                  )}
+                </>
+              )}
+              {fulltextScreening.step === "running" && fulltextScreening.error && (
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-[12px] text-[var(--color-warn-700)] truncate">{fulltextScreening.error}</p>
+                  <button onClick={fulltextScreening.reset} className="p-1.5 rounded-[var(--radius-xs)] hover:bg-[var(--color-paper-100)] shrink-0">
+                    <X size={13} strokeWidth={2} />
+                  </button>
+                </div>
+              )}
+              {fulltextScreening.step === "done" && fulltextScreening.result && (
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-3 text-[12px]">
+                    <span className="text-[var(--color-ink-800)] font-medium">Full-text screening complete</span>
+                    <span className="text-[var(--color-ok-600)]">{fulltextScreening.result.kept} kept</span>
+                    <span className="text-[var(--color-warn-600)]">{fulltextScreening.result.excluded} excluded</span>
+                    <span className="text-[var(--color-paper-500)]">{fulltextScreening.result.uncertain} review</span>
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <Button variant="primary" size="sm" onClick={() => { setTab("fulltext"); onChanged(); fulltextScreening.reset(); }}>View</Button>
+                    <button
+                      onClick={() => { onChanged(); fulltextScreening.reset(); }}
                       className="p-1.5 rounded-[var(--radius-xs)] hover:bg-[var(--color-paper-100)] transition-paper text-[var(--color-paper-500)]"
                       title="Dismiss"
                     >

@@ -95,7 +95,13 @@ pub struct EmbedResponse {
 }
 
 fn parse_url(base_url: &str) -> Result<Url> {
-    Url::parse(base_url).map_err(|e| anyhow!("invalid base url: {e}"))
+    let url = Url::parse(base_url).map_err(|e| anyhow!("invalid base url: {e}"))?;
+    // Only real network schemes — never file:, data:, etc. The model endpoint
+    // receives paper content, so we refuse to point it at the local filesystem.
+    match url.scheme() {
+        "http" | "https" => Ok(url),
+        other => Err(anyhow!("model endpoint must use http or https, not '{other}:'")),
+    }
 }
 
 fn http_client() -> Result<Client> {
@@ -237,4 +243,27 @@ pub async fn embed(base_url: &str, model: &str, inputs: &[&str], api_key: Option
         }
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod url_guard_tests {
+    use super::parse_url;
+
+    #[test]
+    fn accepts_http_and_https() {
+        assert!(parse_url("http://127.0.0.1:1234/v1").is_ok());
+        assert!(parse_url("https://api.example.com/v1").is_ok());
+    }
+
+    #[test]
+    fn rejects_non_network_schemes() {
+        assert!(parse_url("file:///etc/passwd").is_err());
+        assert!(parse_url("data:text/plain,hi").is_err());
+        assert!(parse_url("ftp://host/x").is_err());
+    }
+
+    #[test]
+    fn rejects_garbage() {
+        assert!(parse_url("not a url").is_err());
+    }
 }

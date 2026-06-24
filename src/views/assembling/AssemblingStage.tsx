@@ -237,6 +237,7 @@ export function AssemblingStage({ project, settings, onLeaveStage, onAdvanceStag
                   project={project}
                   settings={settings}
                   onSaved={onChanged}
+                  onSavedAdvance={() => setTab("import")}
                   onOpenSettings={onOpenSettings}
                   onUpdateDatabaseUrl={onUpdateDatabaseUrl}
                 />
@@ -253,6 +254,15 @@ export function AssemblingStage({ project, settings, onLeaveStage, onAdvanceStag
                       ? (JSON.parse(project.databases) as string[])
                       : [];
                     return cfg.filter((d) => ids.includes(d.id)).map((d) => d.label);
+                  })()}
+                  launchDatabases={(() => {
+                    const cfg = settings["databases.config"] ?? [];
+                    const ids: string[] = project.databases
+                      ? (JSON.parse(project.databases) as string[])
+                      : [];
+                    return cfg
+                      .filter((d) => ids.includes(d.id) && d.url)
+                      .map((d) => ({ label: d.label, url: d.url as string }));
                   })()}
                 />
               )}

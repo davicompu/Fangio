@@ -12,7 +12,7 @@ export interface AiScreeningHook {
   result: AiScreeningResult | null;
   error: string | null;
   isPaused: boolean;
-  start: (exclusionCriteria: string[]) => Promise<void>;
+  start: (exclusionCriteria: string[], excludeOnly?: boolean) => Promise<void>;
   pause: () => Promise<void>;
   resume: () => Promise<void>;
   cancel: () => Promise<void>;

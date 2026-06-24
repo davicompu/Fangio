@@ -233,10 +233,21 @@ pub struct FulltextCandidate {
     pub title: String,
     pub authors: Option<String>,
     pub year: Option<i32>,
+    pub journal: Option<String>,
     pub abstract_text: Option<String>,
     pub doi: Option<String>,
     /// null = not yet full-text reviewed, "included" = kept, "excluded".
     pub fulltext_status: Option<String>,
+    /// The article's title/abstract screening status: "included" (passed T&A),
+    /// "retrieved" (still pending T&A), or "excluded" (removed earlier — e.g.
+    /// during purification — shown here so the full exclusion record is visible).
+    pub ta_status: String,
+    /// Exclusion criterion number when the article was excluded (any phase).
+    pub exclusion_criterion: Option<i64>,
+    /// AI screener rationale, when the exclusion/decision was made by the AI.
+    pub ai_rationale: Option<String>,
+    /// Human/criterion exclusion rationale recorded at screening (any phase).
+    pub exclusion_rationale: Option<String>,
     pub pdf_path: Option<String>,
 }
 
@@ -915,8 +926,10 @@ impl ProjectDb {
         .fetch_one(&self.pool)
         .await?;
 
+        // Everything still in the corpus after both screening passes. Full-text
+        // exclusions become status='excluded', so 'included' is the codeable set.
         let articles_included: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM article WHERE status = 'included' AND fulltext_status = 'included'",
+            "SELECT COUNT(*) FROM article WHERE status = 'included'",
         )
         .fetch_one(&self.pool)
         .await?;
@@ -1024,6 +1037,68 @@ impl ProjectDb {
         Ok(())
     }
 
+    /// Rename a codebook code, carrying any already-applied codings along so the
+    /// label change stays consistent across the corpus. If the new label already
+    /// exists in the dimension the two are merged (the duplicate def is dropped).
+    pub async fn rename_framework_code_def(&self, id: i64, new_code: &str) -> Result<()> {
+        let new_code = new_code.trim();
+        if new_code.is_empty() {
+            return Ok(());
+        }
+        let row = sqlx::query("SELECT dimension, code FROM framework_code_definition WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?;
+        let Some(row) = row else { return Ok(()) };
+        let dimension: String = row.get("dimension");
+        let old_code: String = row.get("code");
+        if old_code == new_code {
+            return Ok(());
+        }
+        let mut tx = self.pool.begin().await?;
+        // Re-point applied codings first (string-keyed by dimension + code).
+        sqlx::query("UPDATE coding SET code = ? WHERE dimension = ? AND code = ?")
+            .bind(new_code)
+            .bind(&dimension)
+            .bind(&old_code)
+            .execute(&mut *tx)
+            .await?;
+        // Update the definition; OR REPLACE collapses onto an existing duplicate.
+        sqlx::query("UPDATE OR REPLACE framework_code_definition SET code = ? WHERE id = ?")
+            .bind(new_code)
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Normalise every code to sentence case (capitalise the first character,
+    /// leave the rest untouched so acronyms/proper nouns survive) so the codebook
+    /// reads uniformly regardless of which rater proposed each label. Applies to
+    /// both the codebook definitions and any codes already applied to articles,
+    /// so frequency counts and agreement stay in sync. Returns rows changed.
+    pub async fn normalize_codebook_case(&self) -> Result<u64> {
+        // UPDATE OR REPLACE on the defs: if "bounded rationality" normalises onto
+        // an existing "Bounded rationality" the duplicate is collapsed away.
+        let defs = sqlx::query(
+            "UPDATE OR REPLACE framework_code_definition \
+             SET code = UPPER(SUBSTR(code, 1, 1)) || SUBSTR(code, 2) \
+             WHERE code <> UPPER(SUBSTR(code, 1, 1)) || SUBSTR(code, 2)",
+        )
+        .execute(&self.pool)
+        .await?;
+        // Keep applied codings consistent with the renamed canonical labels.
+        let coding = sqlx::query(
+            "UPDATE coding \
+             SET code = UPPER(SUBSTR(code, 1, 1)) || SUBSTR(code, 2) \
+             WHERE code <> UPPER(SUBSTR(code, 1, 1)) || SUBSTR(code, 2)",
+        )
+        .execute(&self.pool)
+        .await?;
+        Ok(defs.rows_affected() + coding.rows_affected())
+    }
+
     /// All distinct codes used so far for a dimension (predefined + applied).
     pub async fn distinct_codes_for_dimension(&self, dimension: &str) -> Result<Vec<String>> {
         let mut codes: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
@@ -1098,6 +1173,20 @@ impl ProjectDb {
         Ok(())
     }
 
+    /// Revert AI-applied coding only — deletes codes whose source is AI
+    /// ('model-…') and clears the run's proposals/adjudications/consolidations,
+    /// while preserving researcher-authored and human-accepted codes. Used when a
+    /// coding run is cancelled before the researcher reviews it.
+    pub async fn revert_ai_coding(&self) -> Result<()> {
+        sqlx::query("DELETE FROM coding WHERE source LIKE 'model-ai-%'")
+            .execute(&self.pool)
+            .await?;
+        sqlx::query("DELETE FROM ai_coding_proposal").execute(&self.pool).await?;
+        sqlx::query("DELETE FROM ai_adjudication").execute(&self.pool).await?;
+        sqlx::query("DELETE FROM ai_consolidation").execute(&self.pool).await?;
+        Ok(())
+    }
+
     pub async fn list_codings_for_articles(&self, ids: &[i64]) -> Result<Vec<CodingRow>> {
         if ids.is_empty() {
             return Ok(vec![]);
@@ -1139,7 +1228,7 @@ impl ProjectDb {
             "SELECT id, title, authors, year, journal, abstract, doi, url, source_databases, \
              status, dedup_group_id, exclusion_criterion, created_at, screened_at, \
              ai_rationale, ai_confidence \
-             FROM article WHERE status = 'included' AND fulltext_status = 'included' ORDER BY id LIMIT ? OFFSET ?",
+             FROM article WHERE status = 'included' ORDER BY id LIMIT ? OFFSET ?",
         )
         .bind(limit)
         .bind(offset)
@@ -1269,9 +1358,11 @@ impl ProjectDb {
 
     pub async fn clear_exclusion(&self, article_id: i64) -> Result<()> {
         let now = chrono::Utc::now().to_rfc3339();
+        // Full "send back to pending" reset — also clears any full-text decision
+        // so a reverted article never lingers as retrieved + fulltext_status set.
         sqlx::query(
             "UPDATE article SET status = 'retrieved', exclusion_criterion = NULL, \
-             exclusion_rationale = NULL, screened_at = NULL, \
+             exclusion_rationale = NULL, screened_at = NULL, fulltext_status = NULL, \
              ai_rationale = NULL, ai_confidence = NULL, updated_at = ? WHERE id = ?",
         )
         .bind(&now)
@@ -2659,6 +2750,28 @@ impl ProjectDb {
         }).collect())
     }
 
+    /// Every AI coding proposal across the corpus (both raters). Used to compute
+    /// inter-rater agreement on the AI coding pass.
+    pub async fn list_all_ai_coding_proposals(&self) -> Result<Vec<AiCodingProposal>> {
+        let rows = sqlx::query(
+            "SELECT id, article_id, dimension, code, rationale, rater, model_name, run_id, created_at \
+             FROM ai_coding_proposal ORDER BY article_id, dimension, rater",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(|r| AiCodingProposal {
+            id: r.get("id"),
+            article_id: r.get("article_id"),
+            dimension: r.get("dimension"),
+            code: r.get("code"),
+            rationale: r.get("rationale"),
+            rater: r.get("rater"),
+            model_name: r.get("model_name"),
+            run_id: r.get("run_id"),
+            created_at: r.get("created_at"),
+        }).collect())
+    }
+
     pub async fn delete_ai_coding_proposal(&self, id: i64) -> Result<()> {
         sqlx::query("DELETE FROM ai_coding_proposal WHERE id = ?")
             .bind(id)
@@ -2900,15 +3013,34 @@ impl ProjectDb {
 
     // ── Full-text (eligibility) screening ──────────────────────────────────
 
+    /// Map of article id → full-text screening status (NULL if never full-text
+    /// reviewed). Lets the decision report attribute each include/exclude to the
+    /// screening pass that produced it without widening `ArticleRow`.
+    pub async fn fulltext_status_map(&self) -> Result<std::collections::HashMap<i64, Option<String>>> {
+        let rows = sqlx::query("SELECT id, fulltext_status FROM article")
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows
+            .iter()
+            .map(|r| {
+                let id: i64 = r.get("id");
+                let st: Option<String> = r.get("fulltext_status");
+                (id, st)
+            })
+            .collect())
+    }
+
     /// Title/abstract-included articles (plus any full-text-excluded ones, so
     /// they can be reviewed/undone), with their full-text status and PDF path.
     pub async fn list_fulltext_candidates(&self) -> Result<Vec<FulltextCandidate>> {
         let rows = sqlx::query(
-            "SELECT a.id, a.title, a.authors, a.year, a.abstract AS abstract_text, a.doi, \
-             a.fulltext_status, \
+            "SELECT a.id, a.title, a.authors, a.year, a.journal, a.abstract AS abstract_text, a.doi, \
+             a.fulltext_status, a.status AS ta_status, a.exclusion_criterion, a.ai_rationale, \
+             a.exclusion_rationale, \
              (SELECT p.stored_path FROM pdf p WHERE p.article_id = a.id LIMIT 1) AS pdf_path \
              FROM article a \
-             WHERE a.status = 'included' OR a.fulltext_status = 'excluded' \
+             WHERE a.status IN ('included', 'retrieved') \
+                OR (a.status = 'excluded' AND COALESCE(a.exclusion_criterion, 0) != 1) \
              ORDER BY a.id",
         )
         .fetch_all(&self.pool)
@@ -2920,33 +3052,55 @@ impl ProjectDb {
                 title: r.get("title"),
                 authors: r.get("authors"),
                 year: r.get("year"),
+                journal: r.get("journal"),
                 abstract_text: r.get("abstract_text"),
                 doi: r.get("doi"),
                 fulltext_status: r.get("fulltext_status"),
+                ta_status: r.get("ta_status"),
+                exclusion_criterion: r.get("exclusion_criterion"),
+                ai_rationale: r.get("ai_rationale"),
+                exclusion_rationale: r.get("exclusion_rationale"),
                 pdf_path: r.get("pdf_path"),
             })
             .collect())
     }
 
-    /// Mark an article reviewed and kept at full text (stays in the corpus).
+    /// Mark an article reviewed and kept at full text. This both records the
+    /// full-text decision and ensures the article is in the corpus: an article
+    /// that was still pending title/abstract (status='retrieved') is promoted to
+    /// 'included' here (resolving its T&A screening at the full-text stage), and
+    /// `screened_at` is stamped if it wasn't already. Already-included articles
+    /// are unaffected beyond gaining fulltext_status='included'.
     pub async fn fulltext_keep(&self, article_id: i64) -> Result<()> {
         let now = chrono::Utc::now().to_rfc3339();
-        sqlx::query("UPDATE article SET fulltext_status = 'included', updated_at = ? WHERE id = ?")
-            .bind(&now)
-            .bind(article_id)
-            .execute(&self.pool)
-            .await?;
+        sqlx::query(
+            "UPDATE article SET status = 'included', fulltext_status = 'included', \
+             screened_at = COALESCE(screened_at, ?), updated_at = ? WHERE id = ?",
+        )
+        .bind(&now)
+        .bind(&now)
+        .bind(article_id)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
     /// Exclude an article at full text: leaves the corpus (status='excluded')
     /// and is marked so the decision trail/PRISMA can tell it apart.
-    pub async fn fulltext_exclude(&self, article_id: i64) -> Result<()> {
+    pub async fn fulltext_exclude(
+        &self,
+        article_id: i64,
+        criterion: Option<i64>,
+        rationale: Option<&str>,
+    ) -> Result<()> {
         let now = chrono::Utc::now().to_rfc3339();
         sqlx::query(
             "UPDATE article SET status = 'excluded', fulltext_status = 'excluded', \
+             exclusion_criterion = ?, exclusion_rationale = ?, \
              screened_at = ?, updated_at = ? WHERE id = ?",
         )
+        .bind(criterion)
+        .bind(rationale)
         .bind(&now)
         .bind(&now)
         .bind(article_id)
@@ -3181,18 +3335,6 @@ impl ProjectDb {
         }).collect())
     }
 
-    pub async fn set_ai_disagreement(&self, article_id: i64, rationale: &str) -> Result<()> {
-        let now = chrono::Utc::now().to_rfc3339();
-        sqlx::query(
-            "UPDATE article SET ai_rationale = ?, ai_confidence = 0.0, updated_at = ? WHERE id = ?",
-        )
-        .bind(rationale)
-        .bind(&now)
-        .bind(article_id)
-        .execute(&self.pool)
-        .await?;
-        Ok(())
-    }
 
     pub async fn ai_coding_coverage(&self) -> Result<AiCodingCoverage> {
         let ready: i64 = sqlx::query_scalar(

@@ -29,7 +29,9 @@ pub async fn clone_template(
             stage: "onboarding".into(),
             sub_stage: None,
             decision_key: key.into(),
-            value_json: serde_json::to_string(v).unwrap(),
+            // Serializing a string is infallible in practice; fall back to a
+            // quoted debug form rather than panicking inside a command.
+            value_json: serde_json::to_string(v).unwrap_or_else(|_| format!("{v:?}")),
             rationale: None,
         })
     };

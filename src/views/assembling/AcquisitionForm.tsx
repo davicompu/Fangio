@@ -1,7 +1,7 @@
 import { useState, useRef } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { motion } from "framer-motion";
-import { Calendar, Check, Clipboard, Database, ExternalLink, Filter, Globe, Lightbulb, Loader2, Plus, Save, Search, Settings as SettingsIcon, Sparkles, X } from "lucide-react";
+import { Calendar, Check, Clipboard, Database, ExternalLink, Filter, Globe, Lightbulb, Link2, Loader2, Plus, Save, Search, Settings as SettingsIcon, Sparkles, X } from "lucide-react";
 import { api, type ProjectRow, type SuggestQueryResult } from "../../lib/api";
 import { Card } from "../../components/ui/Card";
 import { TextField, TextArea } from "../../components/ui/TextField";
@@ -13,11 +13,13 @@ interface Props {
   project: ProjectRow;
   settings: AppSettings;
   onSaved: () => void;
+  /** Called after a successful save from the primary button, to advance to Importing. */
+  onSavedAdvance?: () => void;
   onOpenSettings: () => void;
   onUpdateDatabaseUrl: (id: string, url: string) => Promise<void> | void;
 }
 
-export function AcquisitionForm({ project, settings, onSaved, onOpenSettings, onUpdateDatabaseUrl }: Props) {
+export function AcquisitionForm({ project, settings, onSaved, onSavedAdvance, onOpenSettings, onUpdateDatabaseUrl }: Props) {
   const DATABASES = settings["databases.config"] ?? [];
   const [urlDrafts, setUrlDrafts] = useState<Record<string, string>>({});
   const [savingUrl, setSavingUrl] = useState<string | null>(null);
@@ -131,6 +133,8 @@ export function AcquisitionForm({ project, settings, onSaved, onOpenSettings, on
       });
       setSavedAt(Date.now());
       onSaved();
+      // Give the "Saved" affirmation a beat to register, then advance to Importing.
+      if (onSavedAdvance) setTimeout(() => onSavedAdvance(), 450);
     } catch (e: unknown) {
       setSaveError("Save failed — check that the project file is writable.");
       console.error(e);
@@ -255,8 +259,14 @@ export function AcquisitionForm({ project, settings, onSaved, onOpenSettings, on
           const needUrl = DATABASES.filter((d) => databases.has(d.id) && !d.url);
           if (needUrl.length === 0) return null;
           return (
-            <div className="mt-4 rounded-[var(--radius-sm)] border border-[var(--color-accent-300)] bg-[var(--color-accent-50)] p-4 space-y-3">
-              <p className="text-[12px] text-[var(--color-accent-700)] leading-relaxed">
+            <div className="mt-4 rounded-[var(--radius-md)] border-l-4 border border-[var(--color-warn-400)] border-l-[var(--color-warn-500)] bg-[var(--color-warn-50)] p-4 space-y-3 shadow-[var(--shadow-paper)]">
+              <div className="flex items-center gap-2">
+                <Link2 size={15} strokeWidth={2} className="text-[var(--color-warn-600)] shrink-0" />
+                <span className="text-[13px] font-semibold text-[var(--color-warn-700)]">
+                  {needUrl.length === 1 ? "Search URL needed" : `${needUrl.length} search URLs needed`}
+                </span>
+              </div>
+              <p className="text-[12px] text-[var(--color-warn-700)]/90 leading-relaxed">
                 Add the search URL for {needUrl.length === 1 ? "this database" : "these databases"} so you can
                 launch {needUrl.length === 1 ? "it" : "them"} from here. Paste the page where you run an advanced
                 search (you can also set these later in Settings).
@@ -270,7 +280,7 @@ export function AcquisitionForm({ project, settings, onSaved, onOpenSettings, on
                     onChange={(e) => setUrlDrafts((s) => ({ ...s, [d.id]: e.target.value }))}
                     onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); saveDatabaseUrl(d.id); } }}
                     placeholder="e.g., scopus.com/search/form.uri"
-                    className="flex-1 px-2.5 py-1.5 text-[12px] rounded-[var(--radius-xs)] border border-[var(--color-accent-300)] bg-white placeholder:text-[var(--color-paper-400)] focus:outline-none focus:ring-1 focus:ring-[var(--color-accent-400)]"
+                    className="flex-1 px-2.5 py-1.5 text-[12px] rounded-[var(--radius-xs)] border border-[var(--color-warn-400)] bg-white placeholder:text-[var(--color-paper-400)] focus:outline-none focus:ring-1 focus:ring-[var(--color-warn-500)]"
                   />
                   <Button
                     onClick={() => saveDatabaseUrl(d.id)}

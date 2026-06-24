@@ -46,10 +46,18 @@ export interface AppSettings {
   "temperature.qa": number;
   /** Full database configuration — replaces the old per-database.*.url keys */
   "databases.config": DatabaseEntry[];
+  /** Shared base system prompt (persona) for every AI rater — screening + coding.
+   *  Blank means use Reeves' built-in default (DEFAULT_RATER_SYSTEM_PROMPT). */
+  "ai_raters.system_prompt": string;
   /** Rater profiles for dual-rater AI screening and coding */
   "ai_raters.rater1.profile": string;
   "ai_raters.rater2.profile": string;
 }
+
+/** Mirrors `suggest::DEFAULT_RATER_SYSTEM_PROMPT` in the Rust backend. Shown as the
+ *  placeholder/restore value in Settings so the user can see and edit the default. */
+export const DEFAULT_RATER_SYSTEM_PROMPT =
+  "You are a meticulous researcher conducting a systematic literature review to identify themes in the literature, following PRISMA 2020 and established systematic-review (SLR) principles. You reason strictly from the evidence placed in front of you — you never fabricate findings, invent details, or infer beyond what the text supports. You commit to a decision only when the evidence makes you genuinely confident; when the evidence is insufficient, you say so rather than guess. You are precise, consistent, and transparent about the reasoning behind every judgement.";
 
 const DEFAULTS: AppSettings = {
   "lmstudio.base_url": "http://127.0.0.1:1234/v1",
@@ -65,6 +73,7 @@ const DEFAULTS: AppSettings = {
   "temperature.suggestions": 0.3,
   "temperature.qa": 0.2,
   "databases.config": DEFAULT_DATABASES,
+  "ai_raters.system_prompt": "",
   "ai_raters.rater1.profile": "",
   "ai_raters.rater2.profile": "",
 };
