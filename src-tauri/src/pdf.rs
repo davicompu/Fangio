@@ -17,7 +17,6 @@ const CHUNK_OVERLAP_CHARS: usize = 100;
 
 pub struct ExtractedPdf {
     pub text: String,
-    pub page_count: Option<usize>,
 }
 
 pub fn extract(path: &Path) -> Result<ExtractedPdf> {
@@ -25,7 +24,6 @@ pub fn extract(path: &Path) -> Result<ExtractedPdf> {
     if let Ok(text) = extract_via_pdftotext(path) {
         return Ok(ExtractedPdf {
             text: normalize_text(&text),
-            page_count: None,
         });
     }
     // Fallback: pure-Rust pdf-extract (no system dependency required).
@@ -101,7 +99,6 @@ fn extract_via_pdf_extract(path: &Path) -> Result<ExtractedPdf> {
     };
     Ok(ExtractedPdf {
         text: normalize_text(&raw),
-        page_count: None,
     })
 }
 

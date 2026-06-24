@@ -727,7 +727,7 @@ impl ProjectDb {
 
     pub async fn list_articles_for_dedup(&self) -> Result<Vec<crate::dedup::DedupCandidate>> {
         let rows = sqlx::query(
-            "SELECT id, title, year, doi, authors, journal FROM article \
+            "SELECT id, title, year, doi FROM article \
              WHERE status = 'retrieved' ORDER BY id",
         )
         .fetch_all(&self.pool)
@@ -739,8 +739,6 @@ impl ProjectDb {
                 title: r.get("title"),
                 year: r.get("year"),
                 doi: r.get("doi"),
-                authors: r.get("authors"),
-                journal: r.get("journal"),
             })
             .collect())
     }

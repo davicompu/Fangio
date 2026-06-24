@@ -16,19 +16,7 @@ import { api, type ArticleFields, type ArticleRow } from "../../lib/api";
 import { Card } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
 import { cn } from "../../lib/utils";
-
-/** Parse the JSON `source_databases` column into a display list. */
-function parseSources(raw: string | null): string[] {
-  if (!raw) return [];
-  try {
-    const v = JSON.parse(raw);
-    if (Array.isArray(v)) return v.filter((x) => typeof x === "string");
-    if (typeof v === "string") return [v];
-  } catch {
-    return [raw];
-  }
-  return [];
-}
+import { parseSources } from "../../lib/articleMeta";
 
 function blankFields(): ArticleFields {
   return { title: "", authors: null, year: null, journal: null, doi: null, url: null, abstract_text: null, source_databases: [] };

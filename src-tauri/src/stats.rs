@@ -37,23 +37,6 @@ pub fn cohens_kappa(pairs: &[(String, String)]) -> Option<(f64, f64)> {
     Some((kappa, p_o))
 }
 
-/// Landis & Koch (1977) qualitative band for a kappa value.
-pub fn kappa_interpretation(kappa: f64) -> &'static str {
-    if kappa < 0.0 {
-        "Poor (worse than chance)"
-    } else if kappa <= 0.20 {
-        "Slight"
-    } else if kappa <= 0.40 {
-        "Fair"
-    } else if kappa <= 0.60 {
-        "Moderate"
-    } else if kappa <= 0.80 {
-        "Substantial"
-    } else {
-        "Almost perfect"
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -101,12 +84,5 @@ mod tests {
         assert!((po - 0.8).abs() < 1e-9);
         // p_e = .6*.6 + .4*.4 = .52; kappa = (.8-.52)/(1-.52) = .5833…
         assert!((k - 0.5833333333333334).abs() < 1e-9, "kappa was {k}");
-    }
-
-    #[test]
-    fn interpretation_bands() {
-        assert_eq!(kappa_interpretation(-0.1), "Poor (worse than chance)");
-        assert_eq!(kappa_interpretation(0.5), "Moderate");
-        assert_eq!(kappa_interpretation(0.9), "Almost perfect");
     }
 }

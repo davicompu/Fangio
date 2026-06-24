@@ -23,6 +23,10 @@ export interface LmEndpoint {
   name: string;
   base_url: string;
   api_key: string;
+  /** Models last selected for this endpoint, restored when it's activated so
+   *  each endpoint remembers its own reasoning/embedding model. */
+  chat_model?: string;
+  embed_model?: string;
 }
 
 export interface AppSettings {

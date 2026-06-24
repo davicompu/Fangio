@@ -122,13 +122,29 @@ export function Settings({ open: openSetting, onClose, settings, onUpdate, lm, o
     }
   };
 
+  // Remember a model choice on the active endpoint profile, so switching
+  // endpoints later restores the right model instead of the previous one.
+  const persistModelToActiveEndpoint = async (patch: { chat_model?: string; embed_model?: string }) => {
+    const active = settings["lmstudio.active_endpoint"];
+    if (!active) return;
+    const eps = settings["lmstudio.endpoints"];
+    if (!eps.some((e) => e.name === active)) return;
+    const next = eps.map((e) => (e.name === active ? { ...e, ...patch } : e));
+    await onUpdate("lmstudio.endpoints", next);
+  };
+
+  const handleChatModelChange = async (newModel: string) => {
+    await onUpdate("lmstudio.chat_model", newModel);
+    await persistModelToActiveEndpoint({ chat_model: newModel });
+  };
+
   const handleEmbedModelChange = (newModel: string) => {
     const current = settings["lmstudio.embed_model"];
     // Only warn if there was a model set before (implying embeddings exist)
     if (current && current !== newModel) {
       setPendingEmbedModel(newModel);
     } else {
-      onUpdate("lmstudio.embed_model", newModel);
+      void onUpdate("lmstudio.embed_model", newModel).then(() => persistModelToActiveEndpoint({ embed_model: newModel }));
     }
   };
 
@@ -138,6 +154,7 @@ export function Settings({ open: openSetting, onClose, settings, onUpdate, lm, o
     try {
       await api.purgeEmbeddings();
       await onUpdate("lmstudio.embed_model", pendingEmbedModel);
+      await persistModelToActiveEndpoint({ embed_model: pendingEmbedModel });
     } finally {
       setPurging(false);
       setPendingEmbedModel(null);
@@ -262,15 +279,23 @@ export function Settings({ open: openSetting, onClose, settings, onUpdate, lm, o
                       <Select
                         label="Default reasoning model"
                         value={settings["lmstudio.chat_model"]}
-                        onChange={(e) => onUpdate("lmstudio.chat_model", e.target.value)}
+                        onChange={(e) => handleChatModelChange(e.target.value)}
                       >
                         <option value="">— pick a model —</option>
+                        {settings["lmstudio.chat_model"] && !lm.models.some((m) => m.id === settings["lmstudio.chat_model"]) && (
+                          <option value={settings["lmstudio.chat_model"]}>{settings["lmstudio.chat_model"]} (not on this endpoint)</option>
+                        )}
                         {lm.models.map((m) => (
                           <option key={m.id} value={m.id}>
                             {m.id}
                           </option>
                         ))}
                       </Select>
+                      {settings["lmstudio.chat_model"] && !lm.models.some((m) => m.id === settings["lmstudio.chat_model"]) && (
+                        <p className="text-[12px] text-[var(--color-warn-700)] -mt-2">
+                          The reasoning model “{settings["lmstudio.chat_model"]}” isn’t available on this endpoint — pick a reasoning model above.
+                        </p>
+                      )}
 
                       <Select
                         label="Default embedding model"
@@ -279,12 +304,20 @@ export function Settings({ open: openSetting, onClose, settings, onUpdate, lm, o
                         hint="Required for the PDF library and the corpus RAG (Stage 3 feature). Changing model purges all indexed vectors."
                       >
                         <option value="">— optional —</option>
+                        {settings["lmstudio.embed_model"] && !lm.models.some((m) => m.id === settings["lmstudio.embed_model"]) && (
+                          <option value={settings["lmstudio.embed_model"]}>{settings["lmstudio.embed_model"]} (not on this endpoint)</option>
+                        )}
                         {lm.models.map((m) => (
                           <option key={m.id} value={m.id}>
                             {m.id}
                           </option>
                         ))}
                       </Select>
+                      {settings["lmstudio.embed_model"] && !lm.models.some((m) => m.id === settings["lmstudio.embed_model"]) && (
+                        <p className="text-[12px] text-[var(--color-warn-700)] -mt-2">
+                          The embedding model “{settings["lmstudio.embed_model"]}” isn’t available on this endpoint — pick an embedding model above.
+                        </p>
+                      )}
 
                       <SettingRow
                         icon={<Filter size={14} strokeWidth={1.75} />}
@@ -679,6 +712,8 @@ function EndpointManager({
         name: "Default",
         base_url: settings["lmstudio.base_url"],
         api_key: settings["lmstudio.api_key"] || "",
+        chat_model: settings["lmstudio.chat_model"] || "",
+        embed_model: settings["lmstudio.embed_model"] || "",
       };
       void onUpdate("lmstudio.endpoints", [seeded]);
       void onUpdate("lmstudio.active_endpoint", seeded.name);
@@ -761,6 +796,11 @@ function EndpointManager({
     await onUpdate("lmstudio.active_endpoint", ep.name);
     await onUpdate("lmstudio.base_url", ep.base_url);
     await onUpdate("lmstudio.api_key", ep.api_key);
+    // Restore this endpoint's own models so we don't keep requesting the
+    // previous endpoint's model. If none was saved yet, leave the current
+    // selection — the AI-models section flags it if it isn't available here.
+    if (ep.chat_model !== undefined) await onUpdate("lmstudio.chat_model", ep.chat_model);
+    if (ep.embed_model !== undefined) await onUpdate("lmstudio.embed_model", ep.embed_model);
     onActiveChange(ep.base_url, ep.api_key);
     // Re-test the connection against the freshly-activated endpoint so the
     // status bar updates without the user having to click Test.

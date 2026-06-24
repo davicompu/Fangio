@@ -16,8 +16,6 @@ pub struct DedupCandidate {
     pub title: String,
     pub year: Option<i32>,
     pub doi: Option<String>,
-    pub authors: Option<String>,
-    pub journal: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]

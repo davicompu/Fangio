@@ -40,8 +40,6 @@ struct ChatRequest<'a> {
 #[derive(Debug, Deserialize)]
 pub struct ChatChoice {
     pub message: ChatMessage,
-    #[serde(default)]
-    pub finish_reason: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -90,8 +88,6 @@ pub struct EmbedItem {
 #[derive(Debug, Deserialize)]
 pub struct EmbedResponse {
     pub data: Vec<EmbedItem>,
-    #[serde(default)]
-    pub model: Option<String>,
 }
 
 fn parse_url(base_url: &str) -> Result<Url> {

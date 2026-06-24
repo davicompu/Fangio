@@ -112,17 +112,21 @@ export function AiCodingModal({
 
   const handleBuildCodebook = async (onlyMissing = false) => {
     if (selectedDims.size === 0) return;
-    // Rebuilding from scratch replaces the shared vocabulary, so any coding done
-    // against the old codebook is stale. Confirm and reset it before continuing.
+    // Rebuilding from scratch replaces the shared vocabulary and discards any
+    // edits to the proposed codes. Always confirm; and if articles were already
+    // coded against the old codebook, reset that AI coding too.
     const isRebuild = !onlyMissing && codebookReady;
     let resetCoding = false;
-    if (isRebuild && cbCoverage?.any_coded) {
+    if (isRebuild) {
+      const coded = !!cbCoverage?.any_coded;
       const ok = await confirmDialog(
-        "Rebuilding replaces the shared codebook. Existing AI coding was done against the old codebook, so it will be reset — you'll re-run coding afterward. Your own (researcher) codes are kept. Continue?",
-        { title: "Reset coding and rebuild?", kind: "warning", okLabel: "Reset & rebuild", cancelLabel: "Cancel" },
+        coded
+          ? "Rebuilding replaces the current codebook. Existing AI coding was done against it, so it will be reset — you'll re-run coding afterward. Your own (researcher) codes are kept. Continue?"
+          : "Rebuilding replaces the current codebook and discards any edits you made to the proposed codes. Continue?",
+        { title: "Rebuild codebook?", kind: "warning", okLabel: coded ? "Reset & rebuild" : "Rebuild", cancelLabel: "Cancel" },
       );
       if (!ok) return;
-      resetCoding = true;
+      resetCoding = coded;
     }
     setBuilding(true);
     setCbMsg(null);

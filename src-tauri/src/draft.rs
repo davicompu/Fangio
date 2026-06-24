@@ -199,14 +199,6 @@ pub async fn generate(db: &ProjectDb) -> Result<String> {
     Ok(s)
 }
 
-pub fn write_to_workspace(workspace: &std::path::Path, content: &str) -> Result<std::path::PathBuf> {
-    let dir = workspace.join("drafts");
-    std::fs::create_dir_all(&dir)?;
-    let path = dir.join("slr_draft.md");
-    std::fs::write(&path, content)?;
-    Ok(path)
-}
-
 /// Read the saved draft markdown if one exists (empty string when none).
 pub fn read_from_workspace(workspace: &std::path::Path) -> Result<String> {
     let path = workspace.join("drafts").join("slr_draft.md");

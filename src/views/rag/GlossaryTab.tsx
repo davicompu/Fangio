@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { BookOpen, Loader2, Plus, RefreshCw, Search, Trash2, X } from "lucide-react";
 import { api, type ArticleRow, type GlossaryTerm } from "../../lib/api";
 import { startGlossaryExtract, useGlossaryTask } from "../../lib/bgTasks";
+import { parseArticleIds, parseAliases } from "../../lib/articleMeta";
 
 export function GlossaryTab() {
   const [terms, setTerms] = useState<GlossaryTerm[]>([]);
@@ -79,12 +80,7 @@ export function GlossaryTab() {
     const q = query.toLowerCase();
     if (t.term.toLowerCase().includes(q)) return true;
     if (t.definition.toLowerCase().includes(q)) return true;
-    try {
-      const aliases: string[] = JSON.parse(t.aliases || "[]");
-      return aliases.some((a) => a.toLowerCase().includes(q));
-    } catch {
-      return false;
-    }
+    return parseAliases(t.aliases).some((a) => a.toLowerCase().includes(q));
   });
 
   return (
@@ -185,14 +181,10 @@ export function GlossaryTab() {
         {!loading && filtered.length > 0 && (
           <div className="divide-y divide-[var(--color-paper-100)]">
             {filtered.map((term) => {
-              const articleCount = (() => {
-                try { return JSON.parse(term.article_ids).length; } catch { return 0; }
-              })();
+              const articleIds = parseArticleIds(term.article_ids);
+              const articleCount = articleIds.length;
               const isExpanded = expandedId === term.id;
 
-              const articleIds: number[] = (() => {
-                try { return JSON.parse(term.article_ids); } catch { return []; }
-              })();
               const sources: ArticleRow[] = articleIds
                 .map((id) => articlesById.get(id))
                 .filter((a): a is ArticleRow => !!a);
@@ -209,8 +201,7 @@ export function GlossaryTab() {
                           {term.term}
                         </span>
                         {(() => {
-                          let aliases: string[] = [];
-                          try { aliases = JSON.parse(term.aliases || "[]"); } catch { /* noop */ }
+                          const aliases = parseAliases(term.aliases);
                           if (aliases.length === 0) return null;
                           return (
                             <span className="text-[11px] text-[var(--color-paper-500)] italic">
