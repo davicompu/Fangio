@@ -207,6 +207,7 @@ function App() {
                 await refreshProject();
                 setRoute("assessing");
               }}
+              onOpenRag={() => openRag("arranging")}
               lmModels={lm.models}
               defaultChatModel={settings["lmstudio.chat_model"]}
             />

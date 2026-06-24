@@ -1,23 +1,27 @@
 import { useState } from "react";
-import { ArrowLeft, MessageSquare, Network, BookOpen, Share2 } from "lucide-react";
+import { ArrowLeft, MessageSquare, Network, BookOpen, Share2, Library, CircleDot } from "lucide-react";
 import { cn } from "../lib/utils";
 import { ChatTab } from "./rag/ChatTab";
 import { ClustersTab } from "./rag/ClustersTab";
 import { GlossaryTab } from "./rag/GlossaryTab";
 import { ConceptMapTab } from "./rag/ConceptMapTab";
+import { LibraryTab } from "./rag/LibraryTab";
+import { ConceptOverlapTab } from "./rag/ConceptOverlapTab";
 
 interface Props {
   onBack: () => void;
   onOpenSettings: () => void;
 }
 
-type Tab = "chat" | "clusters" | "glossary" | "map";
+type Tab = "chat" | "library" | "clusters" | "glossary" | "map" | "overlap";
 
 const TABS: { id: Tab; label: string; Icon: React.ElementType }[] = [
-  { id: "chat",     label: "Chat",         Icon: MessageSquare },
-  { id: "clusters", label: "Clusters",     Icon: Network },
-  { id: "glossary", label: "Glossary",     Icon: BookOpen },
-  { id: "map",      label: "Concept map",  Icon: Share2 },
+  { id: "chat",     label: "Chat",            Icon: MessageSquare },
+  { id: "library",  label: "Library",         Icon: Library },
+  { id: "clusters", label: "Clusters",        Icon: Network },
+  { id: "glossary", label: "Glossary",        Icon: BookOpen },
+  { id: "map",      label: "Concept map",     Icon: Share2 },
+  { id: "overlap",  label: "Concept overlap", Icon: CircleDot },
 ];
 
 export function RagChatView({ onBack, onOpenSettings }: Props) {
@@ -67,6 +71,9 @@ export function RagChatView({ onBack, onOpenSettings }: Props) {
         <div className={cn("absolute inset-0", tab === "chat" ? "" : "hidden")}>
           <ChatTab onOpenSettings={onOpenSettings} />
         </div>
+        <div className={cn("absolute inset-0 overflow-y-auto", tab === "library" ? "" : "hidden")}>
+          <LibraryTab />
+        </div>
         <div className={cn("absolute inset-0", tab === "clusters" ? "" : "hidden")}>
           <ClustersTab />
         </div>
@@ -75,6 +82,9 @@ export function RagChatView({ onBack, onOpenSettings }: Props) {
         </div>
         <div className={cn("absolute inset-0", tab === "map" ? "" : "hidden")}>
           <ConceptMapTab />
+        </div>
+        <div className={cn("absolute inset-0 overflow-y-auto", tab === "overlap" ? "" : "hidden")}>
+          <ConceptOverlapTab />
         </div>
       </div>
     </div>

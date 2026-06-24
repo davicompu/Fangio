@@ -4,11 +4,11 @@
 
 use anyhow::{anyhow, Result};
 use reqwest::Client;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 /// Subset of the Crossref `/works/{doi}` response we care about.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Serialize)]
 pub struct CrossrefRecord {
     pub title: Option<String>,
     pub authors: Option<String>,

@@ -44,6 +44,7 @@ interface Props {
   onLeaveStage: () => void;
   onProjectChanged: () => Promise<void>;
   onAdvanceStage: (nextStage: "assessing") => Promise<void>;
+  onOpenRag: () => void;
   lmModels: LmModel[];
   defaultChatModel: string;
 }
@@ -98,7 +99,7 @@ const tabInfo: Record<Tab, { headline: string; body: string; tip?: string }> = {
   },
 };
 
-export function ArrangingStage({ project, onLeaveStage, onProjectChanged, onAdvanceStage, lmModels, defaultChatModel }: Props) {
+export function ArrangingStage({ project, onLeaveStage, onProjectChanged, onAdvanceStage, onOpenRag, lmModels, defaultChatModel }: Props) {
   const [tab, setTab] = useState<Tab>("organization");
   const [advancing, setAdvancing] = useState(false);
   const [refreshTick, setRefreshTick] = useState(0);
@@ -115,6 +116,11 @@ export function ArrangingStage({ project, onLeaveStage, onProjectChanged, onAdva
   const [dimensions, setDimensions] = useState<DimensionInfo[]>([]);
   const [codingAgreement, setCodingAgreement] = useState<CodingAgreement | null>(null);
   const lastTabHydrated = useRef(false);
+  // Gate the panel render until the saved tab is resolved, so the AnimatePresence
+  // child mounts with its final key. Otherwise the async setTab(saved) swaps the
+  // key right after mount and mode="wait" can leave the pane stuck invisible
+  // until a manual tab click — the "click Organisation to make it render" bug.
+  const [hydrated, setHydrated] = useState(false);
   const ALL_TAB_IDS: Tab[] = ["organization", "criteria", "screening", "fulltext", "coding", "prisma", "finish"];
 
   useEffect(() => {
@@ -138,8 +144,10 @@ export function ArrangingStage({ project, onLeaveStage, onProjectChanged, onAdva
         }
         lastTabHydrated.current = true;
       }
+      setHydrated(true);
     }).catch(() => {
       lastTabHydrated.current = true;
+      setHydrated(true);
     });
   }, [project.id, refreshTick]);
 
@@ -224,6 +232,13 @@ export function ArrangingStage({ project, onLeaveStage, onProjectChanged, onAdva
             </h1>
           </div>
         </div>
+        <button
+          onClick={onOpenRag}
+          className="no-drag group inline-flex items-center gap-2 px-4 h-9 rounded-[var(--radius-sm)] text-[12px] font-semibold bg-[var(--color-accent-500)] text-white hover:bg-[var(--color-accent-600)] shadow-sm transition-paper"
+        >
+          <Sparkles size={13} strokeWidth={1.75} className="text-[var(--color-accent-200)] group-hover:text-white" />
+          Ask the literature
+        </button>
       </header>
 
       <nav className="px-6 xl:px-12 mb-6">
@@ -237,6 +252,7 @@ export function ArrangingStage({ project, onLeaveStage, onProjectChanged, onAdva
       <div className="flex-1 grid grid-cols-[1fr_240px] xl:grid-cols-[1fr_300px] pb-32 min-w-0">
         {/* Main content column */}
         <div className="min-w-0">
+          {hydrated && (
           <AnimatePresence mode="wait">
             <motion.div
               key={tab}
@@ -276,10 +292,12 @@ export function ArrangingStage({ project, onLeaveStage, onProjectChanged, onAdva
               </ErrorBoundary>
             </motion.div>
           </AnimatePresence>
+          )}
         </div>
 
         {/* Right info column */}
         <div className="pr-6 pl-3 xl:pr-12 xl:pl-4 pt-2">
+          {hydrated && (
           <AnimatePresence mode="wait">
             <motion.aside
               key={tab + "-info"}
@@ -413,6 +431,7 @@ export function ArrangingStage({ project, onLeaveStage, onProjectChanged, onAdva
               )}
             </motion.aside>
           </AnimatePresence>
+          )}
         </div>
       </div>
 

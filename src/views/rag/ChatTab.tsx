@@ -50,6 +50,8 @@ export function ChatTab({ onOpenSettings }: Props) {
     return msg;
   })();
   const [confirmForceRebuild, setConfirmForceRebuild] = useState(false);
+  // First-open nudge to index, so the corpus isn't silently empty. Dismissible.
+  const [indexPromptDismissed, setIndexPromptDismissed] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>(() => chatSessionCache.messages);
   const [input, setInput] = useState(() => chatSessionCache.input);
   // Mirror the live state into the module-level cache on every change so a
@@ -139,8 +141,43 @@ export function ChatTab({ onOpenSettings }: Props) {
       ? Math.round((progress.done / progress.total) * 100)
       : 0;
 
+  const showIndexPrompt =
+    status !== null && status.articles_with_pdf > 0 && !isIndexed && !building && !indexPromptDismissed;
+
   return (
     <div className="flex-1 px-6 xl:px-12 pb-8 flex flex-col gap-6 overflow-hidden h-full pt-6">
+      {/* First-open prompt to index the corpus */}
+      <AnimatePresence>
+        {showIndexPrompt && (
+          <motion.div
+            initial={{ opacity: 0, y: -8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -8 }}
+            className="rounded-[var(--radius-sm)] border border-[var(--color-accent-300)] bg-[var(--color-accent-50)] px-5 py-3.5 flex items-center gap-3"
+          >
+            <Sparkles size={16} strokeWidth={1.75} className="text-[var(--color-accent-600)] shrink-0" />
+            <div className="flex-1">
+              <p className="text-[13px] font-medium text-[var(--color-ink-800)]">Your corpus isn't indexed yet</p>
+              <p className="text-[12px] text-[var(--color-paper-600)] mt-0.5">
+                Index {status!.articles_with_pdf} article{status!.articles_with_pdf !== 1 ? "s" : ""} with PDFs so you can chat, cluster, and map concepts.
+              </p>
+            </div>
+            <button
+              onClick={() => setIndexPromptDismissed(true)}
+              className="px-3 h-8 rounded-[var(--radius-sm)] text-[12px] text-[var(--color-paper-600)] hover:bg-[var(--color-paper-100)] transition-paper"
+            >
+              Later
+            </button>
+            <button
+              onClick={() => { handleBuild(); setIndexPromptDismissed(true); }}
+              className="inline-flex items-center gap-1.5 px-3 h-8 rounded-[var(--radius-sm)] text-[12px] font-semibold bg-[var(--color-accent-500)] text-white hover:bg-[var(--color-accent-600)] transition-paper"
+            >
+              <Database size={13} strokeWidth={1.75} /> Start indexing
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Index status card */}
       <div className={cn(
         "rounded-[var(--radius-sm)] border p-5",

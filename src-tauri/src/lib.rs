@@ -860,6 +860,15 @@ async fn rename_framework_code_def(id: i64, code: String, state: State<'_, AppSt
     db.rename_framework_code_def(id, &canonical_code_case(&code)).await.map_err(err)
 }
 
+/// Discard all AI-applied coding (and its proposals/adjudications/consolidations),
+/// leaving researcher codes untouched. Used when rebuilding the codebook so the
+/// corpus isn't left coded against a stale vocabulary.
+#[tauri::command]
+async fn reset_ai_coding(state: State<'_, AppState>) -> Result<(), String> {
+    let db = state.current().await.ok_or("no project open")?;
+    db.revert_ai_coding().await.map_err(err)
+}
+
 /// Deserializer that accepts either a JSON array of strings or null/missing → empty Vec.
 fn deserialize_string_vec<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
 where
@@ -1774,6 +1783,85 @@ async fn update_article_source(
     db.update_article_source(article_id, source_databases).await.map_err(err)
 }
 
+#[derive(Debug, Deserialize)]
+struct ArticleFields {
+    title: String,
+    authors: Option<String>,
+    year: Option<i32>,
+    journal: Option<String>,
+    doi: Option<String>,
+    url: Option<String>,
+    abstract_text: Option<String>,
+    /// Source database label(s) shown on the literature card. Defaults to a
+    /// "Manually added" marker when omitted so the origin is always visible.
+    #[serde(default)]
+    source_databases: Vec<String>,
+}
+
+/// Manually add a single article to the corpus (literature list "Add" flow).
+#[tauri::command]
+async fn create_article(fields: ArticleFields, state: State<'_, AppState>) -> Result<i64, String> {
+    let db = state.current().await.ok_or("no project open")?;
+    if fields.title.trim().is_empty() {
+        return Err("An article needs a title.".into());
+    }
+    let sources = if fields.source_databases.is_empty() {
+        vec!["Manually added".to_string()]
+    } else {
+        fields.source_databases
+    };
+    let new = NewArticle {
+        title: fields.title.trim().to_string(),
+        authors: fields.authors,
+        year: fields.year,
+        journal: fields.journal,
+        abstract_text: fields.abstract_text,
+        doi: fields.doi,
+        url: fields.url,
+        source_databases: sources,
+        import_batches: vec![],
+    };
+    db.insert_article(&new).await.map_err(err)
+}
+
+/// Edit an existing article's bibliographic fields.
+#[tauri::command]
+async fn update_article_fields(article_id: i64, fields: ArticleFields, state: State<'_, AppState>) -> Result<(), String> {
+    let db = state.current().await.ok_or("no project open")?;
+    if fields.title.trim().is_empty() {
+        return Err("An article needs a title.".into());
+    }
+    let sources = if fields.source_databases.is_empty() {
+        None
+    } else {
+        Some(serde_json::json!(fields.source_databases).to_string())
+    };
+    db.update_article_fields(
+        article_id,
+        fields.title.trim(),
+        fields.authors,
+        fields.year,
+        fields.journal,
+        fields.doi,
+        fields.url,
+        fields.abstract_text,
+        sources,
+    )
+    .await
+    .map_err(err)
+}
+
+/// Look up metadata for a DOI via Crossref so the "Add via DOI" flow can
+/// pre-fill the form. Returns the fields it could resolve (any may be null).
+#[tauri::command]
+async fn lookup_doi(doi: String) -> Result<crossref::CrossrefRecord, String> {
+    let doi = doi.trim().trim_start_matches("https://doi.org/").trim_start_matches("http://doi.org/");
+    if doi.is_empty() {
+        return Err("Enter a DOI.".into());
+    }
+    crossref::fetch(doi).await.map_err(err)
+}
+
 #[tauri::command]
 async fn list_screening_batch(
     args: CodingBatchArgs,
@@ -2258,6 +2346,10 @@ async fn build_codebook(
     participant_vec.sort_unstable();
     let _ = db.set_setting("codebook.participated", &serde_json::json!(participant_vec)).await;
 
+    // Remember which raters built the codebook so coding is locked to the same models.
+    let _ = db.set_setting("codebook.rater1_model", &serde_json::json!(args.rater1_model)).await;
+    let _ = db.set_setting("codebook.rater2_model", &serde_json::json!(args.rater2_model)).await;
+
     let _ = app.emit("codebook:progress", CodebookProgress { done: dims_to_code.len(), total: dims_to_code.len(), phase: "consolidating".into(), detail: String::new() });
     db.record_telemetry("coding.build_codebook", &serde_json::json!({ "sampled": sampled, "codes_added": codes_added, "only_missing": args.only_missing })).await.ok();
 
@@ -2276,6 +2368,9 @@ struct CodebookCoverage {
     has_codebook: bool,
     /// Whether any articles have already been coded (→ re-coding recommended on change).
     any_coded: bool,
+    /// Models that built the codebook — coding is locked to these.
+    rater1_model: Option<String>,
+    rater2_model: Option<String>,
 }
 
 /// Coverage of the current codebook over the codeable corpus, so the coding flow
@@ -2299,12 +2394,18 @@ async fn codebook_coverage(state: State<'_, AppState>) -> Result<CodebookCoverag
     let any_coded = !db.list_all_ai_coding_proposals().await.map_err(err)?.is_empty()
         || db.arranging_progress().await.map(|p| p.articles_coded > 0).unwrap_or(false);
     let missing = coding_ids.iter().filter(|id| !participated.contains(id)).count() as i64;
+    let rater1_model = db.get_setting("codebook.rater1_model").await.ok().flatten()
+        .and_then(|v| serde_json::from_value::<Option<String>>(v).ok().flatten());
+    let rater2_model = db.get_setting("codebook.rater2_model").await.ok().flatten()
+        .and_then(|v| serde_json::from_value::<Option<String>>(v).ok().flatten());
     Ok(CodebookCoverage {
         total_with_pdf: coding_ids.len() as i64,
         participated: coding_ids.iter().filter(|id| participated.contains(id)).count() as i64,
         missing,
         has_codebook,
         any_coded,
+        rater1_model,
+        rater2_model,
     })
 }
 
@@ -5218,6 +5319,7 @@ pub fn run() {
             add_framework_code_def,
             normalize_codebook_casing,
             rename_framework_code_def,
+            reset_ai_coding,
             delete_framework_code_def,
             list_coding_batch,
             save_coding,
@@ -5231,6 +5333,9 @@ pub fn run() {
             unscreen_article,
             update_article_journal,
             update_article_source,
+            create_article,
+            update_article_fields,
+            lookup_doi,
             list_screening_batch,
             list_screening_tab,
             count_screening_tab,

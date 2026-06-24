@@ -1394,6 +1394,41 @@ impl ProjectDb {
         Ok(())
     }
 
+    /// Edit the bibliographic fields of an article in one shot (used by the
+    /// literature list's inline editor). `source_databases` is a JSON array string.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn update_article_fields(
+        &self,
+        id: i64,
+        title: &str,
+        authors: Option<String>,
+        year: Option<i32>,
+        journal: Option<String>,
+        doi: Option<String>,
+        url: Option<String>,
+        abstract_text: Option<String>,
+        source_databases: Option<String>,
+    ) -> Result<()> {
+        let now = chrono::Utc::now().to_rfc3339();
+        sqlx::query(
+            "UPDATE article SET title = ?, authors = ?, year = ?, journal = ?, doi = ?, url = ?, \
+             abstract = ?, source_databases = ?, updated_at = ? WHERE id = ?",
+        )
+        .bind(title)
+        .bind(authors)
+        .bind(year)
+        .bind(journal)
+        .bind(doi)
+        .bind(url)
+        .bind(abstract_text)
+        .bind(source_databases)
+        .bind(&now)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     /// Update only the article fields that are currently empty/null. Existing
     /// values are preserved — never overwritten.
     pub async fn fill_missing_article_metadata(

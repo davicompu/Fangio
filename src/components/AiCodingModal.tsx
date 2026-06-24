@@ -65,11 +65,12 @@ export function AiCodingModal({
   const [newCode, setNewCode] = useState<Record<string, string>>({});
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editingValue, setEditingValue] = useState("");
+  const [showRebuild, setShowRebuild] = useState(false);
   useEffect(() => {
     const un = listen<{ done: number; total: number; phase: string; detail: string }>("codebook:progress", (e) => setCbProgress(e.payload));
     return () => { un.then((f) => f()); };
   }, []);
-  const [cbCoverage, setCbCoverage] = useState<{ total_with_pdf: number; participated: number; missing: number; has_codebook: boolean; any_coded: boolean } | null>(null);
+  const [cbCoverage, setCbCoverage] = useState<{ total_with_pdf: number; participated: number; missing: number; has_codebook: boolean; any_coded: boolean; rater1_model: string | null; rater2_model: string | null } | null>(null);
   const loadCodebook = async () => {
     try {
       // Unify code casing so the codebook reads consistently regardless of which
@@ -78,7 +79,15 @@ export function AiCodingModal({
       const [defs, cov] = await Promise.all([api.listFrameworkCodeDefs(), api.codebookCoverage()]);
       setCodebookDefs(defs);
       setCbCoverage(cov);
-      setCodebookReady(defs.some((d) => selectedDims.has(d.dimension)));
+      const ready = defs.some((d) => selectedDims.has(d.dimension));
+      setCodebookReady(ready);
+      // Coding is locked to the models that built the codebook — adopt them so
+      // Step 3 codes with the same raters (even across sessions).
+      if (ready && cov.rater1_model) {
+        setRater1Model(cov.rater1_model);
+        setDualRater(cov.rater2_model != null);
+        if (cov.rater2_model) setRater2Model(cov.rater2_model);
+      }
     } catch { /* ignore */ }
   };
   // Detect whether a codebook already exists for the selected dimensions (Step 1 done).
@@ -103,13 +112,27 @@ export function AiCodingModal({
 
   const handleBuildCodebook = async (onlyMissing = false) => {
     if (selectedDims.size === 0) return;
+    // Rebuilding from scratch replaces the shared vocabulary, so any coding done
+    // against the old codebook is stale. Confirm and reset it before continuing.
+    const isRebuild = !onlyMissing && codebookReady;
+    let resetCoding = false;
+    if (isRebuild && cbCoverage?.any_coded) {
+      const ok = await confirmDialog(
+        "Rebuilding replaces the shared codebook. Existing AI coding was done against the old codebook, so it will be reset — you'll re-run coding afterward. Your own (researcher) codes are kept. Continue?",
+        { title: "Reset coding and rebuild?", kind: "warning", okLabel: "Reset & rebuild", cancelLabel: "Cancel" },
+      );
+      if (!ok) return;
+      resetCoding = true;
+    }
     setBuilding(true);
     setCbMsg(null);
     setCbProgress({ done: 0, total: 0, phase: "proposing", detail: "" });
     try {
+      if (resetCoding) await api.resetAiCoding();
       const r = await api.buildCodebook(rater1Model, dualRater ? rater2Model : null, [...selectedDims], { onlyMissing });
       await loadCodebook();
       setCodebookReady(true);
+      setShowRebuild(false);
       const base = onlyMissing
         ? `Extended the codebook from ${r.sampled} new article${r.sampled === 1 ? "" : "s"} — ${r.codes_added} code${r.codes_added === 1 ? "" : "s"} added.`
         : `Codebook built from ${r.sampled} article${r.sampled === 1 ? "" : "s"} — ${r.codes_added} new code${r.codes_added === 1 ? "" : "s"} added.`;
@@ -152,11 +175,54 @@ export function AiCodingModal({
     });
   };
 
+  // Rater model pickers — shown when first building the codebook and again under
+  // "Rebuild", since coding is locked to whichever models built the codebook.
+  const ratersEditor = (
+    <div>
+      <p className="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-paper-500)] mb-1.5">Raters</p>
+      <div className="space-y-2">
+        <div className="rounded-[var(--radius-sm)] border border-[var(--color-paper-200)] px-3 py-2.5">
+          <p className="text-[11px] font-semibold text-[var(--color-paper-500)] mb-1.5">Rater 1</p>
+          <select value={rater1Model} onChange={(e) => setRater1Model(e.target.value)} className="w-full text-[12px] px-2.5 py-1.5 rounded-[var(--radius-xs)] border border-[var(--color-paper-300)] bg-white text-[var(--color-ink-800)] focus:outline-none focus:ring-1 focus:ring-[var(--color-accent-400)]">
+            {availableModels.length === 0 && <option value={rater1Model}>{rater1Model}</option>}
+            {availableModels.map((m) => <option key={m.id} value={m.id}>{m.id}</option>)}
+          </select>
+        </div>
+        <div className="rounded-[var(--radius-sm)] border border-[var(--color-paper-200)] overflow-hidden">
+          <button onClick={() => setDualRater((v) => !v)} className="w-full flex items-center justify-between px-3 py-2.5 text-left hover:bg-[var(--color-paper-50)] transition-paper">
+            <div>
+              <p className="text-[11px] font-semibold text-[var(--color-paper-500)]">Rater 2 {dualRater ? "" : "(disabled)"}</p>
+              {!dualRater && <p className="text-[10px] text-[var(--color-paper-400)] mt-0.5">With one rater there's no agreement to measure — its codes apply directly.</p>}
+            </div>
+            {dualRater ? <ChevronUp size={13} className="text-[var(--color-paper-400)]" /> : <ChevronDown size={13} className="text-[var(--color-paper-400)]" />}
+          </button>
+          <AnimatePresence>
+            {dualRater && (
+              <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.15 }} className="overflow-hidden border-t border-[var(--color-paper-200)] px-3 py-2.5">
+                <select value={rater2Model} onChange={(e) => setRater2Model(e.target.value)} className="w-full text-[12px] px-2.5 py-1.5 rounded-[var(--radius-xs)] border border-[var(--color-paper-300)] bg-white text-[var(--color-ink-800)] focus:outline-none focus:ring-1 focus:ring-[var(--color-accent-400)]">
+                  {availableModels.length === 0 && <option value={rater2Model}>{rater2Model}</option>}
+                  {availableModels.map((m) => <option key={m.id} value={m.id}>{m.id}</option>)}
+                </select>
+                <p className="mt-1.5 text-[10px] text-[var(--color-paper-500)] leading-relaxed">Both raters code against the codebook. Agreement (Cohen's κ) is reported, and articles where the raters conflict are highlighted for your review afterward.</p>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+      </div>
+    </div>
+  );
+
   const handleStart = () => {
     if (selectedDims.size === 0) return;
+    // Coding is locked to the models that built the codebook (falls back to the
+    // current selection only if, somehow, the build models weren't recorded).
+    const r1 = cbCoverage?.rater1_model ?? rater1Model;
+    const r2 = cbCoverage?.rater1_model
+      ? cbCoverage.rater2_model
+      : (dualRater ? rater2Model : null);
     coding.start({
-      rater1Model,
-      rater2Model: dualRater ? rater2Model : null,
+      rater1Model: r1,
+      rater2Model: r2,
       dimensions: [...selectedDims],
     });
   };
@@ -318,44 +384,29 @@ export function AiCodingModal({
                           </div>
                         </div>
                         {/* Raters */}
-                        <div>
-                          <p className="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-paper-500)] mb-1.5">Raters</p>
-                          <div className="space-y-2">
-                            <div className="rounded-[var(--radius-sm)] border border-[var(--color-paper-200)] px-3 py-2.5">
-                              <p className="text-[11px] font-semibold text-[var(--color-paper-500)] mb-1.5">Rater 1</p>
-                              <select value={rater1Model} onChange={(e) => setRater1Model(e.target.value)} className="w-full text-[12px] px-2.5 py-1.5 rounded-[var(--radius-xs)] border border-[var(--color-paper-300)] bg-white text-[var(--color-ink-800)] focus:outline-none focus:ring-1 focus:ring-[var(--color-accent-400)]">
-                                {availableModels.length === 0 && <option value={rater1Model}>{rater1Model}</option>}
-                                {availableModels.map((m) => <option key={m.id} value={m.id}>{m.id}</option>)}
-                              </select>
-                            </div>
-                            <div className="rounded-[var(--radius-sm)] border border-[var(--color-paper-200)] overflow-hidden">
-                              <button onClick={() => setDualRater((v) => !v)} className="w-full flex items-center justify-between px-3 py-2.5 text-left hover:bg-[var(--color-paper-50)] transition-paper">
-                                <div>
-                                  <p className="text-[11px] font-semibold text-[var(--color-paper-500)]">Rater 2 {dualRater ? "" : "(disabled)"}</p>
-                                  {!dualRater && <p className="text-[10px] text-[var(--color-paper-400)] mt-0.5">With one rater there's no agreement to measure — its codes apply directly.</p>}
-                                </div>
-                                {dualRater ? <ChevronUp size={13} className="text-[var(--color-paper-400)]" /> : <ChevronDown size={13} className="text-[var(--color-paper-400)]" />}
-                              </button>
-                              <AnimatePresence>
-                                {dualRater && (
-                                  <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.15 }} className="overflow-hidden border-t border-[var(--color-paper-200)] px-3 py-2.5">
-                                    <select value={rater2Model} onChange={(e) => setRater2Model(e.target.value)} className="w-full text-[12px] px-2.5 py-1.5 rounded-[var(--radius-xs)] border border-[var(--color-paper-300)] bg-white text-[var(--color-ink-800)] focus:outline-none focus:ring-1 focus:ring-[var(--color-accent-400)]">
-                                      {availableModels.length === 0 && <option value={rater2Model}>{rater2Model}</option>}
-                                      {availableModels.map((m) => <option key={m.id} value={m.id}>{m.id}</option>)}
-                                    </select>
-                                    <p className="mt-1.5 text-[10px] text-[var(--color-paper-500)] leading-relaxed">Both raters code against the codebook. Agreement (Cohen's κ) is reported, and articles where the raters conflict are highlighted for your review afterward.</p>
-                                  </motion.div>
-                                )}
-                              </AnimatePresence>
-                            </div>
-                          </div>
-                        </div>
+                        {ratersEditor}
                       </div>
                     ) : (
-                      <p className="mt-1 text-[12px] text-[var(--color-paper-500)]">
-                        {cbCoverage ? `Built from ${cbCoverage.participated} of ${cbCoverage.total_with_pdf} articles with a PDF.` : "Codebook ready."}
-                        <button onClick={() => handleBuildCodebook(false)} disabled={building} className="ml-2 text-[var(--color-accent-600)] hover:text-[var(--color-accent-700)] font-medium disabled:opacity-40">{building ? "Rebuilding…" : "Rebuild"}</button>
-                      </p>
+                      <div className="mt-1">
+                        <p className="text-[12px] text-[var(--color-paper-500)]">
+                          {cbCoverage ? `Built from ${cbCoverage.participated} of ${cbCoverage.total_with_pdf} articles with a PDF.` : "Codebook ready."}
+                          <button onClick={() => setShowRebuild((v) => !v)} className="ml-2 text-[var(--color-accent-600)] hover:text-[var(--color-accent-700)] font-medium">{showRebuild ? "Close" : "Rebuild"}</button>
+                        </p>
+                        <AnimatePresence>
+                          {showRebuild && (
+                            <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.18 }} className="overflow-hidden">
+                              <div className="mt-3 space-y-3">
+                                <p className="text-[11px] text-[var(--color-paper-500)] leading-relaxed">Pick the raters, then rebuild. Coding will be locked to these models.</p>
+                                {ratersEditor}
+                                <Button variant="primary" size="sm" onClick={() => handleBuildCodebook(false)} disabled={building}>
+                                  {building ? <Loader2 size={13} className="animate-spin" /> : <BookText size={13} strokeWidth={1.75} />}
+                                  {building ? "Rebuilding…" : "Rebuild codebook"}
+                                </Button>
+                              </div>
+                            </motion.div>
+                          )}
+                        </AnimatePresence>
+                      </div>
                     )}
                   </div>
                 </div>
@@ -422,12 +473,30 @@ export function AiCodingModal({
 
                 {/* ── Step 3 · Code corpus ──────────────────────────────── */}
                 <div className="flex gap-3">
-                  <div className="flex flex-col items-center">{marker("upcoming", 3)}</div>
+                  <div className="flex flex-col items-center">{marker(codebookReady ? "active" : "upcoming", 3)}</div>
                   <div className="flex-1 min-w-0">
-                    {title("Code corpus", false)}
+                    {title("Code corpus", codebookReady)}
                     <p className="mt-1 text-[12px] text-[var(--color-paper-500)] leading-relaxed">
-                      Both raters code every article against the codebook. Agreement (Cohen's κ) is reported, and conflicting articles are highlighted for your review.
+                      {dualRater
+                        ? "Both raters code every article against the codebook. Agreement (Cohen's κ) is reported, and conflicting articles are highlighted for your review."
+                        : "The rater codes every article against the codebook; its codes apply directly."}
                     </p>
+                    {codebookReady && (
+                      <div className="mt-2 rounded-[var(--radius-sm)] border border-[var(--color-paper-200)] bg-[var(--color-paper-50)] px-3 py-2 space-y-1">
+                        <p className="text-[10px] font-semibold uppercase tracking-wider text-[var(--color-paper-400)]">Coding with the raters that built the codebook</p>
+                        <div className="flex items-center gap-2 text-[12px] text-[var(--color-ink-800)]">
+                          <span className="text-[var(--color-paper-500)]">Rater 1</span>
+                          <span className="font-medium tabular-nums">{rater1Model}</span>
+                        </div>
+                        {dualRater && (
+                          <div className="flex items-center gap-2 text-[12px] text-[var(--color-ink-800)]">
+                            <span className="text-[var(--color-paper-500)]">Rater 2</span>
+                            <span className="font-medium tabular-nums">{rater2Model}</span>
+                          </div>
+                        )}
+                        <p className="text-[10px] text-[var(--color-paper-400)] leading-relaxed pt-0.5">To code with different models, Rebuild the codebook above with your chosen raters.</p>
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
@@ -594,22 +663,16 @@ export function AiCodingModal({
                   {building ? "Building…" : "Step 1 · Build codebook"}
                 </Button>
               ) : (
-                // Step 2 — code against the reviewed codebook (rebuild available).
-                <div className="flex items-center gap-2">
-                  <Button variant="ghost" size="sm" onClick={() => handleBuildCodebook(false)} disabled={building}>
-                    {building ? <Loader2 size={13} className="animate-spin" /> : <BookText size={13} strokeWidth={1.75} />}
-                    {building ? "Rebuilding…" : "Rebuild"}
-                  </Button>
-                  <Button
-                    variant="primary"
-                    size="sm"
-                    onClick={handleStart}
-                    disabled={building || selectedDims.size === 0 || loadingCoverage || (coverage !== null && coverage.ready === 0 && coverage.needs_indexing === 0)}
-                  >
-                    <Sparkles size={13} strokeWidth={1.75} />
-                    Step 3 · Start coding
-                  </Button>
-                </div>
+                // Step 3 — code against the reviewed codebook (rebuild lives in Step 1).
+                <Button
+                  variant="primary"
+                  size="sm"
+                  onClick={handleStart}
+                  disabled={building || selectedDims.size === 0 || loadingCoverage || (coverage !== null && coverage.ready === 0 && coverage.needs_indexing === 0)}
+                >
+                  <Sparkles size={13} strokeWidth={1.75} />
+                  Step 3 · Start coding
+                </Button>
               )}
             </>
           )}

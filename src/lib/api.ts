@@ -159,6 +159,28 @@ export interface ArticleRow {
   ai_confidence: number | null;
 }
 
+/** Editable bibliographic fields for creating/updating an article. */
+export interface ArticleFields {
+  title: string;
+  authors: string | null;
+  year: number | null;
+  journal: string | null;
+  doi: string | null;
+  url: string | null;
+  abstract_text: string | null;
+  /** Source database label(s). Empty → backend marks it "Manually added". */
+  source_databases: string[];
+}
+
+/** Metadata resolved from a DOI via Crossref (any field may be null). */
+export interface CrossrefRecord {
+  title: string | null;
+  authors: string | null;
+  year: number | null;
+  journal: string | null;
+  abstract_text: string | null;
+}
+
 export interface AssemblingState {
   total_records: number;
   unique_records: number;
@@ -633,6 +655,18 @@ export const api = {
   renameFrameworkCodeDef(id: number, code: string) {
     return invoke<void>("rename_framework_code_def", { id, code });
   },
+  resetAiCoding() {
+    return invoke<void>("reset_ai_coding");
+  },
+  createArticle(fields: ArticleFields) {
+    return invoke<number>("create_article", { fields });
+  },
+  updateArticleFields(article_id: number, fields: ArticleFields) {
+    return invoke<void>("update_article_fields", { articleId: article_id, fields });
+  },
+  lookupDoi(doi: string) {
+    return invoke<CrossrefRecord>("lookup_doi", { doi });
+  },
   normalizeCodebookCasing() {
     return invoke<number>("normalize_codebook_casing");
   },
@@ -736,7 +770,7 @@ export const api = {
     });
   },
   codebookCoverage() {
-    return invoke<{ total_with_pdf: number; participated: number; missing: number; has_codebook: boolean; any_coded: boolean }>("codebook_coverage");
+    return invoke<{ total_with_pdf: number; participated: number; missing: number; has_codebook: boolean; any_coded: boolean; rater1_model: string | null; rater2_model: string | null }>("codebook_coverage");
   },
   listAiScreeningProposalsForArticle(articleId: number) {
     return invoke<AiScreeningProposal[]>("list_ai_screening_proposals_for_article", { articleId });
