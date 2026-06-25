@@ -12,6 +12,7 @@ import {
   Sparkles,
 } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { GraduationCap, Upload } from "lucide-react";
@@ -122,34 +123,72 @@ export function FullTextScreeningPanel({ refreshKey, onChanged, screening }: { r
   // rects to route the file to the right article (the list shows several at once).
   const cardRefs = useRef<Map<number, HTMLDivElement>>(new Map());
   const [dragOverId, setDragOverId] = useState<number | null>(null);
+  // True while an OS file drag is over the window — drives a visible banner so
+  // it's obvious whether drag-drop events are reaching the app at all.
+  const [dragActive, setDragActive] = useState(false);
   const articleAtPoint = (x: number, y: number): number | null => {
     const dpr = window.devicePixelRatio || 1;
-    const cx = x / dpr, cy = y / dpr;
-    for (const [id, el] of cardRefs.current) {
-      const r = el.getBoundingClientRect();
-      if (cx >= r.left && cx <= r.right && cy >= r.top && cy <= r.bottom) return id;
+    // Tauri reports a physical position; the DOM is in CSS pixels. Try the
+    // dpr-corrected point first, then the raw point, so this works whether the
+    // platform hands us physical or logical coordinates.
+    const points: [number, number][] = [[x / dpr, y / dpr], [x, y]];
+    for (const [cx, cy] of points) {
+      const hit = document.elementFromPoint(cx, cy)?.closest<HTMLElement>("[data-ft-article]");
+      if (hit?.dataset.ftArticle) return Number(hit.dataset.ftArticle);
+    }
+    // Fallback: rect hit-test against the tracked card elements.
+    for (const [cx, cy] of points) {
+      for (const [id, el] of cardRefs.current) {
+        const r = el.getBoundingClientRect();
+        if (cx >= r.left && cx <= r.right && cy >= r.top && cy <= r.bottom) return id;
+      }
     }
     return null;
   };
   useEffect(() => {
-    let unDrop: (() => void) | null = null, unOver: (() => void) | null = null, unLeave: (() => void) | null = null;
-    listen<{ paths: string[]; position: { x: number; y: number } }>("tauri://drag-drop", async (e) => {
-      setDragOverId(null);
-      const pdf = e.payload.paths.find((p) => p.toLowerCase().endsWith(".pdf"));
-      if (!pdf) return;
-      const id = articleAtPoint(e.payload.position.x, e.payload.position.y);
-      if (id == null) return;
-      setBusyId(id);
-      setMsg(null);
-      try { await api.dropPdfForArticle(pdf, id); await reload(); onChanged(); }
-      catch (err: any) { setMsg(err?.message ?? String(err)); }
-      finally { setBusyId(null); }
-    }).then((f) => { unDrop = f; });
-    listen<{ position: { x: number; y: number } }>("tauri://drag-over", (e) => {
-      setDragOverId(articleAtPoint(e.payload.position.x, e.payload.position.y));
-    }).then((f) => { unOver = f; });
-    listen("tauri://drag-leave", () => setDragOverId(null)).then((f) => { unLeave = f; });
-    return () => { unDrop?.(); unOver?.(); unLeave?.(); };
+    let unlisten: (() => void) | null = null;
+    let disposed = false;
+    // Webview-scoped drag-drop — a global listen() never receives these events.
+    getCurrentWebview()
+      .onDragDropEvent((event) => {
+        const p = event.payload;
+        if (p.type === "enter" || p.type === "over") {
+          setDragActive(true);
+          setDragOverId(articleAtPoint(p.position.x, p.position.y));
+        } else if (p.type === "leave") {
+          setDragActive(false);
+          setDragOverId(null);
+        } else if (p.type === "drop") {
+          setDragActive(false);
+          setDragOverId(null);
+          const pdf = p.paths.find((x) => x.toLowerCase().endsWith(".pdf"));
+          if (!pdf) {
+            setMsg("That wasn’t a PDF — drop a .pdf file onto an article.");
+            return;
+          }
+          const id = articleAtPoint(p.position.x, p.position.y);
+          if (id == null) {
+            setMsg("Drop the PDF directly onto an article card.");
+            return;
+          }
+          setBusyId(id);
+          setMsg(null);
+          api
+            .dropPdfForArticle(pdf, id)
+            .then(() => reload())
+            .then(() => onChanged())
+            .catch((err: any) => setMsg(err?.message ?? String(err)))
+            .finally(() => setBusyId(null));
+        }
+      })
+      .then((f) => {
+        if (disposed) f();
+        else unlisten = f;
+      });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -283,6 +322,7 @@ export function FullTextScreeningPanel({ refreshKey, onChanged, screening }: { r
     return (
     <div
       key={a.id}
+      data-ft-article={a.id}
       ref={(el) => { if (el) cardRefs.current.set(a.id, el); else cardRefs.current.delete(a.id); }}
       className={cn(
         "rounded-[var(--radius-md)] border bg-white p-4 transition-paper",
@@ -500,6 +540,12 @@ export function FullTextScreeningPanel({ refreshKey, onChanged, screening }: { r
           </div>
         );
       })()}
+
+      {dragActive && (
+        <div className="mb-4 px-4 py-2.5 rounded-[var(--radius-sm)] bg-[var(--color-accent-50)] border border-[var(--color-accent-300)] text-[12px] font-medium text-[var(--color-accent-700)] inline-flex items-center gap-2">
+          <Upload size={14} strokeWidth={1.75} /> Drop the PDF onto an article card to attach it.
+        </div>
+      )}
 
       {msg && !aiBusy && !finding && (
         <div className="mb-4 px-4 py-2.5 rounded-[var(--radius-sm)] bg-[var(--color-paper-100)] border border-[var(--color-paper-300)] text-[12px] text-[var(--color-paper-600)]">{msg}</div>

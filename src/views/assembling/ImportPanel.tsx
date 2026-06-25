@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { listen } from "@tauri-apps/api/event";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   AlertTriangle,
@@ -52,45 +52,52 @@ export function ImportPanel({ onCommitted, availableDatabases = [], launchDataba
 
   useEffect(() => {
     const SUPPORTED = [".ris", ".bib", ".bibtex", ".txt", ".tsv", ".csv"];
-    let unlistenDrop: (() => void) | null = null;
-    let unlistenEnter: (() => void) | null = null;
-    let unlistenLeave: (() => void) | null = null;
+    let unlisten: (() => void) | null = null;
+    let disposed = false;
 
-    listen<{ paths: string[] }>("tauri://drag-drop", async (event) => {
-      setIsDragOver(false);
-      const dropped = event.payload.paths.find((p) =>
-        SUPPORTED.some((ext) => p.toLowerCase().endsWith(ext))
-      );
-      if (!dropped) {
-        setError("Unsupported file type. Drop a .ris, .bib, .txt (WoS), or .csv (Scopus) file.");
-        return;
-      }
-      setError(null);
-      setCommitted(null);
-      setFilePath(dropped);
-      setBusy(true);
-      try {
-        const p = await api.parsePreview(dropped);
-        setPreview(p);
-        if (!database) {
-          const guess = guessDatabase(p.format, availableDatabases);
-          if (guess) setDatabase(guess);
+    // Webview-scoped drag-drop — a global listen() on "tauri://drag-drop" never
+    // receives these (the events target this webview).
+    getCurrentWebview()
+      .onDragDropEvent((event) => {
+        const p = event.payload;
+        if (p.type === "enter" || p.type === "over") {
+          setIsDragOver(true);
+        } else if (p.type === "leave") {
+          setIsDragOver(false);
+        } else if (p.type === "drop") {
+          setIsDragOver(false);
+          const dropped = p.paths.find((path) => SUPPORTED.some((ext) => path.toLowerCase().endsWith(ext)));
+          if (!dropped) {
+            setError("Unsupported file type. Drop a .ris, .bib, .txt (WoS), or .csv (Scopus) file.");
+            return;
+          }
+          setError(null);
+          setCommitted(null);
+          setFilePath(dropped);
+          setBusy(true);
+          api
+            .parsePreview(dropped)
+            .then((preview) => {
+              setPreview(preview);
+              if (!database) {
+                const guess = guessDatabase(preview.format, availableDatabases);
+                if (guess) setDatabase(guess);
+              }
+            })
+            .catch((e: any) => setError(e?.message || String(e)))
+            .finally(() => setBusy(false));
         }
-      } catch (e: any) {
-        setError(e?.message || String(e));
-      } finally {
-        setBusy(false);
-      }
-    }).then((fn) => { unlistenDrop = fn; });
-
-    listen("tauri://drag-enter", () => setIsDragOver(true)).then((fn) => { unlistenEnter = fn; });
-    listen("tauri://drag-leave", () => setIsDragOver(false)).then((fn) => { unlistenLeave = fn; });
+      })
+      .then((fn) => {
+        if (disposed) fn();
+        else unlisten = fn;
+      });
 
     return () => {
-      unlistenDrop?.();
-      unlistenEnter?.();
-      unlistenLeave?.();
+      disposed = true;
+      unlisten?.();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const pickFile = async () => {

@@ -27,7 +27,7 @@ import {
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { open as openDialog, save as saveDialog, confirm as confirmDialog } from "@tauri-apps/plugin-dialog";
 import { writeTextFile } from "@tauri-apps/plugin-fs";
-import { listen } from "@tauri-apps/api/event";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import {
   api,
   type AiAdjudication,
@@ -243,40 +243,47 @@ export function CodingPanel({ project, refreshKey, onChanged, initialCodeFilter,
     });
   }, [cardIndex]);
 
-  // Listen for Tauri native file-drop — the ONLY way to get real file paths from Finder
-  // (HTML5 FileList.path is always empty in WKWebView)
+  // Native OS file-drop — the ONLY way to get real file paths from Finder
+  // (HTML5 FileList paths are always empty in WKWebView). Must use the
+  // webview-scoped drag-drop API: the drag-drop lifecycle events target this
+  // webview, so a global listen() on "tauri://drag-drop" never receives them.
   useEffect(() => {
-    let unlistenDrop: (() => void) | null = null;
-    let unlistenEnter: (() => void) | null = null;
-    let unlistenLeave: (() => void) | null = null;
+    let unlisten: (() => void) | null = null;
+    let disposed = false;
 
-    listen<{ paths: string[] }>("tauri://drag-drop", async (event) => {
-      setCardDragOver(false);
-      const article = currentArticleRef.current;
-      if (!article) return;
-      const pdfPath = event.payload.paths.find((p) => p.toLowerCase().endsWith(".pdf"));
-      if (!pdfPath) return;
-      setDropping(true);
-      setPdfError(null);
-      try {
-        await api.dropPdfForArticle(pdfPath, article.id);
-        await reload();
-      } catch (e: any) {
-        setPdfError(e?.message ?? String(e));
-      } finally {
-        setDropping(false);
-      }
-    }).then((fn) => { unlistenDrop = fn; });
-
-    listen("tauri://drag-enter", () => setCardDragOver(true))
-      .then((fn) => { unlistenEnter = fn; });
-    listen("tauri://drag-leave", () => setCardDragOver(false))
-      .then((fn) => { unlistenLeave = fn; });
+    getCurrentWebview()
+      .onDragDropEvent((event) => {
+        const p = event.payload;
+        if (p.type === "enter" || p.type === "over") {
+          setCardDragOver(true);
+        } else if (p.type === "leave") {
+          setCardDragOver(false);
+        } else if (p.type === "drop") {
+          setCardDragOver(false);
+          const article = currentArticleRef.current;
+          if (!article) return;
+          const pdfPath = p.paths.find((x) => x.toLowerCase().endsWith(".pdf"));
+          if (!pdfPath) {
+            setPdfError("That wasn’t a PDF — drop a .pdf file.");
+            return;
+          }
+          setDropping(true);
+          setPdfError(null);
+          api
+            .dropPdfForArticle(pdfPath, article.id)
+            .then(() => reload())
+            .catch((e: any) => setPdfError(e?.message ?? String(e)))
+            .finally(() => setDropping(false));
+        }
+      })
+      .then((fn) => {
+        if (disposed) fn();
+        else unlisten = fn;
+      });
 
     return () => {
-      unlistenDrop?.();
-      unlistenEnter?.();
-      unlistenLeave?.();
+      disposed = true;
+      unlisten?.();
     };
   }, [reload]);
 
