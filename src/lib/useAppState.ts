@@ -57,6 +57,10 @@ export interface AppSettings {
   "ai_raters.rater1.profile": string;
   "ai_raters.rater2.profile": string;
   "coding.agreed_codes_mode": "auto" | "suggest";
+  /** Model for the merging agent; blank means the main chat model. */
+  "ai_agents.merging_model": string;
+  /** Model for the consolidating agent; blank means the main chat model. */
+  "ai_agents.consolidating_model": string;
 }
 
 /** Mirrors `suggest::DEFAULT_RATER_SYSTEM_PROMPT` in the Rust backend. Shown as the
@@ -82,6 +86,8 @@ const DEFAULTS: AppSettings = {
   "ai_raters.rater1.profile": "",
   "ai_raters.rater2.profile": "",
   "coding.agreed_codes_mode": "suggest",
+  "ai_agents.merging_model": "",
+  "ai_agents.consolidating_model": "",
 };
 
 export interface LmState {

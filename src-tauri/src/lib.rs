@@ -868,7 +868,7 @@ async fn rename_framework_code_def(id: i64, code: String, state: State<'_, AppSt
     db.rename_framework_code_def(id, &canonical_code_case(&code)).await.map_err(err)
 }
 
-/// Discard all AI-applied coding (and its proposals/adjudications/consolidations),
+/// Discard all AI-applied coding (and its proposals/merges/consolidations),
 /// leaving researcher codes untouched. Used when rebuilding the codebook so the
 /// corpus isn't left coded against a stale vocabulary.
 #[tauri::command]
@@ -2180,7 +2180,7 @@ struct AiCodingResult {
     disagreements: usize,
     skipped_no_pdf: usize,
     indexed: usize,
-    /// Disagreement pairs auto-resolved by the independent adjudicator.
+    /// Leftover code pairs merged by the merging agent.
     adjudicated: usize,
     /// Synonymous codes merged corpus-wide in the consolidation phase.
     consolidated: usize,
@@ -2636,48 +2636,145 @@ async fn list_adjudications_for_articles(
     db.list_adjudications_for_articles(&article_ids).await.map_err(err)
 }
 
-/// Undo an AI adjudication: remove the merged code and restore the two original
-/// proposals to the normal review queue.
+/// Undo a merge by the merging agent: remove the merged code (or, in suggestion
+/// mode, the merged proposal), restore the two original proposals with their
+/// confidence and call provenance, and log the undo.
+async fn undo_adjudication_inner(db: &db::ProjectDb, id: i64) -> Result<(), String> {
+    let Some(adj) = db.get_adjudication(id).await.map_err(err)? else {
+        return Ok(());
+    };
+    if let Some(coding_id) = adj.coding_id {
+        let _ = db.delete_coding(coding_id).await;
+    } else if let Some(proposal_id) = adj.proposal_id {
+        let _ = db.delete_ai_coding_proposal(proposal_id).await;
+    }
+    let vote = |rat: &Option<String>, model: &Option<String>, conf: Option<f64>, call: Option<i64>| AiCodeVote {
+        rationale: rat.clone(),
+        model_name: model.clone(),
+        confidence: conf,
+        ai_call_id: call,
+    };
+    db.save_ai_coding_proposal(
+        adj.article_id,
+        &adj.dimension,
+        &adj.label1,
+        adj.rater1,
+        "one",
+        &vote(&adj.rationale1, &adj.model1, adj.confidence1, adj.ai_call_id1),
+        None,
+        &adj.run_id,
+    )
+    .await
+    .map_err(err)?;
+    db.save_ai_coding_proposal(
+        adj.article_id,
+        &adj.dimension,
+        &adj.label2,
+        adj.rater2,
+        "one",
+        &vote(&adj.rationale2, &adj.model2, adj.confidence2, adj.ai_call_id2),
+        None,
+        &adj.run_id,
+    )
+    .await
+    .map_err(err)?;
+    db.delete_adjudication(id).await.map_err(err)?;
+    let detail = format!(
+        "Undid merge of “{}” + “{}” → “{}” in {}",
+        adj.label1, adj.label2, adj.canonical_code, adj.dimension
+    );
+    let _ = db
+        .log_review_event(
+            "arranging",
+            "undo_merge",
+            Some(&format!("article {}", adj.article_id)),
+            Some(&detail),
+            adj.adjudicator_rationale.as_deref(),
+            "human",
+        )
+        .await;
+    Ok(())
+}
+
+/// Undo a merge by the merging agent (restores both original suggestions).
 #[tauri::command]
 async fn undo_adjudication(id: i64, state: State<'_, AppState>) -> Result<(), String> {
     let db = state.current().await.ok_or("no project open")?;
-    if let Some(adj) = db.get_adjudication(id).await.map_err(err)? {
-        if let Some(coding_id) = adj.coding_id {
-            let _ = db.delete_coding(coding_id).await;
-        }
-        let vote = |rat: &Option<String>, model: &Option<String>| AiCodeVote {
-            rationale: rat.clone(),
-            model_name: model.clone(),
-            confidence: None,
-            ai_call_id: None,
-        };
-        let _ = db
-            .save_ai_coding_proposal(
-                adj.article_id,
-                &adj.dimension,
-                &adj.label1,
-                adj.rater1,
-                "one",
-                &vote(&adj.rationale1, &adj.model1),
-                None,
-                &adj.run_id,
-            )
-            .await;
-        let _ = db
-            .save_ai_coding_proposal(
-                adj.article_id,
-                &adj.dimension,
-                &adj.label2,
-                adj.rater2,
-                "one",
-                &vote(&adj.rationale2, &adj.model2),
-                None,
-                &adj.run_id,
-            )
-            .await;
-        db.delete_adjudication(id).await.map_err(err)?;
-    }
+    undo_adjudication_inner(&db, id).await
+}
+
+/// Model for the merging / consolidating agent: the stored setting, else the main chat model.
+fn agent_model(settings: &serde_json::Value, key: &str) -> String {
+    let pick = |k: &str| {
+        settings
+            .get(k)
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default()
+    };
+    let m = pick(key);
+    if m.is_empty() { pick("lmstudio.chat_model") } else { m }
+}
+
+/// Record one merge by the merging agent. Auto mode applies the merged code to
+/// `coding`; suggestion mode holds it as a "merged" proposal until accepted.
+async fn apply_merge(
+    db: &db::ProjectDb,
+    agreed_mode: &str,
+    merge_model: &str,
+    merge_call_id: Option<i64>,
+    dim: &str,
+    canonical: &str,
+    rationale: Option<&str>,
+    p1: &db::AiCodingProposal,
+    p2: &db::AiCodingProposal,
+    run_id: &str,
+) -> Result<(), String> {
+    let vote = AiCodeVote {
+        rationale: rationale.map(|s| s.to_string()),
+        model_name: Some(merge_model.to_string()),
+        confidence: None,
+        ai_call_id: merge_call_id,
+    };
+    let (coding_id, proposal_id) = if agreed_mode == "auto" {
+        let id = db
+            .save_ai_coding(p1.article_id, dim, canonical, "model-ai-adjudicated", &vote, None)
+            .await
+            .map_err(err)?;
+        (Some(id), None)
+    } else {
+        let id = db
+            .save_ai_coding_proposal(p1.article_id, dim, canonical, 1, "merged", &vote, None, run_id)
+            .await
+            .map_err(err)?;
+        (None, Some(id))
+    };
+    db.insert_adjudication(&db::NewAdjudication {
+        article_id: p1.article_id,
+        dimension: dim,
+        canonical_code: canonical,
+        coding_id,
+        proposal_id,
+        p1,
+        p2,
+        adjudicator_rationale: rationale,
+        ai_call_id: merge_call_id,
+        run_id,
+    })
+    .await
+    .map_err(err)?;
+    let _ = db.delete_ai_coding_proposal(p1.id).await;
+    let _ = db.delete_ai_coding_proposal(p2.id).await;
     Ok(())
+}
+
+/// Who proposed a coding suggestion, for review-log details.
+fn proposal_origin(p: &db::AiCodingProposal) -> String {
+    match p.agreement.as_str() {
+        "both" => "agreed by both agents".to_string(),
+        "merged" => "merged by the merging agent".to_string(),
+        _ => format!("one agent only, rater {}", p.rater),
+    }
 }
 
 /// Undo a code consolidation: rename the merged rows back to the original variant.
@@ -2689,6 +2786,13 @@ async fn undo_consolidation(id: i64, state: State<'_, AppState>) -> Result<(), S
             .await
             .map_err(err)?;
         db.delete_consolidation(id).await.map_err(err)?;
+        let detail = format!(
+            "Undid consolidation “{}” → “{}” in {} ({} codes)",
+            c.variant_code, c.canonical_code, c.dimension, c.count
+        );
+        let _ = db
+            .log_review_event("arranging", "undo_consolidation", None, Some(&detail), None, "human")
+            .await;
     }
     Ok(())
 }
@@ -2724,11 +2828,7 @@ async fn accept_proposal_inner(db: &db::ProjectDb, proposal_id: i64) -> Result<(
     .await
     .map_err(err)?;
     db.delete_ai_coding_proposal(proposal_id).await.map_err(err)?;
-    let who = if proposal.agreement == "both" {
-        "agreed by both agents".to_string()
-    } else {
-        format!("one agent only, rater {}", proposal.rater)
-    };
+    let who = proposal_origin(&proposal);
     let detail = format!("Accepted code “{}” in {} ({})", proposal.code, proposal.dimension, who);
     let _ = db
         .log_review_event(
@@ -2784,7 +2884,7 @@ async fn reject_ai_coding_proposal(
     let db = state.current().await.ok_or("no project open")?;
     // Log the rejection before deleting so the decision trail keeps it.
     if let Ok(Some(p)) = db.get_ai_coding_proposal_by_id(proposal_id).await {
-        let detail = format!("Rejected code “{}” in {} (rater {})", p.code, p.dimension, p.rater);
+        let detail = format!("Rejected code “{}” in {} ({})", p.code, p.dimension, proposal_origin(&p));
         let _ = db
             .log_review_event(
                 "arranging",
@@ -2808,7 +2908,7 @@ async fn reject_all_ai_coding_proposals_for_article(
     let db = state.current().await.ok_or("no project open")?;
     let props = db.list_ai_coding_proposals_for_article(article_id).await.map_err(err)?;
     for p in &props {
-        let detail = format!("Rejected code “{}” in {} (rater {})", p.code, p.dimension, p.rater);
+        let detail = format!("Rejected code “{}” in {} ({})", p.code, p.dimension, proposal_origin(&p));
         let _ = db
             .log_review_event(
                 "arranging",
@@ -3314,17 +3414,13 @@ async fn run_ai_coding(
         processed += 1;
     }
 
-    // ── Phase 3: independent adjudication of leftover disagreements ─────────
+    // ── Phase 3: merging agent (leftover codes that mean the same thing) ─────────
     // Dual-rater only. After every article is coded, an independent model
     // sweeps the remaining proposals and merges pairs that denote the same
     // concept (e.g. "Structural equation modeling" vs "SmartPLS analysis").
     let mut adjudicated = 0usize;
     if args.rater2_model.is_some() && !cancelled.load(Ordering::SeqCst) {
-        let adj_model = settings
-            .get("lmstudio.chat_model")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
+        let adj_model = agent_model(&settings, "ai_agents.merging_model");
 
         let article_ids: Vec<i64> = articles.iter().map(|a| a.id).collect();
         let proposals = db
@@ -3342,7 +3438,7 @@ async fn run_ai_coding(
 
         let total_groups = groups.len();
         if !adj_model.is_empty() && total_groups > 0 {
-            for (gi, ((article_id, dim), (r1, r2))) in groups.into_iter().enumerate() {
+            for (gi, ((_article_id, dim), (r1, r2))) in groups.into_iter().enumerate() {
                 if cancelled.load(Ordering::SeqCst) { break; }
                 let _ = app.emit(
                     "coding:progress",
@@ -3350,7 +3446,7 @@ async fn run_ai_coding(
                         done: gi + 1,
                         total: total_groups,
                         article_title: dim.clone(),
-                        phase: "adjudicating".into(),
+                        phase: "adjudicating".into(), // shown as "Merging leftover codes…"
                         skipped_no_pdf,
                         consensus,
                         disagreements,
@@ -3373,9 +3469,13 @@ async fn run_ai_coding(
                 )
                 .await
                 {
-                    Ok((r, _meta)) => r,
+                    Ok((r, meta)) => {
+                        let id = db.insert_ai_call("merging", &meta).await.ok();
+                        (r, id)
+                    }
                     Err(_) => continue, // model unreachable / unparsable → leave for human
                 };
+                let (resolutions, merge_call_id) = resolutions;
 
                 let mut used: std::collections::HashSet<i64> = std::collections::HashSet::new();
                 for res in resolutions {
@@ -3404,30 +3504,12 @@ async fn run_ai_coding(
                         Some(res.rationale.trim())
                     };
 
-                    if let Ok(coding_id) = db
-                        .save_coding(article_id, &dim, &canonical, adj_rationale, "model-ai-adjudicated", Some(&adj_model))
-                        .await
+                    if apply_merge(
+                        &db, &agreed_mode, &adj_model, merge_call_id, &dim, &canonical, adj_rationale, p1, p2, &args.run_id,
+                    )
+                    .await
+                    .is_ok()
                     {
-                        let _ = db
-                            .insert_adjudication(
-                                article_id,
-                                &dim,
-                                &canonical,
-                                Some(coding_id),
-                                &p1.code,
-                                p1.rater,
-                                p1.rationale.as_deref(),
-                                p1.model_name.as_deref(),
-                                &p2.code,
-                                p2.rater,
-                                p2.rationale.as_deref(),
-                                p2.model_name.as_deref(),
-                                adj_rationale,
-                                &args.run_id,
-                            )
-                            .await;
-                        let _ = db.delete_ai_coding_proposal(p1.id).await;
-                        let _ = db.delete_ai_coding_proposal(p2.id).await;
                         used.insert(p1.id);
                         used.insert(p2.id);
                         adjudicated += 1;
@@ -3446,11 +3528,7 @@ async fn run_ai_coding(
     let mut consolidated = 0usize;
     let mut consolidations: Vec<ConsolidationSummary> = Vec::new();
     if !cancelled.load(Ordering::SeqCst) {
-        let adj_model = settings
-            .get("lmstudio.chat_model")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
+        let adj_model = agent_model(&settings, "ai_agents.consolidating_model");
         if !adj_model.is_empty() {
             let total_dims = dims_to_code.len();
             for (di, (dim_name, _)) in dims_to_code.iter().enumerate() {
@@ -3476,12 +3554,14 @@ async fn run_ai_coding(
                     .map(|(c, _, is_res)| (c.to_lowercase(), *is_res))
                     .collect();
 
-                let clusters = match suggest::consolidate_codes(
+                let (clusters, consolidate_call_id) = match suggest::consolidate_codes(
                     &base_url, &adj_model, dim_name, &codes, temperature, seed, api_key.as_deref(),
                 )
                 .await
                 {
-                    Ok((c, _meta)) => c,
+                    Ok((c, meta)) => {
+                        (c, db.insert_ai_call("consolidating", &meta).await.ok())
+                    }
                     Err(_) => continue, // unreachable / unparsable → leave codes as-is
                 };
 
@@ -3509,6 +3589,7 @@ async fn run_ai_coding(
                                     variant.trim(),
                                     n as i64,
                                     &args.run_id,
+                                    consolidate_call_id,
                                 )
                                 .await
                             {
@@ -5820,5 +5901,76 @@ mod coding_accept_tests {
         assert_eq!(events.len(), 2);
         assert!(events[1].detail.as_deref().unwrap().ends_with("(agreed by both agents)"));
         assert!(db.list_all_ai_coding_proposals().await.unwrap().is_empty());
+    }
+
+    async fn seed_pair(db: &db::ProjectDb) -> (db::AiCodingProposal, db::AiCodingProposal) {
+        sqlx::query("INSERT INTO article (id, title, status, created_at, updated_at) VALUES (7, 'T', 'included', 'n', 'n')")
+            .execute(&db.pool).await.unwrap();
+        let v1 = AiCodeVote { rationale: Some("r1".into()), model_name: Some("m1".into()), confidence: Some(0.7), ai_call_id: Some(5) };
+        let v2 = AiCodeVote { rationale: Some("r2".into()), model_name: Some("m2".into()), confidence: Some(0.4), ai_call_id: Some(6) };
+        let a = db.save_ai_coding_proposal(7, "Method", "SEM", 1, "one", &v1, None, "run").await.unwrap();
+        let b = db.save_ai_coding_proposal(7, "Method", "SmartPLS", 2, "one", &v2, None, "run").await.unwrap();
+        (
+            db.get_ai_coding_proposal_by_id(a).await.unwrap().unwrap(),
+            db.get_ai_coding_proposal_by_id(b).await.unwrap().unwrap(),
+        )
+    }
+
+    #[tokio::test]
+    async fn suggest_mode_merge_creates_proposal_not_coding() {
+        let (db, _d) = db::test_db().await;
+        let (p1, p2) = seed_pair(&db).await;
+        apply_merge(&db, "suggest", "merger", Some(9), "Method", "SEM", Some("same"), &p1, &p2, "run").await.unwrap();
+        assert!(db.list_codings_for_articles(&[7]).await.unwrap().is_empty());
+        let props = db.list_ai_coding_proposals_for_articles(&[7]).await.unwrap();
+        assert_eq!(props.len(), 1);
+        assert_eq!(props[0].agreement, "merged");
+        assert_eq!(props[0].code, "SEM");
+        assert_eq!(props[0].ai_call_id, Some(9));
+        assert_eq!(props[0].model_name.as_deref(), Some("merger"));
+        let adjs = db.list_adjudications_for_articles(&[7]).await.unwrap();
+        assert_eq!(adjs[0].coding_id, None);
+        assert_eq!(adjs[0].proposal_id, Some(props[0].id));
+        // Bulk accept skips merged proposals; single accept logs the merging agent.
+        assert_eq!(accept_agreed_inner(&db, Some(&[7])).await.unwrap(), 0);
+        accept_proposal_inner(&db, props[0].id).await.unwrap();
+        let ev = db.list_review_events().await.unwrap();
+        assert_eq!(ev[0].detail.as_deref(), Some("Accepted code “SEM” in Method (merged by the merging agent)"));
+        let codes = db.list_codings_for_articles(&[7]).await.unwrap();
+        assert_eq!(codes[0].source, "model-ai-accepted");
+        assert_eq!(codes[0].model_name.as_deref(), Some("merger"));
+    }
+
+    #[tokio::test]
+    async fn auto_mode_merge_saves_coding() {
+        let (db, _d) = db::test_db().await;
+        let (p1, p2) = seed_pair(&db).await;
+        apply_merge(&db, "auto", "merger", Some(9), "Method", "SEM", Some("same"), &p1, &p2, "run").await.unwrap();
+        let codes = db.list_codings_for_articles(&[7]).await.unwrap();
+        assert_eq!(codes[0].source, "model-ai-adjudicated");
+        assert!(db.list_ai_coding_proposals_for_articles(&[7]).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn undo_merge_restores_votes_with_provenance() {
+        for mode in ["auto", "suggest"] {
+            let (db, _d) = db::test_db().await;
+            let (p1, p2) = seed_pair(&db).await;
+            apply_merge(&db, mode, "merger", Some(9), "Method", "SEM", Some("same"), &p1, &p2, "run").await.unwrap();
+            let adj = db.list_adjudications_for_articles(&[7]).await.unwrap().remove(0);
+            undo_adjudication_inner(&db, adj.id).await.unwrap();
+            assert!(db.list_codings_for_articles(&[7]).await.unwrap().is_empty());
+            let props = db.list_ai_coding_proposals_for_articles(&[7]).await.unwrap();
+            assert_eq!(props.len(), 2, "mode {mode}");
+            assert!(props.iter().all(|p| p.agreement == "one"));
+            let sem = props.iter().find(|p| p.code == "SEM").unwrap();
+            assert_eq!(sem.confidence, Some(0.7));
+            assert_eq!(sem.ai_call_id, Some(5));
+            assert!(db.list_adjudications_for_articles(&[7]).await.unwrap().is_empty());
+            let ev = db.list_review_events().await.unwrap();
+            assert_eq!(ev[0].action, "undo_merge");
+            assert_eq!(ev[0].detail.as_deref(), Some("Undid merge of “SEM” + “SmartPLS” → “SEM” in Method"));
+            assert_eq!(ev[0].rationale.as_deref(), Some("same"));
+        }
     }
 }

@@ -66,3 +66,13 @@ ALTER TABLE ai_coding_proposal ADD COLUMN ai_call_id2 INTEGER;
 -- Existing projects keep today's behaviour; a brand-new DB has no project row yet at migration time.
 INSERT OR IGNORE INTO settings (key, value, updated_at)
 SELECT 'coding.agreed_codes_mode', '"auto"', datetime('now') WHERE EXISTS (SELECT 1 FROM project WHERE id = 1);
+
+-- Task 8: merging agent provenance
+ALTER TABLE ai_adjudication ADD COLUMN ai_call_id INTEGER;
+ALTER TABLE ai_adjudication ADD COLUMN confidence1 REAL;
+ALTER TABLE ai_adjudication ADD COLUMN confidence2 REAL;
+ALTER TABLE ai_adjudication ADD COLUMN ai_call_id1 INTEGER;
+ALTER TABLE ai_adjudication ADD COLUMN ai_call_id2 INTEGER;
+-- Suggestion mode: the merged code is held as an ai_coding_proposal (agreement 'merged') until accepted.
+ALTER TABLE ai_adjudication ADD COLUMN proposal_id INTEGER;
+ALTER TABLE ai_consolidation ADD COLUMN ai_call_id INTEGER;

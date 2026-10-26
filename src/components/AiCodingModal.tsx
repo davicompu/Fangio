@@ -15,7 +15,7 @@ import {
 } from "lucide-react";
 import { api, type AiCodingCoverage, type DimensionInfo, type FrameworkCodeDefinition, type LmModel } from "../lib/api";
 import type { AiCodingHook } from "../hooks/useAiCoding";
-import { cn } from "../lib/utils";
+import { cn, SELF_PREFERENCE_WARNING, selfPreferenceWarning } from "../lib/utils";
 import { Button } from "./ui/Button";
 
 interface Props {
@@ -33,7 +33,7 @@ const PHASE_LABELS: Record<string, string> = {
   "coding-rater1": "Rater 1 coding",
   "coding-rater2": "Rater 2 coding",
   "resolving": "Resolving",
-  "adjudicating": "Adjudicating disagreements",
+  "adjudicating": "Merging leftover codes that mean the same thing",
   "consolidating": "Consolidating codes",
 };
 
@@ -49,6 +49,21 @@ export function AiCodingModal({
   const [rater1Model, setRater1Model] = useState(defaultChatModel);
   const [rater2Model, setRater2Model] = useState(defaultChatModel);
   const [dualRater, setDualRater] = useState(true);
+  // Merging / consolidating agents: stored setting, else the main chat model.
+  const [mergingModel, setMergingModel] = useState(defaultChatModel);
+  const [consolidatingModel, setConsolidatingModel] = useState(defaultChatModel);
+  useEffect(() => {
+    api.getSettings().then((s) => {
+      const m = s["ai_agents.merging_model"];
+      const c = s["ai_agents.consolidating_model"];
+      if (typeof m === "string" && m.trim()) setMergingModel(m);
+      if (typeof c === "string" && c.trim()) setConsolidatingModel(c);
+    }).catch(() => {});
+  }, []);
+  const pickAgentModel = (key: "ai_agents.merging_model" | "ai_agents.consolidating_model", v: string) => {
+    (key === "ai_agents.merging_model" ? setMergingModel : setConsolidatingModel)(v);
+    api.setSetting(key, v).catch(() => {});
+  };
   const [selectedDims, setSelectedDims] = useState<Set<string>>(
     new Set(availableDimensions.map((d) => d.name)),
   );
@@ -501,6 +516,30 @@ export function AiCodingModal({
                         <p className="text-[10px] text-[var(--color-paper-400)] leading-relaxed pt-0.5">To code with different models, Rebuild the codebook above with your chosen raters.</p>
                       </div>
                     )}
+                    {codebookReady && (() => {
+                      const r1 = cbCoverage?.rater1_model ?? rater1Model;
+                      const r2 = cbCoverage?.rater1_model ? cbCoverage.rater2_model : (dualRater ? rater2Model : null);
+                      const rows = [
+                        { label: "Merging agent model", key: "ai_agents.merging_model" as const, value: mergingModel },
+                        { label: "Consolidating agent model", key: "ai_agents.consolidating_model" as const, value: consolidatingModel },
+                      ];
+                      return (
+                        <div className="mt-2 space-y-2">
+                          {rows.map((row) => (
+                            <div key={row.key}>
+                              <p className="text-[11px] font-semibold text-[var(--color-paper-500)] mb-1">{row.label}</p>
+                              <select value={row.value} onChange={(e) => pickAgentModel(row.key, e.target.value)} className="w-full text-[12px] px-2.5 py-1.5 rounded-[var(--radius-xs)] border border-[var(--color-paper-300)] bg-white text-[var(--color-ink-800)] focus:outline-none focus:ring-1 focus:ring-[var(--color-accent-400)]">
+                                {!availableModels.some((m) => m.id === row.value) && <option value={row.value}>{row.value}</option>}
+                                {availableModels.map((m) => <option key={m.id} value={m.id}>{m.id}</option>)}
+                              </select>
+                              {selfPreferenceWarning(row.value, r1, r2) && (
+                                <p className="mt-1 text-[11px] text-[var(--color-warn-600)] leading-snug">{SELF_PREFERENCE_WARNING}</p>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      );
+                    })()}
                   </div>
                 </div>
               </div>
@@ -572,7 +611,7 @@ export function AiCodingModal({
                 </div>
                 {coding.result.adjudicated > 0 && (
                   <div className="flex justify-between px-3 py-2 text-[12px]">
-                    <span className="text-[var(--color-ok-600)]">Resolved by adjudicator</span>
+                    <span className="text-[var(--color-ok-600)]">Merged by the merging agent</span>
                     <span className="font-medium text-[var(--color-ok-700)]">{coding.result.adjudicated}</span>
                   </div>
                 )}

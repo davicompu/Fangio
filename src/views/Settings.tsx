@@ -493,7 +493,7 @@ export function Settings({ open: openSetting, onClose, settings, onUpdate, lm, o
                     onChange={(e) => setLocalRater2Profile(e.target.value)}
                     onBlur={() => onUpdate("ai_raters.rater2.profile", localRater2Profile)}
                     placeholder="(optional) e.g. weight conceptual / theoretical contribution"
-                    hint="Optional. Used only by coding/theming (the second rater). Leave blank for a consistent protocol; add a lean only if you deliberately want a second perspective to surface disagreements for adjudication."
+                    hint="Optional. Used only by coding/theming (the second rater). Leave blank for a consistent protocol; add a lean only if you deliberately want a second perspective to surface disagreements for you to resolve."
                   />
                 </div>
               </section>

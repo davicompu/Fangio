@@ -1496,7 +1496,7 @@ function DimensionRow({
             <button
               onClick={() => setProposalReviewOpen((v) => !v)}
               className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-semibold bg-[var(--color-ok-100)] border border-[var(--color-ok-300)] text-[var(--color-ok-700)] hover:bg-[var(--color-ok-200)] transition-paper"
-              title="Disagreements auto-resolved by the AI adjudicator"
+              title="Leftover codes the merging agent found to mean the same thing"
             >
               <Sparkles size={9} strokeWidth={2.5} />
               {adjudications.length}
@@ -1641,16 +1641,18 @@ function DimensionRow({
               </div>
 
               {/* Agreed by both agents (suggestion mode), then one-agent-only per rater */}
-              {[0, 1, 2].map((group) => {
+              {[0, 1, 2, 3].map((group) => {
                 const list =
                   group === 0
                     ? proposals.filter((p) => p.agreement === "both")
-                    : proposals.filter((p) => p.agreement !== "both" && p.rater === group);
+                    : group === 3
+                      ? proposals.filter((p) => p.agreement === "merged")
+                      : proposals.filter((p) => p.agreement === "one" && p.rater === group);
                 if (list.length === 0) return null;
                 return (
                   <div key={group} className="px-3 py-2.5 border-b border-amber-100 last:border-b-0">
                     <p className="text-[10px] font-semibold uppercase tracking-wider text-amber-600 mb-1.5">
-                      {group === 0 ? "Agreed by both agents" : `One agent only · Rater ${group}`}
+                      {group === 0 ? "Agreed by both agents" : group === 3 ? "Merged by the merging agent" : `One agent only · Rater ${group}`}
                       {group > 0 && list[0].model_name && (
                         <span className="ml-1 font-mono font-normal normal-case tracking-normal text-amber-500">
                           · {list[0].model_name}
@@ -1664,11 +1666,11 @@ function DimensionRow({
                             <div className="flex items-center gap-2 flex-wrap">
                               <span className="text-[12px] font-medium text-[var(--color-ink-900)]">{p.code}</span>
                               <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--color-paper-500)]">
-                                {p.agreement === "both" ? "Agreed by both agents" : "One agent only"}
+                                {p.agreement === "both" ? "Agreed by both agents" : p.agreement === "merged" ? "Merged by the merging agent" : "One agent only"}
                               </span>
                             </div>
                             <AgentReason
-                              label={p.agreement === "both" ? "Agent 1" : `Agent ${p.rater}`}
+                              label={p.agreement === "both" ? "Agent 1" : p.agreement === "merged" ? "Merging agent" : `Agent ${p.rater}`}
                               model={p.model_name}
                               rationale={p.rationale}
                               confidence={p.confidence}
@@ -1721,12 +1723,12 @@ function DimensionRow({
                 );
               })}
 
-              {/* Resolved by the independent AI adjudicator — already applied, opt-out */}
+              {/* Merged by the merging agent — opt-out via Undo */}
               {adjudications.length > 0 && (
                 <div className="px-3 py-2.5 bg-[var(--color-ok-50)] border-t border-[var(--color-ok-200)]">
                   <p className="flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-ok-700)] mb-1.5">
                     <Sparkles size={10} strokeWidth={2.5} />
-                    Resolved by AI adjudicator
+                    Merged by the merging agent (undo to send back to you)
                   </p>
                   <div className="space-y-1.5">
                     {adjudications.map((a) => {
@@ -1802,8 +1804,8 @@ function appliedTooltip(c: CodingRow): string | undefined {
 
 function AppliedCode({ coding, onRemove }: { coding: CodingRow; onRemove: () => void }) {
   const isModel = coding.source.startsWith("model-");
-  // Adjudicator-resolved codes get a distinct green bubble so they're
-  // recognisable in the main row (matching the "Resolved by AI adjudicator"
+  // Codes merged by the merging agent get a distinct green bubble so they're
+  // recognisable in the main row (matching the "Merged by the merging agent (undo to send back to you)"
   // section), not just another orange model chip.
   const isAdjudicated = coding.source === "model-ai-adjudicated";
   return (

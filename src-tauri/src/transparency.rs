@@ -335,6 +335,17 @@ pub fn coding_disposition(mode: &str, dual: bool, rc: &ResolvedCode) -> Disposit
     }
 }
 
+/// True when the merging/consolidating model is also one of the coding agents
+/// (case-insensitive, trimmed; a blank merging/consolidating model never matches).
+#[allow(dead_code)] // mirrored in the modal (TS); kept here as the tested reference
+pub fn self_preference_warning(merging_or_consolidating: &str, rater1: &str, rater2: Option<&str>) -> bool {
+    let m = merging_or_consolidating.trim().to_lowercase();
+    if m.is_empty() {
+        return false;
+    }
+    m == rater1.trim().to_lowercase() || rater2.map_or(false, |r| m == r.trim().to_lowercase())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -480,5 +491,13 @@ mod tests {
         assert_eq!(out.len(), 2);
         assert!(out[0].r1.is_some() && out[0].r2.is_none());
         assert!(out[1].r1.is_none() && out[1].r2.is_some());
+    }
+
+    #[test]
+    fn warning_only_on_match() {
+        assert!(self_preference_warning("qwen3-8b", "Qwen3-8B ", None));
+        assert!(self_preference_warning("gemma", "qwen", Some("gemma")));
+        assert!(!self_preference_warning("gemma", "qwen", Some("llama")));
+        assert!(!self_preference_warning("", "qwen", None));
     }
 }

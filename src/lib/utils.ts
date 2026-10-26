@@ -23,3 +23,14 @@ export function formatRelative(iso: string): string {
   if (mo < 12) return `${mo}mo ago`;
   return `${Math.round(day / 365)}y ago`;
 }
+
+/** Shown when the merging/consolidating model is also a coding agent. */
+export const SELF_PREFERENCE_WARNING =
+  "This model is also a coding agent. A model may favour its own wording when merging.";
+
+/** Mirrors `transparency::self_preference_warning` in the Rust backend. */
+export function selfPreferenceWarning(model: string, rater1: string, rater2?: string | null): boolean {
+  const m = model.trim().toLowerCase();
+  if (!m) return false;
+  return m === rater1.trim().toLowerCase() || (!!rater2 && m === rater2.trim().toLowerCase());
+}

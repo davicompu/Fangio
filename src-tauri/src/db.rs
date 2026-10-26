@@ -193,7 +193,7 @@ pub struct AiCodingProposal {
     pub model_name: Option<String>,
     pub run_id: String,
     pub created_at: String,
-    /// "both" (agreed by both agents) | "one"
+    /// "both" (agreed by both agents) | "one" | "merged" (merging agent, suggestion mode)
     pub agreement: String,
     pub ai_call_id: Option<i64>,
     pub ai_call_id2: Option<i64>,
@@ -225,6 +225,28 @@ pub struct AiAdjudication {
     pub adjudicator_rationale: Option<String>,
     pub run_id: String,
     pub created_at: String,
+    /// The merging agent's `ai_call` row.
+    pub ai_call_id: Option<i64>,
+    pub confidence1: Option<f64>,
+    pub confidence2: Option<f64>,
+    pub ai_call_id1: Option<i64>,
+    pub ai_call_id2: Option<i64>,
+    /// Suggestion mode: the merged code held as a proposal (coding_id is NULL).
+    pub proposal_id: Option<i64>,
+}
+
+/// Input for `insert_adjudication`.
+pub struct NewAdjudication<'a> {
+    pub article_id: i64,
+    pub dimension: &'a str,
+    pub canonical_code: &'a str,
+    pub coding_id: Option<i64>,
+    pub proposal_id: Option<i64>,
+    pub p1: &'a AiCodingProposal,
+    pub p2: &'a AiCodingProposal,
+    pub adjudicator_rationale: Option<&'a str>,
+    pub ai_call_id: Option<i64>,
+    pub run_id: &'a str,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -236,6 +258,7 @@ pub struct AiConsolidation {
     pub count: i64,
     pub run_id: String,
     pub created_at: String,
+    pub ai_call_id: Option<i64>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -3059,46 +3082,36 @@ impl ProjectDb {
 
     // ── AI adjudication (third-rater disagreement resolution) ──────────────
 
-    #[allow(clippy::too_many_arguments)]
-    pub async fn insert_adjudication(
-        &self,
-        article_id: i64,
-        dimension: &str,
-        canonical_code: &str,
-        coding_id: Option<i64>,
-        label1: &str,
-        rater1: i64,
-        rationale1: Option<&str>,
-        model1: Option<&str>,
-        label2: &str,
-        rater2: i64,
-        rationale2: Option<&str>,
-        model2: Option<&str>,
-        adjudicator_rationale: Option<&str>,
-        run_id: &str,
-    ) -> Result<i64> {
+    pub async fn insert_adjudication(&self, n: &NewAdjudication<'_>) -> Result<i64> {
         let now = chrono::Utc::now().to_rfc3339();
         let result = sqlx::query(
             "INSERT INTO ai_adjudication \
-             (article_id, dimension, canonical_code, coding_id, label1, rater1, rationale1, model1, \
-              label2, rater2, rationale2, model2, adjudicator_rationale, run_id, created_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             (article_id, dimension, canonical_code, coding_id, proposal_id, label1, rater1, rationale1, model1, \
+              label2, rater2, rationale2, model2, adjudicator_rationale, run_id, created_at, \
+              ai_call_id, confidence1, confidence2, ai_call_id1, ai_call_id2) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
-        .bind(article_id)
-        .bind(dimension)
-        .bind(canonical_code)
-        .bind(coding_id)
-        .bind(label1)
-        .bind(rater1)
-        .bind(rationale1)
-        .bind(model1)
-        .bind(label2)
-        .bind(rater2)
-        .bind(rationale2)
-        .bind(model2)
-        .bind(adjudicator_rationale)
-        .bind(run_id)
+        .bind(n.article_id)
+        .bind(n.dimension)
+        .bind(n.canonical_code)
+        .bind(n.coding_id)
+        .bind(n.proposal_id)
+        .bind(&n.p1.code)
+        .bind(n.p1.rater)
+        .bind(&n.p1.rationale)
+        .bind(&n.p1.model_name)
+        .bind(&n.p2.code)
+        .bind(n.p2.rater)
+        .bind(&n.p2.rationale)
+        .bind(&n.p2.model_name)
+        .bind(n.adjudicator_rationale)
+        .bind(n.run_id)
         .bind(now)
+        .bind(n.ai_call_id)
+        .bind(n.p1.confidence)
+        .bind(n.p2.confidence)
+        .bind(n.p1.ai_call_id)
+        .bind(n.p2.ai_call_id)
         .execute(&self.pool)
         .await?;
         Ok(result.last_insert_rowid())
@@ -3122,6 +3135,12 @@ impl ProjectDb {
             adjudicator_rationale: r.get("adjudicator_rationale"),
             run_id: r.get("run_id"),
             created_at: r.get("created_at"),
+            ai_call_id: r.get("ai_call_id"),
+            confidence1: r.get("confidence1"),
+            confidence2: r.get("confidence2"),
+            ai_call_id1: r.get("ai_call_id1"),
+            ai_call_id2: r.get("ai_call_id2"),
+            proposal_id: r.get("proposal_id"),
         }
     }
 
@@ -3219,11 +3238,12 @@ impl ProjectDb {
         variant: &str,
         count: i64,
         run_id: &str,
+        ai_call_id: Option<i64>,
     ) -> Result<i64> {
         let now = chrono::Utc::now().to_rfc3339();
         let res = sqlx::query(
-            "INSERT INTO ai_consolidation (dimension, canonical_code, variant_code, count, run_id, created_at) \
-             VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO ai_consolidation (dimension, canonical_code, variant_code, count, run_id, created_at, ai_call_id) \
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(dimension)
         .bind(canonical)
@@ -3231,6 +3251,7 @@ impl ProjectDb {
         .bind(count)
         .bind(run_id)
         .bind(now)
+        .bind(ai_call_id)
         .execute(&self.pool)
         .await?;
         Ok(res.last_insert_rowid())
@@ -3249,6 +3270,7 @@ impl ProjectDb {
             count: r.get("count"),
             run_id: r.get("run_id"),
             created_at: r.get("created_at"),
+            ai_call_id: r.get("ai_call_id"),
         }))
     }
 
@@ -3408,6 +3430,7 @@ impl ProjectDb {
                 count: r.get("count"),
                 run_id: r.get("run_id"),
                 created_at: r.get("created_at"),
+                ai_call_id: r.get("ai_call_id"),
             })
             .collect())
     }

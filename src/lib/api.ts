@@ -359,7 +359,7 @@ export interface AiCodingProposal {
   run_id: string;
   created_at: string;
   /** "both" = agreed by both agents; "one" = one agent only */
-  agreement: "both" | "one";
+  agreement: "both" | "one" | "merged";
   rationale2: string | null;
   model_name2: string | null;
   /** The model's own 0–1 estimate, not a measured probability. */
@@ -371,7 +371,7 @@ export interface AiCodingProposal {
   temperature: number | null;
 }
 
-/** A disagreement pair the independent adjudicator merged into one applied code. */
+/** Two leftover codes the merging agent found to mean the same thing, merged into one code. */
 export interface AiAdjudication {
   id: number;
   article_id: number;
@@ -389,6 +389,13 @@ export interface AiAdjudication {
   adjudicator_rationale: string | null;
   run_id: string;
   created_at: string;
+  ai_call_id: number | null;
+  confidence1: number | null;
+  confidence2: number | null;
+  ai_call_id1: number | null;
+  ai_call_id2: number | null;
+  /** Suggestion mode: the merged code is held as a proposal (coding_id is null). */
+  proposal_id: number | null;
 }
 
 export interface AiCodingCoverage {
@@ -465,7 +472,7 @@ export interface AiCodingResult {
   disagreements: number;
   skipped_no_pdf: number;
   indexed: number;
-  /** Disagreement pairs auto-resolved by the independent adjudicator. */
+  /** Leftover code pairs merged by the merging agent. */
   adjudicated: number;
   /** Synonymous codes merged corpus-wide in the consolidation phase. */
   consolidated: number;
