@@ -30,6 +30,37 @@ pub fn review_status(
     })
 }
 
+/// Label for a derived review status.
+pub fn status_label(s: Option<&str>) -> &'static str {
+    match s {
+        Some("auto_applied") => "Applied automatically",
+        Some("opened") => "Opened, left unchanged",
+        Some("overridden") => "Overridden",
+        Some("pending") => "Pending",
+        _ => "—",
+    }
+}
+
+fn trim_ts(t: &str) -> String {
+    t.chars().take(16).collect::<String>().replace('T', " ")
+}
+
+/// Report cell describing how often a decision was opened.
+pub fn opens_cell(count: i64, first: Option<&str>, last: Option<&str>) -> String {
+    let (f, l) = (first.map(trim_ts).unwrap_or_default(), last.map(trim_ts).unwrap_or_default());
+    match count {
+        c if c <= 0 => "Never opened".into(),
+        1 => format!("1 ({f})"),
+        c => format!("{c} (first {f}, last {l})"),
+    }
+}
+
+/// Temperature to at most two decimals ("0.2", "0", "0.75").
+pub fn format_temperature(t: f64) -> String {
+    let s = format!("{t:.2}");
+    s.trim_end_matches('0').trim_end_matches('.').to_string()
+}
+
 /// Name recorded against open events: env `USER`, else "researcher".
 pub fn researcher_name() -> String {
     std::env::var("USER")
@@ -349,6 +380,33 @@ pub fn self_preference_warning(merging_or_consolidating: &str, rater1: &str, rat
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn opens_cell_formats() {
+        assert_eq!(opens_cell(0, None, None), "Never opened");
+        assert_eq!(opens_cell(1, Some("2026-10-26T14:02:11Z"), None), "1 (2026-10-26 14:02)");
+        assert_eq!(
+            opens_cell(2, Some("2026-10-26T14:02:11Z"), Some("2026-10-27T09:15:00Z")),
+            "2 (first 2026-10-26 14:02, last 2026-10-27 09:15)"
+        );
+    }
+
+    #[test]
+    fn status_labels() {
+        assert_eq!(status_label(Some("opened")), "Opened, left unchanged");
+        assert_eq!(status_label(Some("auto_applied")), "Applied automatically");
+        assert_eq!(status_label(Some("overridden")), "Overridden");
+        assert_eq!(status_label(Some("pending")), "Pending");
+        assert_eq!(status_label(None), "—");
+    }
+
+    #[test]
+    fn temperature_formats() {
+        assert_eq!(format_temperature(0.2f32 as f64), "0.2");
+        assert_eq!(format_temperature(0.0), "0");
+        assert_eq!(format_temperature(0.75), "0.75");
+        assert_eq!(format_temperature(1.0), "1");
+    }
 
     #[test]
     fn reminder_detail_text() {

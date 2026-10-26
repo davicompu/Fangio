@@ -537,6 +537,26 @@ pub async fn generate_decision_report(db: &ProjectDb) -> Result<String> {
     let consolidations = db.list_all_consolidations().await?;
     let review_events = db.list_review_events().await?;
     let fulltext_status = db.fulltext_status_map().await?;
+    let ai_log = db.list_ai_screening_log(None, None).await?;
+    let ai_calls = db.list_ai_calls().await?;
+    let call_cells = |id: Option<i64>| -> (String, String, String) {
+        match id.and_then(|i| ai_calls.get(&i)) {
+            Some(c) => (
+                c.model_used.clone().unwrap_or_else(|| c.model_requested.clone()),
+                c.prompt_hash.clone().unwrap_or_else(|| "—".into()),
+                crate::transparency::format_temperature(c.temperature),
+            ),
+            None => ("—".into(), "—".into(), "—".into()),
+        }
+    };
+    let pct = |c: Option<f64>| c.map(|v| format!("{}%", (v * 100.0).round() as i64)).unwrap_or_else(|| "—".into());
+    let stage_name = |st: &str| if st == "fulltext" { "Full text" } else { "Title & abstract" };
+    // Latest AI decision's review status per (article, stage).
+    let latest_status: std::collections::HashMap<(i64, &str), &str> = ai_log
+        .iter()
+        .filter(|e| e.is_latest)
+        .map(|e| ((e.article_id, e.stage.as_str()), crate::transparency::status_label(e.review_status.as_deref())))
+        .collect();
 
     let crit_label: std::collections::HashMap<i64, String> =
         criteria.iter().map(|c| (c.number, c.label.clone())).collect();
@@ -577,7 +597,7 @@ pub async fn generate_decision_report(db: &ProjectDb) -> Result<String> {
     if screened.is_empty() {
         s.push_str("_No screening decisions recorded yet._\n\n");
     } else {
-        s.push_str("| Article | Decision | Stage | Criterion | Decided by | When |\n|---|---|---|---|---|---|\n");
+        s.push_str("| Article | Decision | Stage | Criterion | Decided by | Review status | When |\n|---|---|---|---|---|---|---|\n");
         for a in &screened {
             let decided_by = if a.ai_rationale.is_some() {
                 "AI"
@@ -602,15 +622,91 @@ pub async fn generate_decision_report(db: &ProjectDb) -> Result<String> {
             } else {
                 "—".into()
             };
+            let st_key = if stage == "Full text" { "fulltext" } else { "title_abstract" };
+            let review_status = latest_status.get(&(a.id, st_key)).copied().unwrap_or("—");
             s.push_str(&format!(
-                "| {} | {} | {} | {} | {} | {} |\n",
+                "| {} | {} | {} | {} | {} | {} | {} |\n",
                 cell(&short(&a.title, 60)),
                 if a.status == "included" { "Included" } else { "Excluded" },
                 stage,
                 cell(&criterion),
                 decided_by,
+                review_status,
                 cell(&a.screened_at.clone().map(|t| short(&t, 19)).unwrap_or_else(|| "—".into())),
             ));
+        }
+        s.push_str("\n");
+    }
+
+    // 2a. Full AI screening log
+    s.push_str("## 2a. AI screening log\n\n");
+    if ai_log.is_empty() {
+        s.push_str("_No AI screening decisions recorded._\n\n");
+    } else {
+        s.push_str("Every AI screening decision, including earlier ones that were later replaced.\n\n");
+        s.push_str("| Article | Stage | Mode | AI decision | Criterion | Confidence | Model used | Prompt fingerprint | Temperature | Applied automatically | Review status | Opened |\n|---|---|---|---|---|---|---|---|---|---|---|---|\n");
+        for e in &ai_log {
+            let model = e.model_used.clone().or_else(|| e.model_name.clone()).unwrap_or_else(|| "—".into());
+            let crit = match e.criterion_number {
+                Some(n) => crit_label.get(&n).cloned().unwrap_or_else(|| format!("Criterion {n}")),
+                None => "—".into(),
+            };
+            s.push_str(&format!(
+                "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
+                cell(&short(&e.article_title, 60)),
+                stage_name(&e.stage),
+                if e.mode == "purification" { "Purification" } else { "Screening" },
+                cell(&capitalize(&e.decision)),
+                cell(&crit),
+                pct(e.confidence),
+                cell(&model),
+                cell(e.prompt_hash.as_deref().unwrap_or("—")),
+                e.temperature.map(crate::transparency::format_temperature).unwrap_or_else(|| "—".into()),
+                if e.auto_applied { "Yes" } else { "No" },
+                crate::transparency::status_label(e.review_status.as_deref()),
+                cell(&crate::transparency::opens_cell(
+                    e.open_count,
+                    e.first_opened_at.as_deref(),
+                    e.last_opened_at.as_deref()
+                )),
+            ));
+        }
+        let mut seeds: Vec<i64> = ai_calls.values().filter_map(|c| c.seed).collect();
+        seeds.sort();
+        seeds.dedup();
+        s.push_str("\n");
+        match seeds.len() {
+            0 => s.push_str("Seed: not set.\n\n"),
+            1 => s.push_str(&format!("Seed: {}\n\n", seeds[0])),
+            _ => s.push_str(&format!(
+                "Seeds: {}\n\n",
+                seeds.iter().map(|n| n.to_string()).collect::<Vec<_>>().join(", ")
+            )),
+        }
+        s.push_str("Recorded to help others re-run the analysis; model outputs may still vary between runs.\n\n");
+    }
+
+    // 2b. Auto-applied decisions
+    s.push_str("## 2b. Applied automatically\n\n");
+    let auto: Vec<_> = ai_log.iter().filter(|e| e.is_latest && e.auto_applied).collect();
+    if auto.is_empty() {
+        s.push_str("_No decisions were applied automatically._\n\n");
+    } else {
+        for e in &auto {
+            let verb = match e.decision.as_str() {
+                "include" => "Included".to_string(),
+                "exclude" => "Excluded".to_string(),
+                other => capitalize(other),
+            };
+            let mut detail = format!(
+                "{}, {}",
+                pct(e.confidence),
+                crate::transparency::opens_cell(e.open_count, e.first_opened_at.as_deref(), e.last_opened_at.as_deref())
+            );
+            if e.review_status.as_deref() == Some("overridden") {
+                detail.push_str(", Overridden");
+            }
+            s.push_str(&format!("- {} — {} ({})\n", verb, cell(&short(&e.article_title, 80)), detail));
         }
         s.push_str("\n");
     }
@@ -620,7 +716,7 @@ pub async fn generate_decision_report(db: &ProjectDb) -> Result<String> {
     if codings.is_empty() {
         s.push_str("_No codes applied yet._\n\n");
     } else {
-        s.push_str("| Article | Dimension | Code | Applied by | When |\n|---|---|---|---|---|\n");
+        s.push_str("| Article | Dimension | Code | Applied by | Confidence (rater 1 / rater 2) | Reasons | Model used | Prompt fingerprint | Temperature | When |\n|---|---|---|---|---|---|---|---|---|---|\n");
         for c in &codings {
             let by = match c.source.as_str() {
                 "researcher" => "Human",
@@ -629,47 +725,85 @@ pub async fn generate_decision_report(db: &ProjectDb) -> Result<String> {
                 other => other,
             };
             let title = title_of.get(&c.article_id).cloned().unwrap_or_else(|| format!("#{}", c.article_id));
+            let conf = if c.confidence2.is_some() {
+                format!("{} / {}", pct(c.confidence), pct(c.confidence2))
+            } else {
+                pct(c.confidence)
+            };
+            let reasons = match (c.rationale.as_deref(), c.rationale2.as_deref()) {
+                (Some(r1), Some(r2)) => format!("R1: {} / R2: {}", short(r1, 120), short(r2, 120)),
+                (Some(r1), None) => format!("R1: {}", short(r1, 120)),
+                (None, Some(r2)) => format!("R2: {}", short(r2, 120)),
+                (None, None) => "—".into(),
+            };
+            let m1 = c.model_used.clone().or_else(|| c.model_name.clone());
+            let m2 = c.model_used2.clone().or_else(|| c.model_name2.clone());
+            let model = match (m1, m2) {
+                (Some(a), Some(b)) if a != b => format!("{a} / {b}"),
+                (Some(a), _) => a,
+                (None, Some(b)) => b,
+                (None, None) => "—".into(),
+            };
             s.push_str(&format!(
-                "| {} | {} | {} | {} | {} |\n",
+                "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
                 cell(&short(&title, 48)),
                 cell(&c.dimension),
                 cell(&c.code),
                 by,
+                conf,
+                cell(&reasons),
+                cell(&model),
+                cell(c.prompt_hash.as_deref().unwrap_or("—")),
+                c.temperature.map(crate::transparency::format_temperature).unwrap_or_else(|| "—".into()),
                 cell(&short(&c.created_at, 19)),
             ));
         }
-        s.push_str("\n");
+        s.push_str("\nConfidence is the model's own estimate, not a measured probability.\n\n");
     }
 
-    // 4. AI-assisted resolutions
-    s.push_str("## 4. AI-assisted resolutions\n\n");
+    // 4. Merging agent and consolidation
+    s.push_str("## 4. Merging agent and consolidation\n\n");
     if adjudications.is_empty() && consolidations.is_empty() {
-        s.push_str("_No AI adjudications or consolidations._\n\n");
+        s.push_str("_No AI merges or consolidations._\n\n");
     } else {
         if !adjudications.is_empty() {
-            s.push_str("**Adjudicated disagreements** (an independent model merged two raters' equivalent codes):\n\n");
-            s.push_str("| Dimension | Kept | Merged from |\n|---|---|---|\n");
+            s.push_str("**Merges** (a merging agent combined two raters' equivalent codes):\n\n");
+            s.push_str("| Dimension | Kept | Merged from | Reason | Model used | Prompt fingerprint | Temperature |\n|---|---|---|---|---|---|---|\n");
             for a in &adjudications {
+                let (m, h, t) = call_cells(a.ai_call_id);
+                let kept = if a.proposal_id.is_some() && a.coding_id.is_none() {
+                    format!("{} (suggestion)", a.canonical_code)
+                } else {
+                    a.canonical_code.clone()
+                };
                 s.push_str(&format!(
-                    "| {} | {} | {} + {} |\n",
+                    "| {} | {} | {} + {} | {} | {} | {} | {} |\n",
                     cell(&a.dimension),
-                    cell(&a.canonical_code),
+                    cell(&kept),
                     cell(&a.label1),
                     cell(&a.label2),
+                    cell(&short(a.adjudicator_rationale.as_deref().unwrap_or("—"), 120)),
+                    cell(&m),
+                    cell(&h),
+                    t,
                 ));
             }
             s.push_str("\n");
         }
         if !consolidations.is_empty() {
             s.push_str("**Consolidated codes** (synonymous codes merged corpus-wide):\n\n");
-            s.push_str("| Dimension | Canonical | Merged variant | Count |\n|---|---|---|---|\n");
+            s.push_str("| Dimension | Canonical | Merged variant | Count | Model used | Prompt fingerprint | Temperature |\n|---|---|---|---|---|---|---|\n");
             for c in &consolidations {
+                let (m, h, t) = call_cells(c.ai_call_id);
                 s.push_str(&format!(
-                    "| {} | {} | {} | {} |\n",
+                    "| {} | {} | {} | {} | {} | {} | {} |\n",
                     cell(&c.dimension),
                     cell(&c.canonical_code),
                     cell(&c.variant_code),
                     c.count,
+                    cell(&m),
+                    cell(&h),
+                    t,
                 ));
             }
             s.push_str("\n");
@@ -679,8 +813,9 @@ pub async fn generate_decision_report(db: &ProjectDb) -> Result<String> {
     // 5. Review actions (rejects, dedup merges — the forward trail)
     s.push_str("## 5. Review actions\n\n");
     if review_events.is_empty() {
-        s.push_str("_No review actions recorded yet (rejected AI suggestions and deduplication merges are logged here)._\n\n");
+        s.push_str("_No review actions recorded yet (reverts, resets, accepted and rejected suggestions, undone merges, reminder choices and deduplication merges are logged here)._\n\n");
     } else {
+        s.push_str("Recorded actions include reverts, resets, accepted and rejected suggestions, undone merges, reminder choices and deduplication merges.\n\n");
         s.push_str("| When | Stage | Action | Detail | By |\n|---|---|---|---|---|\n");
         for e in &review_events {
             s.push_str(&format!(
@@ -703,5 +838,85 @@ fn capitalize(s: &str) -> String {
     match c.next() {
         Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
         None => String::new(),
+    }
+}
+
+#[cfg(test)]
+mod report_tests {
+    use super::*;
+    use crate::db::{test_db, NewArticle, NewScreeningDecision};
+    use crate::suggest::CallMeta;
+
+    #[tokio::test]
+    async fn report_lists_ai_log_and_auto_applied() {
+        let (db, _d) = test_db().await;
+        let mut ids = vec![];
+        for t in ["Alpha study", "Beta study"] {
+            ids.push(
+                db.insert_article(&NewArticle {
+                    title: t.into(),
+                    authors: None,
+                    year: None,
+                    journal: None,
+                    abstract_text: None,
+                    doi: None,
+                    url: None,
+                    source_databases: vec![],
+                    import_batches: vec![],
+                })
+                .await
+                .unwrap(),
+            );
+        }
+        let call = db
+            .insert_ai_call(
+                "screening",
+                &CallMeta {
+                    model_requested: "m".into(),
+                    model_used: "m-q4".into(),
+                    prompt_hash: "abcdef123456".into(),
+                    temperature: 0.2,
+                    seed: None,
+                },
+            )
+            .await
+            .unwrap();
+        let mut props = vec![];
+        for id in &ids {
+            props.push(
+                db.save_ai_screening_decision(&NewScreeningDecision {
+                    article_id: *id,
+                    stage: "title_abstract",
+                    mode: "screening",
+                    decision: "exclude",
+                    criterion_number: None,
+                    rationale: "off topic",
+                    confidence: Some(0.93),
+                    model_name: Some("m"),
+                    ai_call_id: Some(call),
+                    auto_applied: true,
+                    run_id: "r1",
+                })
+                .await
+                .unwrap(),
+            );
+        }
+        db.record_ai_screening_open(props[0], "tester", "test").await.unwrap();
+        db.record_ai_screening_open(props[0], "tester", "test").await.unwrap();
+
+        let md = generate_decision_report(&db).await.unwrap();
+        assert!(md.contains("## 2a. AI screening log"));
+        assert!(md.contains("Never opened"));
+        assert!(md.contains("2 (first"));
+        assert!(md.contains("abcdef123456"));
+        assert!(md.contains("| 0.2 |"));
+        assert!(md.contains("93%"));
+        assert!(md.contains("Seed: not set."));
+        assert!(md.contains("## 2b. Applied automatically"));
+        assert!(md.contains("Excluded — Beta study (93%, Never opened)"));
+        assert!(md.contains("## 4. Merging agent and consolidation"));
+        assert!(!md.to_lowercase().contains("adjudicat"));
+        assert!(!md.contains("reviewed"));
+        assert!(!md.contains("reproducible"));
     }
 }

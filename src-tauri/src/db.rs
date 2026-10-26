@@ -161,6 +161,19 @@ pub struct FrameworkCodeDefinition {
     pub description: Option<String>,
 }
 
+/// One row of the `ai_call` provenance table.
+#[derive(Debug, Serialize, Clone)]
+pub struct AiCallRow {
+    pub id: i64,
+    pub purpose: String,
+    pub model_requested: String,
+    pub model_used: Option<String>,
+    pub prompt_hash: Option<String>,
+    pub temperature: f64,
+    pub seed: Option<i64>,
+    pub created_at: String,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct CodingRow {
     pub id: i64,
@@ -621,6 +634,34 @@ impl ProjectDb {
         .await?
         .last_insert_rowid();
         Ok(id)
+    }
+
+    /// All recorded AI calls keyed by id.
+    pub async fn list_ai_calls(&self) -> Result<std::collections::HashMap<i64, AiCallRow>> {
+        let rows = sqlx::query(
+            "SELECT id, purpose, model_requested, model_used, prompt_hash, temperature, seed, created_at FROM ai_call",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .iter()
+            .map(|r| {
+                let id: i64 = r.get("id");
+                (
+                    id,
+                    AiCallRow {
+                        id,
+                        purpose: r.get("purpose"),
+                        model_requested: r.get("model_requested"),
+                        model_used: r.get("model_used"),
+                        prompt_hash: r.get("prompt_hash"),
+                        temperature: r.get("temperature"),
+                        seed: r.get("seed"),
+                        created_at: r.get("created_at"),
+                    },
+                )
+            })
+            .collect())
     }
 
     /// Apply a single project field update from a decision and append to the log.
