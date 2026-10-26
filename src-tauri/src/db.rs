@@ -483,6 +483,26 @@ impl ProjectDb {
     }
 
     /// Apply a single project field update from a decision and append to the log.
+    /// Record the provenance of one AI call and return its id.
+    pub async fn insert_ai_call(&self, purpose: &str, meta: &crate::suggest::CallMeta) -> Result<i64> {
+        let now = chrono::Utc::now().to_rfc3339();
+        let id = sqlx::query(
+            "INSERT INTO ai_call (purpose, model_requested, model_used, prompt_hash, temperature, seed, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(purpose)
+        .bind(&meta.model_requested)
+        .bind(&meta.model_used)
+        .bind(&meta.prompt_hash)
+        .bind(meta.temperature as f64)
+        .bind(meta.seed)
+        .bind(now)
+        .execute(&self.pool)
+        .await?
+        .last_insert_rowid();
+        Ok(id)
+    }
+
     pub async fn apply_decision(&self, d: DecisionInput) -> Result<i64> {
         let now = chrono::Utc::now().to_rfc3339();
 
@@ -3934,5 +3954,42 @@ mod glossary_tests {
         assert_eq!(normalize_glossary_name("Generative-AI"), normalize_glossary_name("generative ai"));
         assert_eq!(normalize_glossary_name("  generative   AI  "), normalize_glossary_name("Generative AI"));
         assert_ne!(normalize_glossary_name("Generative AI"), normalize_glossary_name("Generative Artificial Intelligence"));
+    }
+}
+
+#[cfg(test)]
+pub(crate) async fn test_db() -> (ProjectDb, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    let db = ProjectDb::open_or_create(dir.path(), Some("test".into())).await.unwrap();
+    (db, dir)
+}
+
+#[cfg(test)]
+mod ai_call_tests {
+    use super::*;
+    use crate::suggest::CallMeta;
+
+    #[tokio::test]
+    async fn insert_ai_call_roundtrip() {
+        let (db, _d) = test_db().await;
+        let id = db
+            .insert_ai_call(
+                "coding",
+                &CallMeta {
+                    model_requested: "a".into(),
+                    model_used: "a-q4".into(),
+                    prompt_hash: "abc123abc123".into(),
+                    temperature: 0.2,
+                    seed: None,
+                },
+            )
+            .await
+            .unwrap();
+        let used: String = sqlx::query_scalar("SELECT model_used FROM ai_call WHERE id=?")
+            .bind(id)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        assert_eq!(used, "a-q4");
     }
 }

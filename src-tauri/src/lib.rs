@@ -17,6 +17,7 @@ mod pdf;
 mod recent;
 mod stats;
 mod suggest;
+mod transparency;
 mod svg;
 mod vector;
 
@@ -100,6 +101,11 @@ fn load_temperature(settings: &serde_json::Value, key: &str, default: f32) -> f3
         .and_then(|v| v.as_f64())
         .map(|f| f.clamp(0.0, 2.0) as f32)
         .unwrap_or(default)
+}
+
+/// Optional sampling seed (`ai.seed`); off unless the setting is an integer.
+fn load_seed(settings: &serde_json::Value) -> Option<i64> {
+    settings.get("ai.seed").and_then(|v| v.as_i64())
 }
 
 /// Detect obvious greetings / courtesies so `ask_corpus` can skip retrieval
@@ -1783,6 +1789,7 @@ async fn run_ai_fulltext_screening(
     }
     let threshold: f64 = settings.get("screening.confidence_threshold").and_then(|v| v.as_f64()).unwrap_or(0.90);
     let temperature = load_temperature(&settings, "temperature.decisions", 0.0);
+    let seed = load_seed(&settings);
     let profile = settings.get("ai_raters.rater1.profile").and_then(|v| v.as_str()).unwrap_or("").to_string();
     let base_prompt = settings.get("ai_raters.system_prompt").and_then(|v| v.as_str()).unwrap_or("").to_string();
 
@@ -1841,11 +1848,11 @@ async fn run_ai_fulltext_screening(
             }
         };
         let decision = match suggest::screen_article_fulltext(
-            &base_url, &model, &c.title, &text, &domain, &criteria, &base_prompt, &profile, temperature, api_key.as_deref(),
+            &base_url, &model, &c.title, &text, &domain, &criteria, &base_prompt, &profile, temperature, seed, api_key.as_deref(),
         )
         .await
         {
-            Ok(d) => d,
+            Ok((d, _meta)) => d,
             Err(_) => {
                 res.uncertain += 1;
                 continue;
@@ -2340,6 +2347,7 @@ async fn build_codebook(
     let profile2 = settings.get("ai_raters.rater2.profile").and_then(|v| v.as_str()).unwrap_or("").to_string();
     // Low temperature → a more stable vocabulary for the codebook.
     let temperature = load_temperature(&settings, "temperature.decisions", 0.0).min(0.2);
+    let seed = load_seed(&settings);
 
     let project = db.get_project().await.map_err(err)?;
     let domain = project.domain.clone().unwrap_or_default();
@@ -2419,9 +2427,9 @@ async fn build_codebook(
             let codings = suggest::code_article_for_dimensions(
                 &base_url, model, &framework, &domain, &rq_refs, &dims_to_code,
                 &prompt_existing, &a.title, a.authors.as_deref(), &context,
-                &base_prompt, profile, false /* open generation — building the codebook */, temperature, api_key.as_deref(),
+                &base_prompt, profile, false /* open generation — building the codebook */, temperature, seed, api_key.as_deref(),
             ).await;
-            if let Ok(codings) = codings {
+            if let Ok((codings, _meta)) = codings {
                 for dc in codings {
                     let entry = proposed.entry(dc.dimension.clone()).or_default();
                     for s in dc.suggestions {
@@ -2753,6 +2761,7 @@ async fn run_ai_coding(
         .unwrap_or("")
         .to_string();
     let temperature = load_temperature(&settings, "temperature.decisions", 0.2);
+    let seed = load_seed(&settings);
 
     // Reset flags from any previous run
     state.coding_paused.store(false, Ordering::SeqCst);
@@ -2966,12 +2975,13 @@ async fn run_ai_coding(
             &rater1_profile,
             true, // closed-set: code against the shared codebook
             temperature,
+            seed,
             api_key.as_deref(),
         )
         .await;
 
         let rater1_codings = match rater1_result {
-            Ok(c) => c,
+            Ok((c, _meta)) => c,
             Err(e) => {
                 eprintln!("Rater 1 coding error for article {}: {e}", article.id);
                 processed += 1;
@@ -3008,11 +3018,12 @@ async fn run_ai_coding(
                 &rater2_profile,
                 true, // closed-set: code against the shared codebook
                 temperature,
+                seed,
                 api_key.as_deref(),
             )
             .await
             {
-                Ok(c) => Some(c),
+                Ok((c, _meta)) => Some(c),
                 Err(e) => {
                     eprintln!("Rater 2 coding error for article {}: {e}", article.id);
                     None
@@ -3173,11 +3184,11 @@ async fn run_ai_coding(
                     .collect();
 
                 let resolutions = match suggest::adjudicate_disagreements(
-                    &base_url, &adj_model, &dim, &r1_pairs, &r2_pairs, temperature, api_key.as_deref(),
+                    &base_url, &adj_model, &dim, &r1_pairs, &r2_pairs, temperature, seed, api_key.as_deref(),
                 )
                 .await
                 {
-                    Ok(r) => r,
+                    Ok((r, _meta)) => r,
                     Err(_) => continue, // model unreachable / unparsable → leave for human
                 };
 
@@ -3281,11 +3292,11 @@ async fn run_ai_coding(
                     .collect();
 
                 let clusters = match suggest::consolidate_codes(
-                    &base_url, &adj_model, dim_name, &codes, temperature, api_key.as_deref(),
+                    &base_url, &adj_model, dim_name, &codes, temperature, seed, api_key.as_deref(),
                 )
                 .await
                 {
-                    Ok(c) => c,
+                    Ok((c, _meta)) => c,
                     Err(_) => continue, // unreachable / unparsable → leave codes as-is
                 };
 
@@ -3380,6 +3391,7 @@ async fn run_ai_screening(
         .get("screening.confidence_threshold")
         .and_then(|v| v.as_f64())
         .unwrap_or(0.90);
+    let seed = load_seed(&settings);
     // Sampling temperature for judgment calls. 0.0 = fully deterministic.
     let temperature: f32 = settings
         .get("temperature.decisions")
@@ -3477,12 +3489,13 @@ async fn run_ai_screening(
             &base_prompt,
             &profile1,
             temperature,
+            seed,
             api_key.as_deref(),
         )
         .await;
 
         let decision = match result {
-            Ok(d) => d,
+            Ok((d, _meta)) => d,
             Err(e) => {
                 eprintln!("AI screening error for article {}: {e}", article.id);
                 let _ = app.emit(
@@ -5091,6 +5104,7 @@ async fn generate_synthesis(state: State<'_, AppState>) -> Result<String, String
         return Err("Set both a reasoning model and an embedding model in Settings.".into());
     }
     let temperature = load_temperature(&settings, "temperature.qa", 0.2);
+    let seed = load_seed(&settings);
 
     let project = db.get_project().await.map_err(err)?;
     let domain = project.domain.clone().unwrap_or_default();
@@ -5147,8 +5161,9 @@ async fn generate_synthesis(state: State<'_, AppState>) -> Result<String, String
         dims.push((dim.clone(), codes, excerpts));
     }
 
-    suggest::generate_synthesis(&base_url, &chat_model, &domain, &framework, &rq_refs, &dims, temperature, api_key.as_deref())
+    suggest::generate_synthesis(&base_url, &chat_model, &domain, &framework, &rq_refs, &dims, temperature, seed, api_key.as_deref())
         .await
+        .map(|(text, _meta)| text)
         .map_err(err)
 }
 
@@ -5560,4 +5575,16 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod load_seed_tests {
+    use super::load_seed;
+
+    #[test]
+    fn load_seed_off_by_default() {
+        assert_eq!(load_seed(&serde_json::json!({})), None);
+        assert_eq!(load_seed(&serde_json::json!({"ai.seed": null})), None);
+        assert_eq!(load_seed(&serde_json::json!({"ai.seed": 42})), Some(42));
+    }
 }

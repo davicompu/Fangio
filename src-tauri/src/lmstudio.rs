@@ -35,6 +35,8 @@ struct ChatRequest<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     max_tokens: Option<u32>,
     stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    seed: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -165,6 +167,17 @@ pub async fn chat(
     temperature: Option<f32>,
     api_key: Option<&str>,
 ) -> Result<ChatResult> {
+    chat_seeded(base_url, model, messages, temperature, None, api_key).await
+}
+
+pub async fn chat_seeded(
+    base_url: &str,
+    model: &str,
+    messages: &[ChatMessage],
+    temperature: Option<f32>,
+    seed: Option<i64>,
+    api_key: Option<&str>,
+) -> Result<ChatResult> {
     let mut url = parse_url(base_url)?;
     if !url.path().ends_with("/chat/completions") {
         let path = url.path().trim_end_matches('/').to_string() + "/chat/completions";
@@ -177,6 +190,7 @@ pub async fn chat(
         temperature,
         max_tokens: None,
         stream: false,
+        seed,
     };
     let started = Instant::now();
     let resp = apply_auth(client.post(url).json(&body), api_key).send().await?;
@@ -261,5 +275,34 @@ mod url_guard_tests {
     #[test]
     fn rejects_garbage() {
         assert!(parse_url("not a url").is_err());
+    }
+}
+
+#[cfg(test)]
+mod seed_tests {
+    use super::*;
+
+    #[test]
+    fn seed_omitted_when_none() {
+        let body = serde_json::to_value(ChatRequest {
+            model: "m",
+            messages: &[],
+            temperature: Some(0.0),
+            max_tokens: None,
+            stream: false,
+            seed: None,
+        })
+        .unwrap();
+        assert!(body.get("seed").is_none());
+        let body = serde_json::to_value(ChatRequest {
+            model: "m",
+            messages: &[],
+            temperature: Some(0.0),
+            max_tokens: None,
+            stream: false,
+            seed: Some(7),
+        })
+        .unwrap();
+        assert_eq!(body["seed"], 7);
     }
 }

@@ -9,6 +9,43 @@ use crate::lmstudio::{self, ChatMessage};
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 
+/// Provenance of one AI call: which model actually answered, a fingerprint of
+/// the system prompt, and the sampling settings used.
+#[derive(Debug, Clone, Serialize)]
+pub struct CallMeta {
+    pub model_requested: String,
+    pub model_used: String,
+    pub prompt_hash: String,
+    pub temperature: f32,
+    pub seed: Option<i64>,
+}
+
+fn call_meta(
+    model: &str,
+    messages: &[ChatMessage],
+    temperature: f32,
+    seed: Option<i64>,
+    result: &lmstudio::ChatResult,
+) -> CallMeta {
+    let system = messages
+        .iter()
+        .find(|m| m.role == "system")
+        .map(|m| m.content.as_str())
+        .unwrap_or("");
+    CallMeta {
+        model_requested: model.to_string(),
+        model_used: result
+            .model
+            .as_deref()
+            .filter(|m| !m.is_empty())
+            .unwrap_or(model)
+            .to_string(),
+        prompt_hash: crate::transparency::prompt_fingerprint(system),
+        temperature,
+        seed,
+    }
+}
+
 /// The default persona shared by every AI rater (screening + coding). It frames
 /// the model as a careful SLR researcher and is editable by the user in Settings
 /// (`ai_raters.system_prompt`). Task-specific instructions (JSON shape, criteria,
@@ -931,8 +968,9 @@ pub async fn screen_article(
     base_prompt: &str,
     profile: &str,
     temperature: f32,
+    seed: Option<i64>,
     api_key: Option<&str>,
-) -> Result<ScreeningDecision> {
+) -> Result<(ScreeningDecision, CallMeta)> {
     let base = rater_base_prompt(base_prompt);
     let domain_block = if domain.trim().is_empty() {
         "(not specified)".to_string()
@@ -1016,7 +1054,8 @@ pub async fn screen_article(
         ChatMessage { role: "user".into(), content: user },
     ];
 
-    let result = lmstudio::chat(base_url, model, &messages, Some(temperature), api_key).await?;
+    let result = lmstudio::chat_seeded(base_url, model, &messages, Some(temperature), seed, api_key).await?;
+    let meta = call_meta(model, &messages, temperature, seed, &result);
 
     let mut decision = parse_screening_decision(&result.content)
         .ok_or_else(|| anyhow::anyhow!("could not parse screening decision from model output: {}", result.content))?;
@@ -1042,7 +1081,7 @@ pub async fn screen_article(
                 content: "Your rationale is too short or generic for an audit trail. Rewrite it as 2–4 complete sentences that cite specific evidence from the title, abstract, journal, year, or authors above. Do not change your decision or confidence. Return the same JSON shape with only the rationale rewritten.".into(),
             },
         ];
-        if let Ok(retry) = lmstudio::chat(base_url, model, &retry_messages, Some(temperature), api_key).await {
+        if let Ok(retry) = lmstudio::chat_seeded(base_url, model, &retry_messages, Some(temperature), seed, api_key).await {
             if let Some(retried) = parse_screening_decision(&retry.content) {
                 if is_substantive_rationale(&retried.rationale) {
                     decision.rationale = retried.rationale;
@@ -1059,7 +1098,7 @@ pub async fn screen_article(
         }
     }
 
-    Ok(decision)
+    Ok((decision, meta))
 }
 
 /// Full-text (eligibility) screening: reads the article's full text and decides
@@ -1076,8 +1115,9 @@ pub async fn screen_article_fulltext(
     base_prompt: &str,
     profile: &str,
     temperature: f32,
+    seed: Option<i64>,
     api_key: Option<&str>,
-) -> Result<ScreeningDecision> {
+) -> Result<(ScreeningDecision, CallMeta)> {
     let base = rater_base_prompt(base_prompt);
     let domain_block = if domain.trim().is_empty() {
         "(not specified)".to_string()
@@ -1123,10 +1163,12 @@ No prose before or after the JSON."
         ChatMessage { role: "system".into(), content: system },
         ChatMessage { role: "user".into(), content: user },
     ];
-    let result = lmstudio::chat(base_url, model, &messages, Some(temperature), api_key).await?;
-    parse_screening_decision(&result.content).ok_or_else(|| {
+    let result = lmstudio::chat_seeded(base_url, model, &messages, Some(temperature), seed, api_key).await?;
+    let meta = call_meta(model, &messages, temperature, seed, &result);
+    let decision = parse_screening_decision(&result.content).ok_or_else(|| {
         anyhow::anyhow!("could not parse full-text screening decision from: {}", result.content)
-    })
+    })?;
+    Ok((decision, meta))
 }
 
 /// A rationale is substantive when it has at least ~40 non-whitespace characters
@@ -1221,8 +1263,9 @@ pub async fn code_article_for_dimensions(
     // When false, open generation (used to build the codebook in the first place).
     closed_set: bool,
     temperature: f32,
+    seed: Option<i64>,
     api_key: Option<&str>,
-) -> Result<Vec<DimensionCoding>> {
+) -> Result<(Vec<DimensionCoding>, CallMeta)> {
     let base = rater_base_prompt(base_prompt);
     let rqs_block = if research_questions.is_empty() {
         "(not specified)".to_string()
@@ -1304,12 +1347,13 @@ Return the JSON object now.",
         ChatMessage { role: "user".into(), content: user },
     ];
 
-    let result = lmstudio::chat(base_url, model, &messages, Some(temperature), api_key).await?;
+    let result = lmstudio::chat_seeded(base_url, model, &messages, Some(temperature), seed, api_key).await?;
+    let meta = call_meta(model, &messages, temperature, seed, &result);
 
     let codings = parse_dimension_codings(&result.content, &dim_names)
         .ok_or_else(|| anyhow::anyhow!("could not parse dimension codings from: {}", &result.content))?;
 
-    Ok(codings)
+    Ok((codings, meta))
 }
 
 fn parse_dimension_codings(s: &str, dimensions: &[&str]) -> Option<Vec<DimensionCoding>> {
@@ -1370,6 +1414,7 @@ pub struct AdjudicationResolution {
 /// `rater1`/`rater2` are `(label, rationale)` lists of each rater's leftover
 /// codes for one dimension of one article. Returns only the pairs the model is
 /// confident are equivalent.
+#[allow(clippy::too_many_arguments)]
 pub async fn adjudicate_disagreements(
     base_url: &str,
     model: &str,
@@ -1377,8 +1422,9 @@ pub async fn adjudicate_disagreements(
     rater1: &[(String, String)],
     rater2: &[(String, String)],
     temperature: f32,
+    seed: Option<i64>,
     api_key: Option<&str>,
-) -> Result<Vec<AdjudicationResolution>> {
+) -> Result<(Vec<AdjudicationResolution>, CallMeta)> {
     let fmt = |items: &[(String, String)]| {
         items
             .iter()
@@ -1420,9 +1466,11 @@ No prose before or after the JSON."
         ChatMessage { role: "user".into(), content: user },
     ];
 
-    let result = lmstudio::chat(base_url, model, &messages, Some(temperature), api_key).await?;
-    parse_adjudications(&result.content)
-        .ok_or_else(|| anyhow!("could not parse adjudications from: {}", &result.content))
+    let result = lmstudio::chat_seeded(base_url, model, &messages, Some(temperature), seed, api_key).await?;
+    let meta = call_meta(model, &messages, temperature, seed, &result);
+    let resolutions = parse_adjudications(&result.content)
+        .ok_or_else(|| anyhow!("could not parse adjudications from: {}", &result.content))?;
+    Ok((resolutions, meta))
 }
 
 // ── Research agenda proposal (SPAR-4-SLR Evaluation 3a) ─────────────────────
@@ -1531,8 +1579,9 @@ pub async fn generate_synthesis(
     research_questions: &[&str],
     dims: &[(String, Vec<String>, Vec<(String, String)>)],
     temperature: f32,
+    seed: Option<i64>,
     api_key: Option<&str>,
-) -> Result<String> {
+) -> Result<(String, CallMeta)> {
     let rqs_block = if research_questions.is_empty() {
         "(not specified)".to_string()
     } else {
@@ -1578,8 +1627,9 @@ Per-dimension coded themes and retrieved excerpts:\n{blocks}\n\nWrite the synthe
         ChatMessage { role: "user".into(), content: user },
     ];
 
-    let result = lmstudio::chat(base_url, model, &messages, Some(temperature), api_key).await?;
-    Ok(result.content.trim().to_string())
+    let result = lmstudio::chat_seeded(base_url, model, &messages, Some(temperature), seed, api_key).await?;
+    let meta = call_meta(model, &messages, temperature, seed, &result);
+    Ok((result.content.trim().to_string(), meta))
 }
 
 // ── Corpus-level code consolidation ─────────────────────────────────────────
@@ -1603,8 +1653,9 @@ pub async fn consolidate_codes(
     dimension: &str,
     codes: &[(String, i64, bool)],
     temperature: f32,
+    seed: Option<i64>,
     api_key: Option<&str>,
-) -> Result<Vec<ConsolidationCluster>> {
+) -> Result<(Vec<ConsolidationCluster>, CallMeta)> {
     let list = codes
         .iter()
         .map(|(label, count, is_researcher)| {
@@ -1637,9 +1688,11 @@ OTHER labels in the cluster (not equal to canonical_label). No prose before or a
         ChatMessage { role: "user".into(), content: user },
     ];
 
-    let result = lmstudio::chat(base_url, model, &messages, Some(temperature), api_key).await?;
-    parse_consolidations(&result.content)
-        .ok_or_else(|| anyhow!("could not parse consolidations from: {}", &result.content))
+    let result = lmstudio::chat_seeded(base_url, model, &messages, Some(temperature), seed, api_key).await?;
+    let meta = call_meta(model, &messages, temperature, seed, &result);
+    let clusters = parse_consolidations(&result.content)
+        .ok_or_else(|| anyhow!("could not parse consolidations from: {}", &result.content))?;
+    Ok((clusters, meta))
 }
 
 fn parse_consolidations(s: &str) -> Option<Vec<ConsolidationCluster>> {
