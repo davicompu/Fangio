@@ -30,6 +30,16 @@ pub fn review_status(
     })
 }
 
+/// True while the article still awaits a decision at this screening stage:
+/// title/abstract → still 'retrieved'; full text → included with no full-text decision.
+pub fn undecided_at_stage(stage: &str, status: &str, fulltext_status: Option<&str>) -> bool {
+    if stage == "title_abstract" {
+        status == "retrieved"
+    } else {
+        status == "included" && fulltext_status.is_none()
+    }
+}
+
 /// Label for a derived review status.
 pub fn status_label(s: Option<&str>) -> &'static str {
     match s {

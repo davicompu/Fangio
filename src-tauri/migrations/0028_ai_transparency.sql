@@ -11,7 +11,8 @@ CREATE TABLE ai_call (
 );
 
 -- Rebuild ai_screening_proposal as the full screening log (confidence may be NULL).
--- auto_applied is backfilled for old rows whose decision is still the one on the article.
+-- auto_applied is backfilled for old rows whose decision is still the one on the article
+-- and whose confidence reached the auto-apply threshold.
 CREATE TABLE ai_screening_proposal_new (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     article_id INTEGER NOT NULL REFERENCES article(id) ON DELETE CASCADE,
@@ -33,7 +34,9 @@ CREATE TABLE ai_screening_proposal_new (
 INSERT INTO ai_screening_proposal_new (id, article_id, rater, decision, criterion_number, rationale, confidence, model_name, run_id, created_at, auto_applied)
 SELECT p.id, p.article_id, p.rater, p.decision, p.criterion_number, p.rationale, p.confidence, p.model_name, p.run_id, p.created_at,
        CASE WHEN a.ai_rationale = p.rationale AND
-                 ((p.decision='exclude' AND a.status='excluded') OR (p.decision='include' AND a.status='included'))
+                 ((p.decision='exclude' AND a.status='excluded') OR (p.decision='include' AND a.status='included')) AND
+                 p.confidence >= COALESCE((SELECT CASE WHEN json_valid(value) THEN CAST(json_extract(value,'$') AS REAL) END
+                                           FROM settings WHERE key='screening.confidence_threshold'), 0.9)
             THEN 1 ELSE 0 END
 FROM ai_screening_proposal p JOIN article a ON a.id = p.article_id;
 DROP TABLE ai_screening_proposal;

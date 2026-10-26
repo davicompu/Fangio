@@ -2703,7 +2703,7 @@ async fn undo_adjudication(id: i64, state: State<'_, AppState>) -> Result<(), St
     undo_adjudication_inner(&db, id).await
 }
 
-/// Model for the merging / consolidating agent: the stored setting, else the main chat model.
+/// Custom instructions stored under a `prompts.*` key; blank means "use the default".
 fn prompt_setting(settings: &serde_json::Value, key: &str) -> String {
     settings.get(key).and_then(|v| v.as_str()).unwrap_or("").to_string()
 }
@@ -2731,6 +2731,7 @@ fn get_default_agent_prompts() -> DefaultAgentPrompts {
     }
 }
 
+/// Model for the merging / consolidating agent: the stored setting, else the main chat model.
 fn agent_model(settings: &serde_json::Value, key: &str) -> String {
     let pick = |k: &str| {
         settings

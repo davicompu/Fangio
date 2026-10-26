@@ -35,6 +35,15 @@ export function ReviewStatusBadge({ status }: { status: ReviewStatus }) {
   );
 }
 
+/** Muted text for a real AI decision whose review status can't be derived
+ *  (the article was decided outside the AI log, e.g. before it existed). */
+export const UNDETERMINED = "Can't be determined";
+
+/** True for include/exclude/uncertain rows; false for error/skipped rows. */
+export function hasRealDecision(e: AiScreeningLogEntry): boolean {
+  return e.decision !== "error" && e.decision !== "skipped";
+}
+
 /** Pick the latest AI log entry per article from a batch of log rows. */
 export function latestByArticle(entries: AiScreeningLogEntry[]): Map<number, AiScreeningLogEntry> {
   const m = new Map<number, AiScreeningLogEntry>();
@@ -51,7 +60,7 @@ export function AiDecisionLine({
   entry: AiScreeningLogEntry;
   onOpen: () => void;
 }) {
-  const noDecision = entry.review_status === null;
+  const noDecision = !hasRealDecision(entry);
   const muted = noDecision
     ? entry.decision === "skipped"
       ? "Skipped — no PDF"
@@ -80,10 +89,16 @@ export function AiDecisionLine({
           </>
         )}
       </span>
-      {entry.review_status && (
+      {entry.review_status ? (
         <span className="shrink-0">
           <ReviewStatusBadge status={entry.review_status} />
         </span>
+      ) : (
+        !noDecision && (
+          <span className="shrink-0 text-[10px] italic text-[var(--color-paper-400)] whitespace-nowrap">
+            {UNDETERMINED}
+          </span>
+        )
       )}
     </button>
   );
@@ -147,7 +162,7 @@ export function AiDecisionDetailDialog({
     api.recordAiScreeningOpen(entry.id).catch(() => {});
   }, [entry.id, entry.review_status]);
 
-  const hasDecision = entry.review_status !== null;
+  const hasDecision = hasRealDecision(entry);
   return (
     <AnimatePresence>
       <motion.div
@@ -171,7 +186,13 @@ export function AiDecisionDetailDialog({
             <span className="text-[13px] font-semibold text-[var(--color-ink-900)] flex-1">
               AI screener — logged decision
             </span>
-            {entry.review_status && <ReviewStatusBadge status={entry.review_status} />}
+            {entry.review_status ? (
+              <ReviewStatusBadge status={entry.review_status} />
+            ) : (
+              hasDecision && (
+                <span className="text-[10px] italic text-[var(--color-paper-400)]">{UNDETERMINED}</span>
+              )
+            )}
             <button
               onClick={onClose}
               className="p-1 rounded-[var(--radius-xs)] hover:bg-[var(--color-paper-200)] text-[var(--color-paper-500)] transition-paper"
@@ -198,8 +219,17 @@ export function AiDecisionDetailDialog({
                   ) : (
                     `Opened ${entry.open_count} ${entry.open_count === 1 ? "time" : "times"} · first ${fmtTime(
                       entry.first_opened_at,
-                    )} · last ${fmtTime(entry.last_opened_at)}`
+                    )} · last ${fmtTime(entry.last_opened_at)}${
+                      entry.last_opened_by ? ` · last opened by ${entry.last_opened_by}` : ""
+                    }`
                   )}
+                </Row>
+              )}
+              {hasDecision && entry.review_status === null && (
+                <Row label="Review status">
+                  <span className="italic text-[var(--color-paper-500)]">
+                    {UNDETERMINED} — decided outside the AI log
+                  </span>
                 </Row>
               )}
             </dl>

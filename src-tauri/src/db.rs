@@ -521,6 +521,51 @@ pub struct JournalInput {
     pub field: Option<String>,
 }
 
+/// Copy an existing project database to `backups/pre-migration-<UTC>.sqlite`
+/// when the migrator has migrations it has not yet applied. A database with no
+/// migration table (nothing applied yet) has nothing to protect and is skipped.
+async fn backup_before_pending_migrations(
+    pool: &sqlx::SqlitePool,
+    migrator: &sqlx::migrate::Migrator,
+    workspace: &Path,
+) -> Result<()> {
+    let has_table: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = '_sqlx_migrations'",
+    )
+    .fetch_one(pool)
+    .await?;
+    if has_table == 0 {
+        return Ok(());
+    }
+    let applied: std::collections::HashSet<i64> =
+        sqlx::query_scalar::<_, i64>("SELECT version FROM _sqlx_migrations WHERE success = 1")
+            .fetch_all(pool)
+            .await?
+            .into_iter()
+            .collect();
+    let pending = migrator
+        .iter()
+        .any(|m| !m.migration_type.is_down_migration() && !applied.contains(&m.version));
+    if !pending {
+        return Ok(());
+    }
+    let dir = workspace.join("backups");
+    std::fs::create_dir_all(&dir).ok();
+    let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ");
+    let mut target = dir.join(format!("pre-migration-{stamp}.sqlite"));
+    let mut n = 1;
+    while target.exists() {
+        target = dir.join(format!("pre-migration-{stamp}-{n}.sqlite"));
+        n += 1;
+    }
+    sqlx::query("VACUUM INTO ?")
+        .bind(target.to_string_lossy().to_string())
+        .execute(pool)
+        .await
+        .with_context(|| format!("backing up project to {} before migrating", target.display()))?;
+    Ok(())
+}
+
 impl ProjectDb {
     /// Create or open a project workspace folder, ensuring the standard
     /// subdirectory layout and the SQLite database exist.
@@ -538,13 +583,19 @@ impl ProjectDb {
             .foreign_keys(true)
             .journal_mode(SqliteJournalMode::Wal);
 
+        let existed = db_path.exists();
+
         let pool = SqlitePoolOptions::new()
             .max_connections(4)
             .connect_with(opts)
             .await
             .with_context(|| format!("opening sqlite at {}", db_path.display()))?;
 
-        sqlx::migrate!("./migrations").run(&pool).await?;
+        let migrator = sqlx::migrate!("./migrations");
+        if existed {
+            backup_before_pending_migrations(&pool, &migrator, workspace).await?;
+        }
+        migrator.run(&pool).await?;
 
         // Self-healing: seed the project row if it's missing for any reason
         // (recovers from a half-applied earlier migration that left an empty file).
@@ -1890,9 +1941,6 @@ impl ProjectDb {
         Ok(n)
     }
 
-    /// Record an AI screening decision on an article.
-    /// decision: "include" | "exclude" | "uncertain"
-    /// For "uncertain" the status stays 'retrieved'; ai_rationale and ai_confidence are stored.
     /// Store the AI's rationale/confidence on an article without touching its status.
     pub async fn set_ai_screening_fields(&self, article_id: i64, rationale: &str, confidence: f64) -> Result<()> {
         sqlx::query("UPDATE article SET ai_rationale = ?, ai_confidence = ?, updated_at = ? WHERE id = ?")
@@ -1905,6 +1953,9 @@ impl ProjectDb {
         Ok(())
     }
 
+    /// Record an AI screening decision on an article.
+    /// decision: "include" | "exclude" | "uncertain"
+    /// For "uncertain" the status stays 'retrieved'; ai_rationale and ai_confidence are stored.
     pub async fn apply_ai_outcome(
         &self,
         article_id: i64,
@@ -2699,32 +2750,40 @@ impl ProjectDb {
                     };
                     let mut excluded: i64 = 0;
                     if let Some(start) = start_year {
-                        let r = sqlx::query(
+                        let ids: Vec<i64> = sqlx::query_scalar(
                             "UPDATE article SET status = 'excluded', exclusion_criterion = 2, \
                              exclusion_rationale = ?, screened_at = ?, updated_at = ? \
-                             WHERE status = 'retrieved' AND year IS NOT NULL AND year < ?",
+                             WHERE status = 'retrieved' AND year IS NOT NULL AND year < ? \
+                             RETURNING id",
                         )
                         .bind(&rationale)
                         .bind(&now)
                         .bind(&now)
                         .bind(start)
-                        .execute(&self.pool)
+                        .fetch_all(&self.pool)
                         .await?;
-                        excluded += r.rows_affected() as i64;
+                        for id in &ids {
+                            self.mark_ai_decision_overridden(*id, "title_abstract", "exclude").await?;
+                        }
+                        excluded += ids.len() as i64;
                     }
                     if let Some(end) = end_year {
-                        let r = sqlx::query(
+                        let ids: Vec<i64> = sqlx::query_scalar(
                             "UPDATE article SET status = 'excluded', exclusion_criterion = 2, \
                              exclusion_rationale = ?, screened_at = ?, updated_at = ? \
-                             WHERE status = 'retrieved' AND year IS NOT NULL AND year > ?",
+                             WHERE status = 'retrieved' AND year IS NOT NULL AND year > ? \
+                             RETURNING id",
                         )
                         .bind(&rationale)
                         .bind(&now)
                         .bind(&now)
                         .bind(end)
-                        .execute(&self.pool)
+                        .fetch_all(&self.pool)
                         .await?;
-                        excluded += r.rows_affected() as i64;
+                        for id in &ids {
+                            self.mark_ai_decision_overridden(*id, "title_abstract", "exclude").await?;
+                        }
+                        excluded += ids.len() as i64;
                     }
                     applied.push(PurificationCriterionApplied {
                         number: c.number,
@@ -2881,6 +2940,7 @@ impl ProjectDb {
                     .bind(article_id)
                     .execute(&self.pool)
                     .await?;
+                    self.mark_ai_decision_overridden(article_id, "title_abstract", "exclude").await?;
                     excluded_count += 1;
                 }
             } else {
@@ -2895,6 +2955,7 @@ impl ProjectDb {
                 .bind(article_id)
                 .execute(&self.pool)
                 .await?;
+                self.mark_ai_decision_overridden(article_id, "title_abstract", "exclude").await?;
                 excluded_count += 1;
             }
         }
@@ -3710,8 +3771,9 @@ impl ProjectDb {
         Ok(r.flatten())
     }
 
-    /// Mark the latest (by id) non-error AI decision for (article, stage) as
-    /// overridden, but only if the human decision differs from it.
+    /// Mark the latest (by id) AI decision for (article, stage) as overridden,
+    /// but only if it was an include/exclude and the human decision differs.
+    /// A human decision on an "uncertain" row is an open, not an override.
     pub async fn mark_ai_decision_overridden(
         &self,
         article_id: i64,
@@ -3723,7 +3785,7 @@ impl ProjectDb {
              WHERE id = (SELECT id FROM ai_screening_proposal \
                          WHERE article_id = ? AND stage = ? ORDER BY id DESC LIMIT 1) \
                AND overridden_at IS NULL \
-               AND decision NOT IN ('error','skipped') \
+               AND decision NOT IN ('error','skipped','uncertain') \
                AND decision != ?",
         )
         .bind(chrono::Utc::now().to_rfc3339())
@@ -3746,7 +3808,7 @@ impl ProjectDb {
             "SELECT p.id, p.article_id, p.rater, p.stage, p.mode, p.decision, p.criterion_number, \
                     p.rationale, p.confidence, p.model_name, p.ai_call_id, p.auto_applied, \
                     p.overridden_at, p.overridden_to, p.run_id, p.created_at, \
-                    a.title AS article_title, c.model_used, c.prompt_hash, c.temperature, c.seed, \
+                    a.title AS article_title, a.status AS article_status, a.fulltext_status AS article_ft, c.model_used, c.prompt_hash, c.temperature, c.seed, \
                     (SELECT COUNT(*) FROM ai_screening_open o WHERE o.proposal_id = p.id) AS open_count, \
                     (SELECT MIN(o.opened_at) FROM ai_screening_open o WHERE o.proposal_id = p.id) AS first_opened_at, \
                     (SELECT MAX(o.opened_at) FROM ai_screening_open o WHERE o.proposal_id = p.id) AS last_opened_at, \
@@ -3785,12 +3847,23 @@ impl ProjectDb {
             .map(|r| {
                 let proposal = proposal_from_row(r);
                 let open_count: i64 = r.get("open_count");
+                let article_status: String = r.get("article_status");
+                let article_ft: Option<String> = r.get("article_ft");
                 let review_status = crate::transparency::review_status(
                     &proposal.decision,
                     proposal.auto_applied,
                     proposal.overridden_at.is_some(),
                     open_count,
                 )
+                .filter(|s| {
+                    // Never "Pending" on an article that was decided outside the AI log.
+                    *s != "pending"
+                        || crate::transparency::undecided_at_stage(
+                            &proposal.stage,
+                            &article_status,
+                            article_ft.as_deref(),
+                        )
+                })
                 .map(str::to_string);
                 AiScreeningLogEntry {
                     article_title: r.get("article_title"),
@@ -3832,7 +3905,7 @@ impl ProjectDb {
             if auto {
                 if ta { c.title_abstract_auto += 1 } else { c.fulltext_auto += 1 }
             } else {
-                let undecided = if ta { status == "retrieved" } else { status == "included" && ft.is_none() };
+                let undecided = crate::transparency::undecided_at_stage(&stage, &status, ft.as_deref());
                 if undecided {
                     if ta { c.title_abstract_pending += 1 } else { c.fulltext_pending += 1 }
                 }
@@ -4531,6 +4604,174 @@ mod screening_log_tests {
              VALUES (?, 'error', 'x', NULL, 'r', 'n')",
         )
         .bind(b).execute(&db.pool).await.unwrap();
+    }
+}
+
+#[cfg(test)]
+mod final_fix_tests {
+    use super::*;
+    use crate::transparency::researcher_name;
+
+    async fn art(db: &ProjectDb, status: &str) -> i64 {
+        sqlx::query(
+            "INSERT INTO article (title, status, created_at, updated_at) VALUES ('T', ?, 'n', 'n')",
+        )
+        .bind(status)
+        .execute(&db.pool)
+        .await
+        .unwrap()
+        .last_insert_rowid()
+    }
+
+    fn nd<'a>(article_id: i64, decision: &'a str, auto: bool, conf: Option<f64>) -> NewScreeningDecision<'a> {
+        NewScreeningDecision {
+            article_id,
+            stage: "title_abstract",
+            mode: "screening",
+            decision,
+            criterion_number: None,
+            rationale: "R",
+            confidence: conf,
+            model_name: Some("m"),
+            ai_call_id: None,
+            auto_applied: auto,
+            run_id: "run",
+        }
+    }
+
+    #[tokio::test]
+    async fn decided_by_other_route_has_no_status() {
+        let (db, _d) = test_db().await;
+        let a = art(&db, "retrieved").await;
+        db.save_ai_screening_decision(&nd(a, "uncertain", false, Some(0.5))).await.unwrap();
+        let log = db.list_ai_screening_log(Some(&[a]), None).await.unwrap();
+        assert_eq!(log[0].review_status.as_deref(), Some("pending"));
+        // Decided without going through the AI log (e.g. a rule or an older version).
+        sqlx::query("UPDATE article SET status='excluded' WHERE id=?").bind(a).execute(&db.pool).await.unwrap();
+        let log = db.list_ai_screening_log(Some(&[a]), None).await.unwrap();
+        assert_eq!(log[0].review_status, None);
+    }
+
+    #[tokio::test]
+    async fn rule_based_exclusion_overrides_ai_include() {
+        let (db, _d) = test_db().await;
+        let a = art(&db, "included").await;
+        sqlx::query("UPDATE article SET journal='Unknown Journal' WHERE id=?").bind(a).execute(&db.pool).await.unwrap();
+        let id = db.save_ai_screening_decision(&nd(a, "include", true, Some(0.95))).await.unwrap();
+        let n = db.apply_quality_exclusions(Some("4".into()), None, None).await.unwrap();
+        assert_eq!(n, 1);
+        let p = db.get_ai_screening_proposal_by_id(id).await.unwrap().unwrap();
+        assert!(p.overridden_at.is_some());
+        assert_eq!(p.overridden_to.as_deref(), Some("exclude"));
+        let log = db.list_ai_screening_log(Some(&[a]), None).await.unwrap();
+        assert_eq!(log[0].review_status.as_deref(), Some("overridden"));
+    }
+
+    #[tokio::test]
+    async fn year_filter_marks_ai_rows_overridden() {
+        let (db, _d) = test_db().await;
+        sqlx::query("UPDATE project SET search_period_start='2015', search_period_end='2025' WHERE id=1")
+            .execute(&db.pool).await.unwrap();
+        // Criterion 2 must exist for the year filter to run.
+        let has2: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM exclusion_criterion WHERE number=2")
+            .fetch_one(&db.pool).await.unwrap();
+        assert_eq!(has2, 1);
+        let a = art(&db, "retrieved").await;
+        sqlx::query("UPDATE article SET year=2001 WHERE id=?").bind(a).execute(&db.pool).await.unwrap();
+        // An uncertain row is not an override target (Ruling #4) — but it must not break the run.
+        db.save_ai_screening_decision(&nd(a, "uncertain", false, Some(0.5))).await.unwrap();
+        db.run_purification().await.unwrap();
+        let status: String = sqlx::query_scalar("SELECT status FROM article WHERE id=?").bind(a).fetch_one(&db.pool).await.unwrap();
+        assert_eq!(status, "excluded");
+        let log = db.list_ai_screening_log(Some(&[a]), None).await.unwrap();
+        assert!(log[0].overridden_at.is_none());
+        assert_eq!(log[0].review_status, None);
+    }
+
+    #[tokio::test]
+    async fn human_decision_on_uncertain_is_not_override() {
+        let (db, _d) = test_db().await;
+        let a = art(&db, "retrieved").await;
+        let id = db.save_ai_screening_decision(&nd(a, "uncertain", false, Some(0.5))).await.unwrap();
+        // What note_human_decision does: record the open, then try to mark overridden.
+        db.record_ai_screening_open(id, &researcher_name(), "decision").await.unwrap();
+        db.mark_ai_decision_overridden(a, "title_abstract", "exclude").await.unwrap();
+        sqlx::query("UPDATE article SET status='excluded' WHERE id=?").bind(a).execute(&db.pool).await.unwrap();
+        let p = db.get_ai_screening_proposal_by_id(id).await.unwrap().unwrap();
+        assert!(p.overridden_at.is_none());
+        let log = db.list_ai_screening_log(Some(&[a]), None).await.unwrap();
+        assert_eq!(log[0].review_status.as_deref(), Some("opened"));
+    }
+
+    #[tokio::test]
+    async fn backfill_skips_low_confidence_matching_rationale() {
+        let (db, _d) = test_db_before(28).await;
+        let a = art(&db, "excluded").await;
+        sqlx::query("UPDATE article SET ai_rationale='R' WHERE id=?").bind(a).execute(&db.pool).await.unwrap();
+        sqlx::query(
+            "INSERT INTO ai_screening_proposal (article_id, rater, decision, rationale, confidence, run_id, created_at) \
+             VALUES (?, 1, 'exclude', 'R', 0.6, 'r', 'n')",
+        )
+        .bind(a).execute(&db.pool).await.unwrap();
+        finish_migrations(&db).await;
+        let rows = db.list_ai_screening_log(Some(&[a]), None).await.unwrap();
+        assert!(!rows[0].auto_applied);
+    }
+
+    #[tokio::test]
+    async fn backfill_respects_custom_threshold_setting() {
+        let (db, _d) = test_db_before(28).await;
+        sqlx::query("INSERT INTO settings (key, value, updated_at) VALUES ('screening.confidence_threshold', '0.5', 'n')")
+            .execute(&db.pool).await.unwrap();
+        let a = art(&db, "excluded").await;
+        sqlx::query("UPDATE article SET ai_rationale='R' WHERE id=?").bind(a).execute(&db.pool).await.unwrap();
+        sqlx::query(
+            "INSERT INTO ai_screening_proposal (article_id, rater, decision, rationale, confidence, run_id, created_at) \
+             VALUES (?, 1, 'exclude', 'R', 0.6, 'r', 'n')",
+        )
+        .bind(a).execute(&db.pool).await.unwrap();
+        finish_migrations(&db).await;
+        let rows = db.list_ai_screening_log(Some(&[a]), None).await.unwrap();
+        assert!(rows[0].auto_applied);
+    }
+
+    fn backups(dir: &std::path::Path) -> Vec<String> {
+        std::fs::read_dir(dir.join("backups"))
+            .map(|rd| {
+                rd.filter_map(|e| e.ok())
+                    .map(|e| e.file_name().to_string_lossy().to_string())
+                    .filter(|n| n.starts_with("pre-migration-") && n.ends_with(".sqlite"))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    #[tokio::test]
+    async fn pending_migrations_back_up_existing_project_first() {
+        let (old, dir) = test_db_before(28).await;
+        let a = art(&old, "retrieved").await;
+        old.pool.close().await;
+        let db = ProjectDb::open_or_create(dir.path(), None).await.unwrap();
+        let names = backups(dir.path());
+        assert_eq!(names.len(), 1, "{names:?}");
+        // The copy is the pre-migration database: it has the article and no ai_call table.
+        let copy = dir.path().join("backups").join(&names[0]);
+        let opts = SqliteConnectOptions::from_str(&format!("sqlite://{}", copy.display())).unwrap();
+        let cp = SqlitePoolOptions::new().max_connections(1).connect_with(opts).await.unwrap();
+        let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM article WHERE id=?").bind(a).fetch_one(&cp).await.unwrap();
+        assert_eq!(n, 1);
+        let t: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sqlite_master WHERE name='ai_call'").fetch_one(&cp).await.unwrap();
+        assert_eq!(t, 0);
+        // Reopening a fully migrated project makes no further copy.
+        db.pool.close().await;
+        let _again = ProjectDb::open_or_create(dir.path(), None).await.unwrap();
+        assert_eq!(backups(dir.path()).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn new_project_makes_no_backup() {
+        let (_db, dir) = test_db().await;
+        assert!(backups(dir.path()).is_empty());
     }
 }
 
