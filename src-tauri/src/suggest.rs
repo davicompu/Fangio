@@ -742,6 +742,61 @@ fn parse_step_questions(s: &str) -> Option<Vec<StepQuestion>> {
 mod tests {
     use super::*;
 
+    const LEGACY_MERGING: &str = "You are an independent merging agent for a systematic literature review. \
+Two coders (Rater 1 and Rater 2) each proposed codes for the same dimension of the same \
+article, and these did not match. Your only job is to decide which Rater 1 / Rater 2 PAIRS \
+denote the SAME underlying concept — for example two names for the same research context, or \
+a general method and a specific tool that implements it (\"Structural equation modeling\" and \
+\"SmartPLS analysis\").\n\n\
+Rules:\n\
+- Only pair codes you are confident mean the same thing. If unsure, leave them out.\n\
+- For each pair, choose a canonical label that is EXACTLY one of the two given labels (the \
+clearer or more standard one). Never invent a new label.\n\
+- Do not pair codes that are genuinely different concepts.\n\n\
+Respond ONLY with a JSON array (possibly empty). Each element: \
+{\"rater1_label\": string, \"rater2_label\": string, \"canonical_label\": string, \"rationale\": string}. \
+No prose before or after the JSON.";
+    const LEGACY_SYNTHESIS: &str = "You are writing the Results/synthesis section of a systematic literature \
+review. Write a structured narrative ORGANISED BY THE FRAMEWORK DIMENSIONS provided. For each \
+dimension, synthesise what the corpus says — drawing on the coded themes and the excerpts — \
+noting agreements, tensions, and gaps. \
+Cite sources inline by their title, e.g. 'Smith et al. found …'. Only state what the excerpts \
+support; do not invent findings. Use markdown: a '##' heading per dimension, prose and bullets \
+beneath. No preamble before the first heading.";
+    const LEGACY_CONSOLIDATING: &str = "You are consolidating the codebook for a systematic literature review. \
+You are given the list of codes researchers and AI raters applied within ONE dimension across \
+all articles. Some are near-duplicates that denote the SAME concept worded differently \
+(e.g. \"Structural equation modelling\" / \"Structural equation modeling\", \"Higher education \
+setting\" / \"Business education\"). Group those into clusters so the codebook is clean.\n\n\
+Rules:\n\
+- Only cluster codes you are confident denote the same concept. Leave genuinely distinct codes \
+out (a code with no synonym simply doesn't appear in your output).\n\
+- For each cluster pick a canonical label that is EXACTLY one of the given labels. Never invent a \
+new label.\n\
+- If a cluster contains a code marked [researcher-defined], that label MUST be the canonical one.\n\n\
+Respond ONLY with a JSON array (possibly empty). Each element: \
+{\"canonical_label\": string, \"variant_labels\": [string, ...]} where variant_labels are the \
+OTHER labels in the cluster (not equal to canonical_label). No prose before or after the JSON.";
+
+    #[test]
+    fn defaults_reproduce_legacy_prompts() {
+        assert_eq!(agent_prompt("", DEFAULT_CONSOLIDATING_INSTRUCTIONS, CONSOLIDATING_OUTPUT_FORMAT), LEGACY_CONSOLIDATING);
+        assert_eq!(agent_prompt("", DEFAULT_SYNTHESIS_INSTRUCTIONS, SYNTHESIS_OUTPUT_FORMAT), LEGACY_SYNTHESIS);
+        assert_eq!(agent_prompt("", DEFAULT_MERGING_INSTRUCTIONS, MERGING_OUTPUT_FORMAT), LEGACY_MERGING);
+    }
+
+    #[test]
+    fn custom_instructions_keep_fixed_format() {
+        let p = agent_prompt("Be strict.", DEFAULT_MERGING_INSTRUCTIONS, MERGING_OUTPUT_FORMAT);
+        assert!(p.starts_with("Be strict."));
+        assert!(p.ends_with(MERGING_OUTPUT_FORMAT));
+    }
+
+    #[test]
+    fn blank_custom_uses_default() {
+        assert_eq!(agent_prompt("  \n", "D", "F"), agent_prompt("", "D", "F"));
+    }
+
     #[test]
     fn parse_query_result_canonical_keys() {
         let s = r#"{"query": "X AND Y", "rationale": "because"}"#;
@@ -1441,7 +1496,58 @@ pub struct AdjudicationResolution {
     pub rationale: String,
 }
 
-/// Ask the adjudicator which `(rater1, rater2)` label pairs mean the same thing.
+// ── Editable agent instructions + fixed output formats ──────────────────────
+// The researcher may edit the instructions of the merging, consolidating and
+// synthesis agents. The output-format tail is fixed so parsing keeps working.
+
+pub const DEFAULT_MERGING_INSTRUCTIONS: &str = "You are an independent merging agent for a systematic literature review. \
+Two coders (Rater 1 and Rater 2) each proposed codes for the same dimension of the same \
+article, and these did not match. Your only job is to decide which Rater 1 / Rater 2 PAIRS \
+denote the SAME underlying concept — for example two names for the same research context, or \
+a general method and a specific tool that implements it (\"Structural equation modeling\" and \
+\"SmartPLS analysis\").\n\n\
+Rules:\n\
+- Only pair codes you are confident mean the same thing. If unsure, leave them out.\n\
+- For each pair, choose a canonical label that is EXACTLY one of the two given labels (the \
+clearer or more standard one). Never invent a new label.\n\
+- Do not pair codes that are genuinely different concepts.";
+pub const MERGING_OUTPUT_FORMAT: &str = "Respond ONLY with a JSON array (possibly empty). Each element: \
+{\"rater1_label\": string, \"rater2_label\": string, \"canonical_label\": string, \"rationale\": string}. \
+No prose before or after the JSON.";
+
+pub const DEFAULT_CONSOLIDATING_INSTRUCTIONS: &str = "You are consolidating the codebook for a systematic literature review. \
+You are given the list of codes researchers and AI raters applied within ONE dimension across \
+all articles. Some are near-duplicates that denote the SAME concept worded differently \
+(e.g. \"Structural equation modelling\" / \"Structural equation modeling\", \"Higher education \
+setting\" / \"Business education\"). Group those into clusters so the codebook is clean.\n\n\
+Rules:\n\
+- Only cluster codes you are confident denote the same concept. Leave genuinely distinct codes \
+out (a code with no synonym simply doesn't appear in your output).\n\
+- For each cluster pick a canonical label that is EXACTLY one of the given labels. Never invent a \
+new label.\n\
+- If a cluster contains a code marked [researcher-defined], that label MUST be the canonical one.";
+pub const CONSOLIDATING_OUTPUT_FORMAT: &str = "Respond ONLY with a JSON array (possibly empty). Each element: \
+{\"canonical_label\": string, \"variant_labels\": [string, ...]} where variant_labels are the \
+OTHER labels in the cluster (not equal to canonical_label). No prose before or after the JSON.";
+
+pub const DEFAULT_SYNTHESIS_INSTRUCTIONS: &str = "You are writing the Results/synthesis section of a systematic literature \
+review. Write a structured narrative ORGANISED BY THE FRAMEWORK DIMENSIONS provided. For each \
+dimension, synthesise what the corpus says — drawing on the coded themes and the excerpts — \
+noting agreements, tensions, and gaps. \
+Cite sources inline by their title, e.g. 'Smith et al. found …'. Only state what the excerpts \
+support; do not invent findings.";
+pub const SYNTHESIS_OUTPUT_FORMAT: &str = "Use markdown: a '##' heading per dimension, prose and bullets \
+beneath. No preamble before the first heading.";
+
+/// Build an agent's system prompt: custom instructions (blank -> default) followed
+/// by the fixed output format. Keeps today's exact whitespace between the two.
+pub fn agent_prompt(custom: &str, default: &str, format: &str) -> String {
+    let instructions = if custom.trim().is_empty() { default } else { custom.trim() };
+    let sep = if format == SYNTHESIS_OUTPUT_FORMAT { " " } else { "\n\n" };
+    format!("{instructions}{sep}{format}")
+}
+
+/// Ask the merging agent which `(rater1, rater2)` label pairs mean the same thing.
 /// `rater1`/`rater2` are `(label, rationale)` lists of each rater's leftover
 /// codes for one dimension of one article. Returns only the pairs the model is
 /// confident are equivalent.
@@ -1452,6 +1558,7 @@ pub async fn adjudicate_disagreements(
     dimension: &str,
     rater1: &[(String, String)],
     rater2: &[(String, String)],
+    instructions: &str,
     temperature: f32,
     seed: Option<i64>,
     api_key: Option<&str>,
@@ -1470,21 +1577,7 @@ pub async fn adjudicate_disagreements(
             .join("\n")
     };
 
-    let system = "You are an independent adjudicator for a systematic literature review. \
-Two coders (Rater 1 and Rater 2) each proposed codes for the same dimension of the same \
-article, and these did not match. Your only job is to decide which Rater 1 / Rater 2 PAIRS \
-denote the SAME underlying concept — for example two names for the same research context, or \
-a general method and a specific tool that implements it (\"Structural equation modeling\" and \
-\"SmartPLS analysis\").\n\n\
-Rules:\n\
-- Only pair codes you are confident mean the same thing. If unsure, leave them out.\n\
-- For each pair, choose a canonical label that is EXACTLY one of the two given labels (the \
-clearer or more standard one). Never invent a new label.\n\
-- Do not pair codes that are genuinely different concepts.\n\n\
-Respond ONLY with a JSON array (possibly empty). Each element: \
-{\"rater1_label\": string, \"rater2_label\": string, \"canonical_label\": string, \"rationale\": string}. \
-No prose before or after the JSON."
-        .to_string();
+    let system = agent_prompt(instructions, DEFAULT_MERGING_INSTRUCTIONS, MERGING_OUTPUT_FORMAT);
 
     let user = format!(
         "Dimension: {dimension}\n\nRater 1 codes:\n{}\n\nRater 2 codes:\n{}\n\nReturn the JSON array now.",
@@ -1609,6 +1702,7 @@ pub async fn generate_synthesis(
     framework: &str,
     research_questions: &[&str],
     dims: &[(String, Vec<String>, Vec<(String, String)>)],
+    instructions: &str,
     temperature: f32,
     seed: Option<i64>,
     api_key: Option<&str>,
@@ -1639,14 +1733,7 @@ pub async fn generate_synthesis(
         }
     }
 
-    let system = "You are writing the Results/synthesis section of a systematic literature \
-review. Write a structured narrative ORGANISED BY THE FRAMEWORK DIMENSIONS provided. For each \
-dimension, synthesise what the corpus says — drawing on the coded themes and the excerpts — \
-noting agreements, tensions, and gaps. \
-Cite sources inline by their title, e.g. 'Smith et al. found …'. Only state what the excerpts \
-support; do not invent findings. Use markdown: a '##' heading per dimension, prose and bullets \
-beneath. No preamble before the first heading."
-        .to_string();
+    let system = agent_prompt(instructions, DEFAULT_SYNTHESIS_INSTRUCTIONS, SYNTHESIS_OUTPUT_FORMAT);
 
     let user = format!(
         "Domain: {domain}\nFramework: {framework}\nResearch questions:\n{rqs_block}\n\n\
@@ -1683,6 +1770,7 @@ pub async fn consolidate_codes(
     model: &str,
     dimension: &str,
     codes: &[(String, i64, bool)],
+    instructions: &str,
     temperature: f32,
     seed: Option<i64>,
     api_key: Option<&str>,
@@ -1696,21 +1784,7 @@ pub async fn consolidate_codes(
         .collect::<Vec<_>>()
         .join("\n");
 
-    let system = "You are consolidating the codebook for a systematic literature review. \
-You are given the list of codes researchers and AI raters applied within ONE dimension across \
-all articles. Some are near-duplicates that denote the SAME concept worded differently \
-(e.g. \"Structural equation modelling\" / \"Structural equation modeling\", \"Higher education \
-setting\" / \"Business education\"). Group those into clusters so the codebook is clean.\n\n\
-Rules:\n\
-- Only cluster codes you are confident denote the same concept. Leave genuinely distinct codes \
-out (a code with no synonym simply doesn't appear in your output).\n\
-- For each cluster pick a canonical label that is EXACTLY one of the given labels. Never invent a \
-new label.\n\
-- If a cluster contains a code marked [researcher-defined], that label MUST be the canonical one.\n\n\
-Respond ONLY with a JSON array (possibly empty). Each element: \
-{\"canonical_label\": string, \"variant_labels\": [string, ...]} where variant_labels are the \
-OTHER labels in the cluster (not equal to canonical_label). No prose before or after the JSON."
-        .to_string();
+    let system = agent_prompt(instructions, DEFAULT_CONSOLIDATING_INSTRUCTIONS, CONSOLIDATING_OUTPUT_FORMAT);
 
     let user = format!("Dimension: {dimension}\n\nCodes:\n{list}\n\nReturn the JSON array now.");
 

@@ -21,7 +21,7 @@ import {
   X,
 } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { api, type BackupInfo } from "../lib/api";
+import { api, type BackupInfo, type DefaultAgentPrompts } from "../lib/api";
 import { Button } from "../components/ui/Button";
 import { TextField, TextArea } from "../components/ui/TextField";
 import { Select } from "../components/ui/Select";
@@ -39,6 +39,55 @@ interface SettingsProps {
   onUpdate: <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => Promise<void>;
   lm: LmState;
   onTest: (baseUrl?: string) => Promise<unknown>;
+}
+
+function AgentPromptField({
+  label,
+  value,
+  fallback,
+  format,
+  onSave,
+}: {
+  label: string;
+  value: string;
+  fallback: string;
+  format: string;
+  onSave: (v: string) => void;
+}) {
+  const [local, setLocal] = useState(value);
+  useEffect(() => setLocal(value), [value]);
+  const showReset = local.trim() !== "" && local.trim() !== fallback.trim();
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1.5">
+        <label className="text-[13px] font-medium text-[var(--color-ink-800)]">{label}</label>
+        {showReset && (
+          <button
+            type="button"
+            onClick={() => {
+              setLocal("");
+              onSave("");
+            }}
+            className="inline-flex items-center gap-1 text-[11px] font-medium text-[var(--color-accent-600)] hover:text-[var(--color-accent-700)] transition-paper"
+          >
+            <RotateCcw size={11} strokeWidth={2} />
+            Reset to default
+          </button>
+        )}
+      </div>
+      <TextArea
+        rows={5}
+        value={local}
+        onChange={(e) => setLocal(e.target.value)}
+        onBlur={() => onSave(local.trim() === fallback.trim() ? "" : local)}
+        placeholder={fallback}
+      />
+      <details className="mt-1.5">
+        <summary className="text-[11px] text-[var(--color-paper-500)] cursor-pointer">Output format (fixed)</summary>
+        <pre className="mt-1 px-2.5 py-2 text-[11px] font-mono text-[var(--color-paper-500)] whitespace-pre-wrap rounded-[var(--radius-xs)] bg-[var(--color-paper-100)]">{format}</pre>
+      </details>
+    </div>
+  );
 }
 
 export function Settings({ open: openSetting, onClose, settings, onUpdate, lm, onTest }: SettingsProps) {
@@ -65,6 +114,11 @@ export function Settings({ open: openSetting, onClose, settings, onUpdate, lm, o
   // Server URL field back to whatever was on disk before the user clicked
   // Test connection.
   const lastOpenSeen = useRef<boolean | null>(null);
+  const [agentDefaults, setAgentDefaults] = useState<DefaultAgentPrompts | null>(null);
+  useEffect(() => {
+    api.getDefaultAgentPrompts().then(setAgentDefaults).catch(() => {});
+  }, []);
+
   useEffect(() => {
     if (openSetting && lastOpenSeen.current !== true) {
       setLocalUrl(settings["lmstudio.base_url"]);
@@ -453,6 +507,33 @@ export function Settings({ open: openSetting, onClose, settings, onUpdate, lm, o
                       hint="The persona every rater shares before its individual profile and the task-specific instructions. Leave blank to use Reeves' built-in default (shown above as placeholder). Edit it to change how all raters reason — e.g. stricter evidence standards or a different review tradition."
                     />
                   </div>
+                  <div className="hairline" />
+                  {agentDefaults && (
+                    <div className="space-y-4">
+                      <div className="text-[13px] font-medium text-[var(--color-ink-800)]">Other agents</div>
+                      <AgentPromptField
+                        label="Merging agent instructions"
+                        value={settings["prompts.merging"] ?? ""}
+                        fallback={agentDefaults.merging}
+                        format={agentDefaults.merging_format}
+                        onSave={(v) => onUpdate("prompts.merging", v)}
+                      />
+                      <AgentPromptField
+                        label="Consolidating agent instructions"
+                        value={settings["prompts.consolidating"] ?? ""}
+                        fallback={agentDefaults.consolidating}
+                        format={agentDefaults.consolidating_format}
+                        onSave={(v) => onUpdate("prompts.consolidating", v)}
+                      />
+                      <AgentPromptField
+                        label="Synthesis agent instructions"
+                        value={settings["prompts.synthesis"] ?? ""}
+                        fallback={agentDefaults.synthesis}
+                        format={agentDefaults.synthesis_format}
+                        onSave={(v) => onUpdate("prompts.synthesis", v)}
+                      />
+                    </div>
+                  )}
                   <div className="hairline" />
                   <fieldset>
                     <legend className="text-[13px] font-medium text-[var(--color-ink-800)] mb-1.5">

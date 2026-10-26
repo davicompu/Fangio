@@ -61,6 +61,10 @@ export interface AppSettings {
   "ai_agents.merging_model": string;
   /** Model for the consolidating agent; blank means the main chat model. */
   "ai_agents.consolidating_model": string;
+  /** Editable agent instructions; blank means the built-in default. The output format is fixed. */
+  "prompts.merging": string;
+  "prompts.consolidating": string;
+  "prompts.synthesis": string;
 }
 
 /** Mirrors `suggest::DEFAULT_RATER_SYSTEM_PROMPT` in the Rust backend. Shown as the
@@ -88,6 +92,9 @@ const DEFAULTS: AppSettings = {
   "coding.agreed_codes_mode": "suggest",
   "ai_agents.merging_model": "",
   "ai_agents.consolidating_model": "",
+  "prompts.merging": "",
+  "prompts.consolidating": "",
+  "prompts.synthesis": "",
 };
 
 export interface LmState {

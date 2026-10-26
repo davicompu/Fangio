@@ -993,6 +993,9 @@ export const api = {
   generateAgenda(args?: { guidance?: string; current?: string; instruction?: string }) {
     return invoke<string>("generate_agenda", { args: args ?? {} });
   },
+  getDefaultAgentPrompts() {
+    return invoke<DefaultAgentPrompts>("get_default_agent_prompts");
+  },
   generateSynthesis() {
     return invoke<string>("generate_synthesis");
   },
@@ -1092,3 +1095,12 @@ export const api = {
     return invoke<void>("close_browser_panel");
   },
 };
+
+export interface DefaultAgentPrompts {
+  merging: string;
+  consolidating: string;
+  synthesis: string;
+  merging_format: string;
+  consolidating_format: string;
+  synthesis_format: string;
+}

@@ -2704,6 +2704,33 @@ async fn undo_adjudication(id: i64, state: State<'_, AppState>) -> Result<(), St
 }
 
 /// Model for the merging / consolidating agent: the stored setting, else the main chat model.
+fn prompt_setting(settings: &serde_json::Value, key: &str) -> String {
+    settings.get(key).and_then(|v| v.as_str()).unwrap_or("").to_string()
+}
+
+#[derive(serde::Serialize)]
+struct DefaultAgentPrompts {
+    merging: String,
+    consolidating: String,
+    synthesis: String,
+    merging_format: String,
+    consolidating_format: String,
+    synthesis_format: String,
+}
+
+/// Built-in instructions and fixed output formats for the three editable agents.
+#[tauri::command]
+fn get_default_agent_prompts() -> DefaultAgentPrompts {
+    DefaultAgentPrompts {
+        merging: suggest::DEFAULT_MERGING_INSTRUCTIONS.into(),
+        consolidating: suggest::DEFAULT_CONSOLIDATING_INSTRUCTIONS.into(),
+        synthesis: suggest::DEFAULT_SYNTHESIS_INSTRUCTIONS.into(),
+        merging_format: suggest::MERGING_OUTPUT_FORMAT.into(),
+        consolidating_format: suggest::CONSOLIDATING_OUTPUT_FORMAT.into(),
+        synthesis_format: suggest::SYNTHESIS_OUTPUT_FORMAT.into(),
+    }
+}
+
 fn agent_model(settings: &serde_json::Value, key: &str) -> String {
     let pick = |k: &str| {
         settings
@@ -3476,7 +3503,7 @@ async fn run_ai_coding(
                     .collect();
 
                 let resolutions = match suggest::adjudicate_disagreements(
-                    &base_url, &adj_model, &dim, &r1_pairs, &r2_pairs, temperature, seed, api_key.as_deref(),
+                    &base_url, &adj_model, &dim, &r1_pairs, &r2_pairs, &prompt_setting(&settings, "prompts.merging"), temperature, seed, api_key.as_deref(),
                 )
                 .await
                 {
@@ -3566,7 +3593,7 @@ async fn run_ai_coding(
                     .collect();
 
                 let (clusters, consolidate_call_id) = match suggest::consolidate_codes(
-                    &base_url, &adj_model, dim_name, &codes, temperature, seed, api_key.as_deref(),
+                    &base_url, &adj_model, dim_name, &codes, &prompt_setting(&settings, "prompts.consolidating"), temperature, seed, api_key.as_deref(),
                 )
                 .await
                 {
@@ -5436,7 +5463,7 @@ async fn generate_synthesis(state: State<'_, AppState>) -> Result<String, String
         dims.push((dim.clone(), codes, excerpts));
     }
 
-    suggest::generate_synthesis(&base_url, &chat_model, &domain, &framework, &rq_refs, &dims, temperature, seed, api_key.as_deref())
+    suggest::generate_synthesis(&base_url, &chat_model, &domain, &framework, &rq_refs, &dims, &prompt_setting(&settings, "prompts.synthesis"), temperature, seed, api_key.as_deref())
         .await
         .map(|(text, _meta)| text)
         .map_err(err)
@@ -5815,6 +5842,7 @@ pub fn run() {
             read_draft,
             generate_agenda,
             generate_synthesis,
+            get_default_agent_prompts,
             export_docx,
             export_decision_report,
             find_missing_pdfs,
