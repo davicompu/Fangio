@@ -4,6 +4,7 @@ import {
   BookMarked,
   CheckCircle2,
   Download,
+  ExternalLink,
   FileSpreadsheet,
   FileText,
   FolderOpen,
@@ -127,15 +128,28 @@ export function ExportPanel() {
           >
             <div className="flex items-center gap-2 text-[var(--color-ok-500)] text-[12px] font-semibold uppercase tracking-wider">
               <CheckCircle2 size={13} strokeWidth={2} />
-              Wrote {result.files.length} file{result.files.length === 1 ? "" : "s"}
+              Wrote {result.files.length} file{result.files.length === 1 ? "" : "s"} · click to open
             </div>
-            <ul className="mt-2 space-y-0.5">
+            <ul className="mt-2 space-y-1">
               {result.files.map((f) => (
-                <li
-                  key={f}
-                  className="font-mono text-[11px] text-[var(--color-paper-600)] truncate"
-                >
-                  {f}
+                <li key={f} className="flex items-center gap-1.5 min-w-0">
+                  <button
+                    type="button"
+                    onClick={() => api.openWorkspacePath(f).catch((e) => setError(e?.toString() ?? String(e)))}
+                    title="Open with the default app"
+                    className="flex-1 min-w-0 inline-flex items-center gap-1.5 text-left font-mono text-[11px] text-[var(--color-accent-700)] hover:text-[var(--color-accent-800)] hover:underline truncate"
+                  >
+                    <ExternalLink size={11} strokeWidth={1.75} className="shrink-0" />
+                    <span className="truncate">{f}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => api.revealInFinder(f).catch((e) => setError(e?.toString() ?? String(e)))}
+                    title="Reveal in Finder"
+                    className="shrink-0 p-1 rounded-[var(--radius-xs)] text-[var(--color-paper-500)] hover:bg-[var(--color-paper-200)] hover:text-[var(--color-ink-800)] transition-paper"
+                  >
+                    <FolderOpen size={12} strokeWidth={1.75} />
+                  </button>
                 </li>
               ))}
             </ul>

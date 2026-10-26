@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  AlertCircle,
   ArrowLeft,
   ArrowRight,
   Ban,
@@ -17,6 +18,7 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { GraduationCap, Upload } from "lucide-react";
 import { api, type ExclusionCriterionRow, type FulltextCandidate } from "../../lib/api";
+import { StepConfirmBar } from "../../components/StepConfirmBar";
 import { Button } from "../../components/ui/Button";
 import { cn } from "../../lib/utils";
 
@@ -84,7 +86,7 @@ export function useAiFulltextScreening(): AiFulltextHook {
 /** Full-text (eligibility) screening — PRISMA's second pass. Operates on the
  * title/abstract-included set; fetch missing PDFs, read the full text, and keep
  * or exclude. Excluding here removes the article from the corpus. */
-export function FullTextScreeningPanel({ refreshKey, onChanged, screening }: { refreshKey: number; onChanged: () => void; screening: AiFulltextHook }) {
+export function FullTextScreeningPanel({ refreshKey, onChanged, screening, stepComplete, autoComplete }: { refreshKey: number; onChanged: () => void; screening: AiFulltextHook; stepComplete: boolean; autoComplete: boolean }) {
   const [items, setItems] = useState<FulltextCandidate[]>([]);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<Tab>("pending");
@@ -126,6 +128,16 @@ export function FullTextScreeningPanel({ refreshKey, onChanged, screening }: { r
   // True while an OS file drag is over the window — drives a visible banner so
   // it's obvious whether drag-drop events are reaching the app at all.
   const [dragActive, setDragActive] = useState(false);
+  // Prominent, self-dismissing notice for drop outcomes (e.g. "PDF already
+  // exists"). Distinct from the persistent `msg` banner.
+  const [dropNotice, setDropNotice] = useState<{ tone: "warn" | "ok"; text: string } | null>(null);
+  const dropNoticeTimer = useRef<number | null>(null);
+  const showDropNotice = useCallback((tone: "warn" | "ok", text: string) => {
+    setDropNotice({ tone, text });
+    if (dropNoticeTimer.current) clearTimeout(dropNoticeTimer.current);
+    dropNoticeTimer.current = window.setTimeout(() => setDropNotice(null), 5000);
+  }, []);
+  useEffect(() => () => { if (dropNoticeTimer.current) clearTimeout(dropNoticeTimer.current); }, []);
   const articleAtPoint = (x: number, y: number): number | null => {
     const dpr = window.devicePixelRatio || 1;
     // Tauri reports a physical position; the DOM is in CSS pixels. Try the
@@ -163,21 +175,21 @@ export function FullTextScreeningPanel({ refreshKey, onChanged, screening }: { r
           setDragOverId(null);
           const pdf = p.paths.find((x) => x.toLowerCase().endsWith(".pdf"));
           if (!pdf) {
-            setMsg("That wasn’t a PDF — drop a .pdf file onto an article.");
+            showDropNotice("warn", "That wasn’t a PDF — drop a .pdf file onto an article.");
             return;
           }
           const id = articleAtPoint(p.position.x, p.position.y);
           if (id == null) {
-            setMsg("Drop the PDF directly onto an article card.");
+            showDropNotice("warn", "Drop the PDF directly onto an article card.");
             return;
           }
           setBusyId(id);
-          setMsg(null);
           api
             .dropPdfForArticle(pdf, id)
             .then(() => reload())
             .then(() => onChanged())
-            .catch((err: any) => setMsg(err?.message ?? String(err)))
+            .then(() => showDropNotice("ok", "PDF attached."))
+            .catch((err: any) => showDropNotice("warn", err?.message ?? String(err)))
             .finally(() => setBusyId(null));
         }
       })
@@ -506,8 +518,8 @@ export function FullTextScreeningPanel({ refreshKey, onChanged, screening }: { r
           </p>
         </div>
         <div className="flex items-center gap-2 shrink-0">
-          {tab === "pending" && (
-            <Button onClick={screenWithAi} variant="secondary" disabled={aiBusy || finding} className="whitespace-nowrap" title="AI reads the full text and suggests keep/exclude for unreviewed articles">
+          {(tab === "pending" || tab === "kept") && (
+            <Button onClick={screenWithAi} variant="secondary" disabled={aiBusy || finding} className="whitespace-nowrap" title="AI reads the full text and suggests keep/exclude for every article that hasn't had a full-text decision yet (pending and included)">
               {aiBusy ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} strokeWidth={1.75} className="text-[var(--color-accent-500)]" />}
               {aiBusy ? "Screening…" : "Screen with AI"}
             </Button>
@@ -541,6 +553,21 @@ export function FullTextScreeningPanel({ refreshKey, onChanged, screening }: { r
         );
       })()}
 
+      {dropNotice && (
+        <div
+          className={cn(
+            "mb-4 px-4 py-3 rounded-[var(--radius-md)] border shadow-sm flex items-center gap-2.5 text-[13px] font-semibold",
+            dropNotice.tone === "warn"
+              ? "bg-[var(--color-warn-50)] border-[var(--color-warn-300)] text-[var(--color-warn-700)]"
+              : "bg-[var(--color-ok-50)] border-[var(--color-ok-300)] text-[var(--color-ok-700)]",
+          )}
+          role="status"
+        >
+          {dropNotice.tone === "warn" ? <AlertCircle size={16} strokeWidth={2} /> : <Check size={16} strokeWidth={2.5} />}
+          {dropNotice.text}
+        </div>
+      )}
+
       {dragActive && (
         <div className="mb-4 px-4 py-2.5 rounded-[var(--radius-sm)] bg-[var(--color-accent-50)] border border-[var(--color-accent-300)] text-[12px] font-medium text-[var(--color-accent-700)] inline-flex items-center gap-2">
           <Upload size={14} strokeWidth={1.75} /> Drop the PDF onto an article card to attach it.
@@ -550,6 +577,21 @@ export function FullTextScreeningPanel({ refreshKey, onChanged, screening }: { r
       {msg && !aiBusy && !finding && (
         <div className="mb-4 px-4 py-2.5 rounded-[var(--radius-sm)] bg-[var(--color-paper-100)] border border-[var(--color-paper-300)] text-[12px] text-[var(--color-paper-600)]">{msg}</div>
       )}
+
+      {(() => {
+        const ftPending = items.filter((i) => i.ta_status === "included" && !i.fulltext_status).length;
+        return (
+          <StepConfirmBar
+            stage="arranging"
+            tab="fulltext"
+            stepComplete={stepComplete}
+            autoComplete={autoComplete}
+            label="Full-text screening"
+            pendingHint={`${ftPending} included article${ftPending === 1 ? "" : "s"} without a full-text decision — decide them, or confirm to override.`}
+            onChanged={onChanged}
+          />
+        );
+      })()}
 
       <div className="flex items-center gap-1 mb-5 border-b border-[var(--color-paper-200)]">
         {TABS.map((t) => {
@@ -584,11 +626,28 @@ export function FullTextScreeningPanel({ refreshKey, onChanged, screening }: { r
 
       <div className="flex items-center justify-between gap-4 mb-4">
         {tab === "kept" ? (
-          <p className="text-[12px] text-[var(--color-paper-500)] leading-relaxed max-w-xl">
-            Articles that passed title &amp; abstract — the corpus assessed for eligibility. Read the full
-            text and <strong className="font-medium text-[var(--color-ink-700)]">Keep</strong> the eligible ones
-            (confirms them for coding) or <strong className="font-medium text-[var(--color-ink-700)]">Exclude</strong> the rest.
-          </p>
+          <div className="max-w-xl">
+            <p className="text-[12px] text-[var(--color-paper-500)] leading-relaxed">
+              Articles that passed title &amp; abstract — the corpus assessed for eligibility. Read the full
+              text and <strong className="font-medium text-[var(--color-ink-700)]">Keep</strong> the eligible ones
+              (confirms them for coding) or <strong className="font-medium text-[var(--color-ink-700)]">Exclude</strong> the rest.
+            </p>
+            {counts.kept > 0 && (
+              <div
+                className={cn(
+                  "mt-2 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium",
+                  missingPdf > 0
+                    ? "bg-[var(--color-warn-50)] border border-[var(--color-warn-200)] text-[var(--color-warn-700)]"
+                    : "bg-[var(--color-ok-50)] border border-[var(--color-ok-200)] text-[var(--color-ok-700)]",
+                )}
+              >
+                <FileText size={12} strokeWidth={1.75} />
+                {missingPdf > 0
+                  ? `${missingPdf} of ${counts.kept} included article${counts.kept === 1 ? "" : "s"} missing a PDF`
+                  : `All ${counts.kept} included article${counts.kept === 1 ? "" : "s"} have a PDF`}
+              </div>
+            )}
+          </div>
         ) : <span />}
         {filtered.length > 0 && (
           <div className="flex items-center gap-1 shrink-0">

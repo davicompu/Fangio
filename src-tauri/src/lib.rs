@@ -30,6 +30,7 @@ use lmstudio::{ChatMessage, ChatResult, LmModel};
 use parsers::{FormatKind, ParseResult, ParsedRecord};
 use recent::{RecentMeta, RecentProject, RecentStore};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -992,6 +993,83 @@ async fn open_pdf_path(path: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Resolve a path and confirm it lives inside the current project's workspace —
+/// the guard for the "open exported file" commands, which the webview can call.
+async fn workspace_confined(path: &str, state: &State<'_, AppState>) -> Result<std::path::PathBuf, String> {
+    let db = state.current().await.ok_or("no project open")?;
+    let canonical = std::fs::canonicalize(path).map_err(|e| format!("Not found: {e}"))?;
+    let ws = std::fs::canonicalize(&db.workspace).map_err(err)?;
+    if !canonical.starts_with(&ws) {
+        return Err("Refusing to open a path outside the project workspace.".into());
+    }
+    Ok(canonical)
+}
+
+/// Open an exported file (or folder) with its default app. Confined to the
+/// project workspace, since these are artifacts Reeves wrote itself.
+#[tauri::command]
+async fn open_workspace_path(path: String, state: State<'_, AppState>) -> Result<(), String> {
+    let target = workspace_confined(&path, &state).await?;
+    std::process::Command::new("open")
+        .arg(&target)
+        .spawn()
+        .map_err(|e| format!("Failed to open: {e}"))?;
+    Ok(())
+}
+
+/// Reveal an exported file in Finder (selects it in its containing folder).
+#[tauri::command]
+async fn reveal_in_finder(path: String, state: State<'_, AppState>) -> Result<(), String> {
+    let target = workspace_confined(&path, &state).await?;
+    std::process::Command::new("open")
+        .arg("-R")
+        .arg(&target)
+        .spawn()
+        .map_err(|e| format!("Failed to reveal: {e}"))?;
+    Ok(())
+}
+
+/// SHA-256 (hex) of a file's bytes.
+fn hash_file(path: &std::path::Path) -> Result<String, String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("Couldn't read the file: {e}"))?;
+    let mut hasher = Sha256::new();
+    hasher.update(&bytes);
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+/// Hash an uploaded PDF and reject it if the same content already exists in the
+/// project. Backfills hashes for older PDFs so the check is exhaustive. Returns
+/// the file's hash when it's safe to store, or an Err message for the user.
+async fn dedupe_pdf_upload(
+    db: &ProjectDb,
+    src: &std::path::Path,
+    target_article: i64,
+) -> Result<String, String> {
+    // Ensure every existing PDF has a hash so the comparison covers older files.
+    for (id, stored) in db.pdfs_without_hash().await.map_err(err)? {
+        if let Ok(h) = hash_file(std::path::Path::new(&stored)) {
+            let _ = db.set_pdf_hash(id, &h).await;
+        }
+    }
+    let hash = hash_file(src)?;
+    if let Some(dupe) = db.pdf_by_hash(&hash).await.map_err(err)? {
+        match dupe.article_id {
+            Some(a) if a == target_article => {
+                return Err("This PDF already exists — it's already attached to this article.".into());
+            }
+            Some(a) => {
+                let title = dupe.article_title.unwrap_or_else(|| "another article".into());
+                return Err(format!(
+                    "This PDF already belongs to another article: “{title}” (#{a}). Remove it there first if you meant to move it."
+                ));
+            }
+            // Present but unlinked — fine to attach here.
+            None => {}
+        }
+    }
+    Ok(hash)
+}
+
 /// Replace the PDF linked to an article: remove old entry, copy new file, re-link.
 #[tauri::command]
 async fn replace_article_pdf(
@@ -1000,13 +1078,15 @@ async fn replace_article_pdf(
     state: State<'_, AppState>,
 ) -> Result<String, String> {
     let db = state.current().await.ok_or("no project open")?;
-    // Remove old link (keep the file on disk — user may have it open)
-    db.unlink_pdfs_for_article(article_id).await.map_err(err)?;
-    // Copy and link the new file
     let src = std::path::Path::new(&source_path);
     if !src.exists() {
         return Err(format!("File not found: {source_path}"));
     }
+    // Reject duplicates BEFORE unlinking, so a rejected replace leaves the
+    // existing PDF intact.
+    let hash = dedupe_pdf_upload(&db, src, article_id).await?;
+    // Remove old link (keep the file on disk — user may have it open)
+    db.unlink_pdfs_for_article(article_id).await.map_err(err)?;
     let original_stem = src.file_stem().and_then(|s| s.to_str()).unwrap_or("document");
     let dest_name = format!("id{}_{}.pdf", article_id, original_stem);
     let pdfs_dir = db.workspace.join("pdfs");
@@ -1014,7 +1094,7 @@ async fn replace_article_pdf(
     let dest_path = pdfs_dir.join(&dest_name);
     std::fs::copy(src, &dest_path).map_err(err)?;
     let stored = dest_path.to_string_lossy().to_string();
-    db.insert_pdf_linked(&dest_name, &stored, article_id).await.map_err(err)?;
+    db.insert_pdf_linked(&dest_name, &stored, article_id, Some(&hash)).await.map_err(err)?;
     Ok(stored)
 }
 
@@ -1032,6 +1112,10 @@ async fn drop_pdf_for_article(
         return Err(format!("File not found: {source_path}"));
     }
 
+    // Reject content we already have (same article → "already exists";
+    // different article → tell the user which one).
+    let hash = dedupe_pdf_upload(&db, src, article_id).await?;
+
     let original_stem = src
         .file_stem()
         .and_then(|s| s.to_str())
@@ -1045,7 +1129,7 @@ async fn drop_pdf_for_article(
     std::fs::copy(src, &dest_path).map_err(err)?;
 
     let stored = dest_path.to_string_lossy().to_string();
-    db.insert_pdf_linked(&dest_name, &stored, article_id)
+    db.insert_pdf_linked(&dest_name, &stored, article_id, Some(&hash))
         .await
         .map_err(err)?;
 
@@ -1317,7 +1401,8 @@ async fn scan_workspace_pdfs(state: State<'_, AppState>) -> Result<ScanPdfsResul
             match_pdf_filename(&filename, *id, doi.as_deref(), title)
         });
         if let Some((article_id, _, _)) = found {
-            db.insert_pdf_linked(&filename, &stored_path, *article_id)
+            let hash = hash_file(path).ok();
+            db.insert_pdf_linked(&filename, &stored_path, *article_id, hash.as_deref())
                 .await
                 .map_err(err)?;
             matched += 1;
@@ -5463,6 +5548,8 @@ pub fn run() {
             scan_workspace_pdfs,
             drop_pdf_for_article,
             open_pdf_path,
+            open_workspace_path,
+            reveal_in_finder,
             pdf_paths_for_articles,
             replace_article_pdf,
             list_journals,

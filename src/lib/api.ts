@@ -197,6 +197,8 @@ export interface ArrangingProgress {
   articles_screened: number;
   articles_included: number;
   articles_coded: number;
+  /** Included articles still lacking a full-text (eligibility) decision. */
+  articles_fulltext_pending: number;
 }
 
 export interface AssessingProgress {
@@ -684,6 +686,14 @@ export const api = {
   },
   openPdfPath(path: string) {
     return invoke<void>("open_pdf_path", { path });
+  },
+  /** Open an exported file (or folder) with its default app. Workspace-confined. */
+  openWorkspacePath(path: string) {
+    return invoke<void>("open_workspace_path", { path });
+  },
+  /** Reveal an exported file in Finder. Workspace-confined. */
+  revealInFinder(path: string) {
+    return invoke<void>("reveal_in_finder", { path });
   },
   /** Returns a record of `articleId → absolute pdf path` for the given IDs. Articles without a PDF are absent from the map. */
   pdfPathsForArticles(ids: number[]) {

@@ -129,6 +129,8 @@ pub struct ArrangingProgress {
     pub articles_screened: i64,
     pub articles_included: i64,
     pub articles_coded: i64,
+    /// Included articles that still have no full-text (eligibility) decision.
+    pub articles_fulltext_pending: i64,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -305,6 +307,13 @@ pub struct ExclusionCriterionRow {
     pub label: String,
     pub rationale: Option<String>,
     pub is_deferred_quality_filter: bool,
+}
+
+/// An existing PDF that matches an upload by content hash.
+#[derive(Debug, Clone)]
+pub struct PdfDuplicate {
+    pub article_id: Option<i64>,
+    pub article_title: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -939,6 +948,14 @@ impl ProjectDb {
         .await
         .unwrap_or(0);
 
+        // Included (in-corpus) articles that still lack a full-text decision.
+        let articles_fulltext_pending: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM article WHERE status = 'included' AND fulltext_status IS NULL",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .unwrap_or(0);
+
         Ok(ArrangingProgress {
             codes_count,
             criteria_count,
@@ -946,6 +963,7 @@ impl ProjectDb {
             articles_screened,
             articles_included,
             articles_coded,
+            articles_fulltext_pending,
         })
     }
 
@@ -1809,20 +1827,60 @@ impl ProjectDb {
         filename: &str,
         stored_path: &str,
         article_id: i64,
+        content_hash: Option<&str>,
     ) -> Result<()> {
         let now = chrono::Utc::now().to_rfc3339();
         sqlx::query(
             "INSERT OR IGNORE INTO pdf \
-             (filename, stored_path, source_path, article_id, created_at) \
-             VALUES (?, ?, ?, ?, ?)",
+             (filename, stored_path, source_path, article_id, content_hash, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?)",
         )
         .bind(filename)
         .bind(stored_path)
         .bind(stored_path)
         .bind(article_id)
+        .bind(content_hash)
         .bind(&now)
         .execute(&self.pool)
         .await?;
+        Ok(())
+    }
+
+    /// Find an existing PDF whose bytes hash to `content_hash` (for upload
+    /// deduplication). Returns the PDF's id, the article it's linked to (if
+    /// any), and that article's title.
+    pub async fn pdf_by_hash(&self, content_hash: &str) -> Result<Option<PdfDuplicate>> {
+        let row = sqlx::query(
+            "SELECT p.article_id AS article_id, a.title AS article_title \
+             FROM pdf p LEFT JOIN article a ON a.id = p.article_id \
+             WHERE p.content_hash = ? LIMIT 1",
+        )
+        .bind(content_hash)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|r| PdfDuplicate {
+            article_id: r.get("article_id"),
+            article_title: r.get("article_title"),
+        }))
+    }
+
+    /// PDF rows that don't yet have a content hash (id, stored_path) — used to
+    /// backfill hashes for files added before this feature.
+    pub async fn pdfs_without_hash(&self) -> Result<Vec<(i64, String)>> {
+        let rows = sqlx::query(
+            "SELECT id, stored_path FROM pdf WHERE content_hash IS NULL OR content_hash = ''",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(|r| (r.get("id"), r.get("stored_path"))).collect())
+    }
+
+    pub async fn set_pdf_hash(&self, pdf_id: i64, content_hash: &str) -> Result<()> {
+        sqlx::query("UPDATE pdf SET content_hash = ? WHERE id = ?")
+            .bind(content_hash)
+            .bind(pdf_id)
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 

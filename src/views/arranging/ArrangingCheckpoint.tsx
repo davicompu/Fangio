@@ -8,6 +8,9 @@ import { cn } from "../../lib/utils";
 
 interface Props {
   progress: ArrangingProgress | null;
+  /** Loaded settings dict, so we can read the per-step "confirmed complete" flags
+   *  the screening panels set. */
+  settings: Record<string, unknown>;
   advancing: boolean;
   onAdvance: () => void;
 }
@@ -18,6 +21,9 @@ interface Condition {
   description: string;
   /** When present the condition is satisfied automatically from the data. */
   auto?: (p: ArrangingProgress | null) => boolean;
+  /** Tab whose `progress.arranging.<flag>.complete` setting also satisfies it
+   *  (set from the step's "Confirm complete" button). */
+  flag?: string;
 }
 
 const conditions: Condition[] = [
@@ -37,7 +43,15 @@ const conditions: Condition[] = [
     id: "screened",
     label: "Title & abstract screening complete",
     description: "Every retrieved record has a screening decision — none left pending.",
-    auto: (p) => !!p && p.articles_retrieved > 0 && p.articles_screened >= p.articles_retrieved,
+    auto: (p) => !!p && p.articles_screened > 0 && p.articles_retrieved === 0,
+    flag: "screening",
+  },
+  {
+    id: "fulltext",
+    label: "Full-text screening complete",
+    description: "Every included article has a full-text eligibility decision (keep or exclude).",
+    auto: (p) => !!p && p.articles_included > 0 && p.articles_fulltext_pending === 0,
+    flag: "fulltext",
   },
   {
     id: "coded",
@@ -49,6 +63,7 @@ const conditions: Condition[] = [
     id: "prisma",
     label: "PRISMA flow reviewed",
     description: "You've checked the PRISMA flow tab and the counts at each stage add up.",
+    flag: "prisma",
   },
   {
     id: "ready",
@@ -57,10 +72,12 @@ const conditions: Condition[] = [
   },
 ];
 
-export function ArrangingCheckpoint({ progress, advancing, onAdvance }: Props) {
+export function ArrangingCheckpoint({ progress, settings, advancing, onAdvance }: Props) {
   const [checked, setChecked] = useState<Set<string>>(new Set());
 
-  const isSatisfied = (c: Condition) => (c.auto ? c.auto(progress) : checked.has(c.id));
+  const flagSet = (c: Condition) => !!c.flag && settings[`progress.arranging.${c.flag}.complete`] === true;
+  const autoOk = (c: Condition) => !!c.auto && c.auto(progress);
+  const isSatisfied = (c: Condition) => autoOk(c) || flagSet(c) || checked.has(c.id);
   const allChecked = progress !== null && conditions.every(isSatisfied);
 
   const toggle = (id: string) => {
@@ -119,7 +136,11 @@ export function ArrangingCheckpoint({ progress, advancing, onAdvance }: Props) {
       <div className="space-y-3 mb-8">
         {conditions.map((c) => {
           const isAuto = !!c.auto;
+          // "Locked" = satisfied by real data / a persisted confirm; can't be
+          // unchecked. Anything else is toggleable so the user can override.
+          const locked = autoOk(c) || flagSet(c);
           const ok = isSatisfied(c);
+          const overridden = checked.has(c.id) && !locked;
           return (
             <Card
               key={c.id}
@@ -130,8 +151,8 @@ export function ArrangingCheckpoint({ progress, advancing, onAdvance }: Props) {
             >
               <button
                 type="button"
-                onClick={() => !isAuto && toggle(c.id)}
-                disabled={isAuto}
+                onClick={() => !locked && toggle(c.id)}
+                disabled={locked}
                 className="w-full text-left flex items-start gap-3"
               >
                 <div className="mt-0.5 shrink-0">
@@ -149,10 +170,18 @@ export function ArrangingCheckpoint({ progress, advancing, onAdvance }: Props) {
                         auto
                       </span>
                     )}
+                    {overridden && (
+                      <span className="text-[9px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded-sm bg-[var(--color-warn-100)] text-[var(--color-warn-700)]">
+                        overridden
+                      </span>
+                    )}
                   </div>
                   <p className="text-[13px] text-[var(--color-paper-600)] mt-1 leading-relaxed">
                     {c.description}
                   </p>
+                  {!locked && !ok && (
+                    <p className="text-[11px] text-[var(--color-accent-600)] mt-1.5 font-medium">Click to override — mark this done manually.</p>
+                  )}
                 </div>
               </button>
             </Card>

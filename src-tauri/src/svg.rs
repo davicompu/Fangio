@@ -17,7 +17,11 @@ const LANE_GAP: i32 = 36;
 pub fn render(state: &PrismaState, project_name: &str) -> String {
     let lanes = 3;
     let lane_h = BOX_H + LANE_GAP;
-    let total_h = PAD * 2 + lane_h * lanes + 80;
+    // The "Records excluded" box grows with the number of exclusion reasons;
+    // give the canvas the extra vertical room so it's never clipped.
+    let n_reasons = state.by_criterion.iter().filter(|(_, n)| *n > 0).count() as i32;
+    let excluded_overflow = ((74 + n_reasons * 16 + 12) - BOX_H).max(0);
+    let total_h = PAD * 2 + lane_h * lanes + 80 + excluded_overflow;
     let mut s = String::new();
     s.push_str(&format!(
         r##"<?xml version="1.0" encoding="UTF-8"?>
@@ -156,6 +160,14 @@ fn simple_box(
         "primary" => "box box-primary",
         _ => "box",
     };
+    // Grow the box so a long reasons list (e.g. many exclusion criteria) stays
+    // inside the rounded border instead of spilling past the bottom edge.
+    let items_top = if count.is_some() { 74 } else { 48 };
+    let h = if items.is_empty() {
+        h
+    } else {
+        h.max(items_top + items.len() as i32 * 16 + 12)
+    };
     let mut s = format!(
         r##"
   <g>
@@ -178,7 +190,7 @@ fn simple_box(
     // below the title — so boxes without a count (e.g. "Records removed") don't
     // push their last line past the box edge. 16px line height keeps up to four
     // lines inside BOX_H.
-    let mut iy = if count.is_some() { y + 74 } else { y + 48 };
+    let mut iy = y + items_top;
     for (label, n) in items {
         s.push_str(&format!(
             r##"    <text x="{tx}" y="{iy}" class="item">{label}</text>

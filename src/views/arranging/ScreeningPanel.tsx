@@ -29,6 +29,7 @@ import {
 import { Card } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
 import { type AiScreeningHook } from "../../components/AiScreeningModal";
+import { StepConfirmBar } from "../../components/StepConfirmBar";
 import { cn } from "../../lib/utils";
 
 interface Props {
@@ -36,6 +37,8 @@ interface Props {
   refreshKey: number;
   onChanged: () => void;
   onOpenAiModal: () => void;
+  stepComplete: boolean;
+  autoComplete: boolean;
 }
 
 const BATCH_SIZE = 5;
@@ -148,7 +151,7 @@ export function useAiScreening(): AiScreeningHook {
   return { step, progress, result, error, isPaused, start, pause, resume, cancel, reset };
 }
 
-export function ScreeningPanel({ project, refreshKey, onChanged, onOpenAiModal }: Props) {
+export function ScreeningPanel({ project, refreshKey, onChanged, onOpenAiModal, stepComplete, autoComplete }: Props) {
   const [activeTab, setActiveTab] = useState<ScreeningTab>("pending");
   const [articles, setArticles] = useState<ArticleRow[]>([]);
   const [total, setTotal] = useState(0);
@@ -304,6 +307,16 @@ export function ScreeningPanel({ project, refreshKey, onChanged, onOpenAiModal }
           </button>
         )}
       </div>
+
+      <StepConfirmBar
+        stage="arranging"
+        tab="screening"
+        stepComplete={stepComplete}
+        autoComplete={autoComplete}
+        label="Title & abstract screening"
+        pendingHint={`${tabCounts.pending} article${tabCounts.pending === 1 ? "" : "s"} still pending — finish screening, or confirm to override.`}
+        onChanged={onChanged}
+      />
 
       {/* Tabs */}
       <div className="flex items-center gap-1 mb-5 border-b border-[var(--color-paper-200)]">

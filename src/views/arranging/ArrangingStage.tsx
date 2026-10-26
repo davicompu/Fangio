@@ -167,8 +167,11 @@ export function ArrangingStage({ project, onLeaveStage, onProjectChanged, onAdva
   const status = useTabProgress<Tab>(tab, {
     organization: () => (progress?.codes_count ?? 0) >= 1,
     criteria: () => (progress?.criteria_count ?? 0) >= 1,
-    screening: () => progress != null && progress.articles_retrieved > 0 && progress.articles_screened >= progress.articles_retrieved,
-    fulltext: () => false, // optional pass — no hard completion
+    // Title & abstract screening is complete when nothing is left pending
+    // (articles_retrieved is the PENDING count, so it hits 0 when done).
+    screening: () => progress != null && progress.articles_screened > 0 && progress.articles_retrieved === 0,
+    // Full-text is complete when every included article has an eligibility decision.
+    fulltext: () => progress != null && progress.articles_included > 0 && progress.articles_fulltext_pending === 0,
     coding: () => progress != null && progress.articles_included > 0 && progress.articles_coded >= progress.articles_included,
     prisma: () => false, // manual only
     finish: () => false, // gate — completed by advancing
@@ -272,12 +275,13 @@ export function ArrangingStage({ project, onLeaveStage, onProjectChanged, onAdva
                   screening={screening}
                 />
               )}
-              {tab === "screening" && <ScreeningPanel project={project} refreshKey={refreshTick} onChanged={onChanged} onOpenAiModal={() => setAiModalOpen(true)} />}
-              {tab === "fulltext" && <FullTextScreeningPanel refreshKey={refreshTick} onChanged={onChanged} screening={fulltextScreening} />}
+              {tab === "screening" && <ScreeningPanel project={project} refreshKey={refreshTick} onChanged={onChanged} onOpenAiModal={() => setAiModalOpen(true)} stepComplete={manualFlags.screening} autoComplete={progress != null && progress.articles_screened > 0 && progress.articles_retrieved === 0} />}
+              {tab === "fulltext" && <FullTextScreeningPanel refreshKey={refreshTick} onChanged={onChanged} screening={fulltextScreening} stepComplete={manualFlags.fulltext} autoComplete={progress != null && progress.articles_included > 0 && progress.articles_fulltext_pending === 0} />}
               {tab === "prisma" && <PrismaPanel refreshKey={refreshTick} />}
               {tab === "finish" && (
                 <ArrangingCheckpoint
                   progress={progress}
+                  settings={progressSettings}
                   advancing={advancing}
                   onAdvance={async () => {
                     setAdvancing(true);
