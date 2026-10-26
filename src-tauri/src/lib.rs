@@ -2817,16 +2817,21 @@ async fn accept_proposal_inner(db: &db::ProjectDb, proposal_id: i64) -> Result<(
         confidence: proposal.confidence2,
         ai_call_id: proposal.ai_call_id2,
     });
-    db.save_ai_coding(
-        proposal.article_id,
-        &proposal.dimension,
-        &proposal.code,
-        "model-ai-accepted",
-        &first,
-        second.as_ref(),
-    )
-    .await
-    .map_err(err)?;
+    let coding_id = db
+        .save_ai_coding(
+            proposal.article_id,
+            &proposal.dimension,
+            &proposal.code,
+            "model-ai-accepted",
+            &first,
+            second.as_ref(),
+        )
+        .await
+        .map_err(err)?;
+    if proposal.agreement == "merged" {
+        // Keep the merge undoable: the adjudication now points at the accepted code.
+        db.link_adjudication_coding(proposal_id, coding_id).await.map_err(err)?;
+    }
     db.delete_ai_coding_proposal(proposal_id).await.map_err(err)?;
     let who = proposal_origin(&proposal);
     let detail = format!("Accepted code “{}” in {} ({})", proposal.code, proposal.dimension, who);
@@ -2882,6 +2887,10 @@ async fn reject_ai_coding_proposal(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let db = state.current().await.ok_or("no project open")?;
+    reject_proposal_inner(&db, proposal_id).await
+}
+
+async fn reject_proposal_inner(db: &db::ProjectDb, proposal_id: i64) -> Result<(), String> {
     // Log the rejection before deleting so the decision trail keeps it.
     if let Ok(Some(p)) = db.get_ai_coding_proposal_by_id(proposal_id).await {
         let detail = format!("Rejected code “{}” in {} ({})", p.code, p.dimension, proposal_origin(&p));
@@ -2896,6 +2905,7 @@ async fn reject_ai_coding_proposal(
             )
             .await;
     }
+    db.delete_adjudication_for_proposal(proposal_id).await.map_err(err)?;
     db.delete_ai_coding_proposal(proposal_id).await.map_err(err)?;
     Ok(())
 }
@@ -2908,6 +2918,7 @@ async fn reject_all_ai_coding_proposals_for_article(
     let db = state.current().await.ok_or("no project open")?;
     let props = db.list_ai_coding_proposals_for_article(article_id).await.map_err(err)?;
     for p in &props {
+        db.delete_adjudication_for_proposal(p.id).await.map_err(err)?;
         let detail = format!("Rejected code “{}” in {} ({})", p.code, p.dimension, proposal_origin(&p));
         let _ = db
             .log_review_event(
@@ -5948,6 +5959,9 @@ mod coding_accept_tests {
         apply_merge(&db, "auto", "merger", Some(9), "Method", "SEM", Some("same"), &p1, &p2, "run").await.unwrap();
         let codes = db.list_codings_for_articles(&[7]).await.unwrap();
         assert_eq!(codes[0].source, "model-ai-adjudicated");
+        let call: Option<i64> = sqlx::query_scalar("SELECT ai_call_id FROM coding WHERE id = ?")
+            .bind(codes[0].id).fetch_one(&db.pool).await.unwrap();
+        assert_eq!(call, Some(9));
         assert!(db.list_ai_coding_proposals_for_articles(&[7]).await.unwrap().is_empty());
     }
 
@@ -5972,5 +5986,40 @@ mod coding_accept_tests {
             assert_eq!(ev[0].detail.as_deref(), Some("Undid merge of “SEM” + “SmartPLS” → “SEM” in Method"));
             assert_eq!(ev[0].rationale.as_deref(), Some("same"));
         }
+    }
+
+    #[tokio::test]
+    async fn accepted_merge_can_be_undone() {
+        let (db, _d) = db::test_db().await;
+        let (p1, p2) = seed_pair(&db).await;
+        apply_merge(&db, "suggest", "merger", Some(9), "Method", "SEM", Some("same"), &p1, &p2, "run").await.unwrap();
+        let merged = db.list_ai_coding_proposals_for_articles(&[7]).await.unwrap().remove(0);
+        accept_proposal_inner(&db, merged.id).await.unwrap();
+        assert_eq!(db.list_codings_for_articles(&[7]).await.unwrap().len(), 1);
+        let adj = db.list_adjudications_for_articles(&[7]).await.unwrap().remove(0);
+        assert!(adj.coding_id.is_some());
+        undo_adjudication_inner(&db, adj.id).await.unwrap();
+        assert!(db.list_codings_for_articles(&[7]).await.unwrap().is_empty());
+        let props = db.list_ai_coding_proposals_for_articles(&[7]).await.unwrap();
+        assert_eq!(props.len(), 2);
+        assert!(props.iter().all(|p| p.agreement == "one"));
+        let sem = props.iter().find(|p| p.code == "SEM").unwrap();
+        assert_eq!((sem.confidence, sem.ai_call_id), (Some(0.7), Some(5)));
+        assert!(db.list_adjudications_for_articles(&[7]).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn rejected_merge_drops_adjudication() {
+        let (db, _d) = db::test_db().await;
+        let (p1, p2) = seed_pair(&db).await;
+        apply_merge(&db, "suggest", "merger", Some(9), "Method", "SEM", Some("same"), &p1, &p2, "run").await.unwrap();
+        let merged = db.list_ai_coding_proposals_for_articles(&[7]).await.unwrap().remove(0);
+        reject_proposal_inner(&db, merged.id).await.unwrap();
+        assert!(db.list_adjudications_for_articles(&[7]).await.unwrap().is_empty());
+        assert!(db.list_codings_for_articles(&[7]).await.unwrap().is_empty());
+        assert!(db.list_ai_coding_proposals_for_articles(&[7]).await.unwrap().is_empty());
+        let ev = db.list_review_events().await.unwrap();
+        assert_eq!(ev[0].action, "reject_code");
+        assert_eq!(ev[0].detail.as_deref(), Some("Rejected code “SEM” in Method (merged by the merging agent)"));
     }
 }

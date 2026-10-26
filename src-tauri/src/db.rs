@@ -3175,6 +3175,25 @@ impl ProjectDb {
         Ok(row.as_ref().map(Self::map_adjudication))
     }
 
+    /// Suggestion mode: the merged proposal was accepted as `coding_id`.
+    pub async fn link_adjudication_coding(&self, proposal_id: i64, coding_id: i64) -> Result<()> {
+        sqlx::query("UPDATE ai_adjudication SET coding_id = ?, proposal_id = NULL WHERE proposal_id = ?")
+            .bind(coding_id)
+            .bind(proposal_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Suggestion mode: the merged proposal was rejected, so drop its merge record.
+    pub async fn delete_adjudication_for_proposal(&self, proposal_id: i64) -> Result<()> {
+        sqlx::query("DELETE FROM ai_adjudication WHERE proposal_id = ?")
+            .bind(proposal_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     pub async fn delete_adjudication(&self, id: i64) -> Result<()> {
         sqlx::query("DELETE FROM ai_adjudication WHERE id = ?")
             .bind(id)
