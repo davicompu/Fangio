@@ -1627,6 +1627,17 @@ struct ExcludeArgs {
     rationale: Option<String>,
 }
 
+/// Record that the researcher acted on the latest AI decision (best effort),
+/// then mark it overridden when the human decision differs.
+async fn note_human_decision(db: &db::ProjectDb, article_id: i64, stage: &str, human: &str) {
+    if let Ok(Some(p)) = db.latest_ai_screening_decision(article_id, stage).await {
+        let _ = db
+            .record_ai_screening_open(p.id, &transparency::researcher_name(), "decision")
+            .await;
+    }
+    let _ = db.mark_ai_decision_overridden(article_id, stage, human).await;
+}
+
 #[tauri::command]
 async fn exclude_article(
     args: ExcludeArgs,
@@ -1660,6 +1671,7 @@ async fn exclude_article(
             "human",
         )
         .await;
+    note_human_decision(&db, args.article_id, "title_abstract", "exclude").await;
     Ok(())
 }
 
@@ -1680,6 +1692,7 @@ async fn keep_article(article_id: i64, state: State<'_, AppState>) -> Result<(),
             "human",
         )
         .await;
+    note_human_decision(&db, article_id, "title_abstract", "include").await;
     Ok(())
 }
 
@@ -1707,6 +1720,7 @@ async fn fulltext_keep_article(article_id: i64, state: State<'_, AppState>) -> R
             "human",
         )
         .await;
+    note_human_decision(&db, article_id, "fulltext", "include").await;
     Ok(())
 }
 
@@ -1744,13 +1758,58 @@ async fn fulltext_exclude_article(
             "human",
         )
         .await;
+    note_human_decision(&db, args.article_id, "fulltext", "exclude").await;
     Ok(())
+}
+
+/// Log a revert/reset review event carrying the previous decision's details.
+/// Best effort; must run before the db call that clears the fields.
+async fn log_reverted_decision(db: &db::ProjectDb, kind: &str, article_id: i64) {
+    let Ok(Some(art)) = db.get_article_by_id(article_id).await else { return };
+    let ft = db
+        .fulltext_status_map()
+        .await
+        .ok()
+        .and_then(|m| m.get(&article_id).cloned().flatten());
+    let stage = if kind == "reset" { "fulltext" } else { "title_abstract" };
+    let ai = db.latest_ai_screening_decision(article_id, stage).await.ok().flatten();
+    let human_reason = db.exclusion_rationale(article_id).await.ok().flatten();
+    let reason = human_reason
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| art.ai_rationale.clone().filter(|s| !s.trim().is_empty()))
+        .or_else(|| ai.as_ref().map(|p| p.rationale.clone()).filter(|s| !s.trim().is_empty()));
+    let criterion = art.exclusion_criterion.or_else(|| ai.as_ref().and_then(|p| p.criterion_number));
+    let confidence = art.ai_confidence.or_else(|| ai.as_ref().and_then(|p| p.confidence));
+    let model = ai.as_ref().and_then(|p| p.model_name.clone());
+    let (detail, rationale) = transparency::describe_reverted_decision(
+        kind,
+        article_id,
+        &art.status,
+        if kind == "reset" { ft.as_deref() } else { None },
+        criterion,
+        reason.as_deref(),
+        confidence,
+        model.as_deref(),
+    );
+    let action = if kind == "reset" { "fulltext_reset" } else { "titleabstract_revert" };
+    let _ = db
+        .log_review_event(
+            "arranging",
+            action,
+            Some(&format!("article {}", article_id)),
+            Some(&detail),
+            rationale.as_deref(),
+            "human",
+        )
+        .await;
 }
 
 #[tauri::command]
 async fn reset_fulltext_article(article_id: i64, state: State<'_, AppState>) -> Result<(), String> {
     let db = state.current().await.ok_or("no project open")?;
+    log_reverted_decision(&db, "reset", article_id).await;
     db.fulltext_reset(article_id).await.map_err(err)?;
+    let _ = db.mark_ai_decision_overridden(article_id, "fulltext", "reset").await;
     Ok(())
 }
 
@@ -1961,7 +2020,11 @@ async fn run_ai_fulltext_screening(
 #[tauri::command]
 async fn unscreen_article(article_id: i64, state: State<'_, AppState>) -> Result<(), String> {
     let db = state.current().await.ok_or("no project open")?;
-    db.clear_exclusion(article_id).await.map_err(err)
+    log_reverted_decision(&db, "revert", article_id).await;
+    db.clear_exclusion(article_id).await.map_err(err)?;
+    let _ = db.mark_ai_decision_overridden(article_id, "title_abstract", "reverted").await;
+    let _ = db.mark_ai_decision_overridden(article_id, "fulltext", "reverted").await;
+    Ok(())
 }
 
 #[tauri::command]
@@ -2784,7 +2847,36 @@ async fn accept_ai_screening_proposal(
     )
     .await
     .ok();
+    let _ = db
+        .record_ai_screening_open(proposal_id, &transparency::researcher_name(), "decision")
+        .await;
     Ok(())
+}
+
+#[tauri::command]
+async fn record_ai_screening_open(proposal_id: i64, state: State<'_, AppState>) -> Result<(), String> {
+    let db = state.current().await.ok_or("no project open")?;
+    db.record_ai_screening_open(proposal_id, &transparency::researcher_name(), "detail")
+        .await
+        .map_err(err)
+}
+
+#[tauri::command]
+async fn list_ai_screening_log(
+    article_ids: Option<Vec<i64>>,
+    stage: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<Vec<db::AiScreeningLogEntry>, String> {
+    let db = state.current().await.ok_or("no project open")?;
+    db.list_ai_screening_log(article_ids.as_deref(), stage.as_deref()).await.map_err(err)
+}
+
+#[tauri::command]
+async fn ai_screening_attention_counts(
+    state: State<'_, AppState>,
+) -> Result<db::AttentionCounts, String> {
+    let db = state.current().await.ok_or("no project open")?;
+    db.ai_screening_attention_counts().await.map_err(err)
 }
 
 #[tauri::command]
@@ -5502,6 +5594,9 @@ pub fn run() {
         .manage(AppState::default())
         .manage(browser::BrowserState::default())
         .invoke_handler(tauri::generate_handler![
+            record_ai_screening_open,
+            list_ai_screening_log,
+            ai_screening_attention_counts,
             create_project,
             open_project,
             close_project,

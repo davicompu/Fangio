@@ -57,6 +57,45 @@ pub fn screening_outcome(
     }
 }
 
+/// Detail line and rationale for a revert (title/abstract) or reset (full text)
+/// review event. Parts that are `None` are left out; the rationale is the
+/// previous reason verbatim.
+#[allow(clippy::too_many_arguments)]
+pub fn describe_reverted_decision(
+    kind: &str,
+    article_id: i64,
+    prev_status: &str,
+    prev_fulltext: Option<&str>,
+    prev_criterion: Option<i64>,
+    prev_reason: Option<&str>,
+    prev_confidence: Option<f64>,
+    prev_ai_model: Option<&str>,
+) -> (String, Option<String>) {
+    let mut parts: Vec<String> = Vec::new();
+    match (kind, prev_fulltext) {
+        ("reset", Some(ft)) => parts.push(format!("{ft} at full text")),
+        _ => parts.push(prev_status.to_string()),
+    }
+    if let Some(c) = prev_criterion {
+        parts.push(format!("criterion {c}"));
+    }
+    if let Some(c) = prev_confidence {
+        parts.push(format!("AI confidence {}%", (c * 100.0).round() as i64));
+    }
+    if let Some(m) = prev_ai_model {
+        parts.push(format!("model {m}"));
+    }
+    let head = if kind == "reset" {
+        "Reset full-text decision"
+    } else {
+        "Reverted title/abstract decision"
+    };
+    (
+        format!("{head} on article {article_id} (was: {})", parts.join(", ")),
+        prev_reason.map(|s| s.to_string()),
+    )
+}
+
 /// Truncate to at most `max` chars on a char boundary.
 pub fn truncate_chars(s: &str, max: usize) -> String {
     s.chars().take(max).collect()
@@ -74,6 +113,19 @@ mod tests {
         assert_eq!(screening_outcome("include", 0.95, 0.90, true), (None, false));
         assert_eq!(screening_outcome("exclude", 0.95, 0.90, true), (Some("exclude"), true));
         assert_eq!(screening_outcome("uncertain", 0.99, 0.90, false), (Some("uncertain"), false));
+    }
+
+    #[test]
+    fn revert_detail_keeps_old_ai_reason_and_confidence() {
+        let (d, r) = describe_reverted_decision("revert", 12, "excluded", None, Some(4), Some("Off-topic: K-12 sample"), Some(0.93), Some("qwen3-8b"));
+        assert_eq!(d, "Reverted title/abstract decision on article 12 (was: excluded, criterion 4, AI confidence 93%, model qwen3-8b)");
+        assert_eq!(r.as_deref(), Some("Off-topic: K-12 sample"));
+    }
+
+    #[test]
+    fn reset_detail_for_fulltext() {
+        let (d, _) = describe_reverted_decision("reset", 3, "excluded", Some("excluded"), None, None, None, None);
+        assert_eq!(d, "Reset full-text decision on article 3 (was: excluded at full text)");
     }
 
     #[test]

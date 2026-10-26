@@ -3525,7 +3525,17 @@ impl ProjectDb {
         Ok(())
     }
 
-    /// Mark the latest un-overridden, non-error AI decision for (article, stage) as
+    /// Previous human/AI exclusion rationale text for an article, if any.
+    pub async fn exclusion_rationale(&self, article_id: i64) -> Result<Option<String>> {
+        let r: Option<Option<String>> =
+            sqlx::query_scalar("SELECT exclusion_rationale FROM article WHERE id = ?")
+                .bind(article_id)
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(r.flatten())
+    }
+
+    /// Mark the latest (by id) non-error AI decision for (article, stage) as
     /// overridden, but only if the human decision differs from it.
     pub async fn mark_ai_decision_overridden(
         &self,
@@ -3536,9 +3546,9 @@ impl ProjectDb {
         sqlx::query(
             "UPDATE ai_screening_proposal SET overridden_at = ?, overridden_to = ? \
              WHERE id = (SELECT id FROM ai_screening_proposal \
-                         WHERE article_id = ? AND stage = ? AND overridden_at IS NULL \
-                           AND decision NOT IN ('error','skipped') \
-                         ORDER BY id DESC LIMIT 1) \
+                         WHERE article_id = ? AND stage = ? ORDER BY id DESC LIMIT 1) \
+               AND overridden_at IS NULL \
+               AND decision NOT IN ('error','skipped') \
                AND decision != ?",
         )
         .bind(chrono::Utc::now().to_rfc3339())
@@ -4283,6 +4293,19 @@ mod screening_log_tests {
         let p = db.get_ai_screening_proposal_by_id(id).await.unwrap().unwrap();
         assert!(p.overridden_at.is_some());
         assert_eq!(p.overridden_to.as_deref(), Some("include"));
+    }
+
+    #[tokio::test]
+    async fn override_never_touches_superseded_rows() {
+        let (db, _d) = test_db().await;
+        let a = art(&db, "included").await;
+        let older = db.save_ai_screening_decision(&nd(a, "exclude", true, Some(0.95))).await.unwrap();
+        let newer = db.save_ai_screening_decision(&nd(a, "include", true, Some(0.95))).await.unwrap();
+        db.mark_ai_decision_overridden(a, "title_abstract", "exclude").await.unwrap();
+        assert!(db.get_ai_screening_proposal_by_id(newer).await.unwrap().unwrap().overridden_at.is_some());
+        db.mark_ai_decision_overridden(a, "title_abstract", "include").await.unwrap();
+        assert!(db.get_ai_screening_proposal_by_id(older).await.unwrap().unwrap().overridden_at.is_none());
+        assert!(db.get_ai_screening_proposal_by_id(newer).await.unwrap().unwrap().overridden_at.is_some());
     }
 
     #[tokio::test]

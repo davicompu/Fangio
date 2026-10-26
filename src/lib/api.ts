@@ -377,18 +377,47 @@ export interface AiCodingCoverage {
   no_pdf: number;
 }
 
+export type ReviewStatus = "auto_applied" | "opened" | "overridden" | "pending";
+
 export interface AiScreeningProposal {
   id: number;
   article_id: number;
   /** 1 or 2 */
   rater: number;
-  decision: "include" | "exclude" | "uncertain";
+  stage: "title_abstract" | "fulltext";
+  mode: "screening" | "purification";
+  decision: "include" | "exclude" | "uncertain" | "error" | "skipped";
   criterion_number: number | null;
   rationale: string;
-  confidence: number;
+  confidence: number | null;
   model_name: string | null;
+  ai_call_id: number | null;
+  auto_applied: boolean;
+  overridden_at: string | null;
+  overridden_to: string | null;
   run_id: string;
   created_at: string;
+}
+
+export interface AiScreeningLogEntry extends AiScreeningProposal {
+  article_title: string;
+  model_used: string | null;
+  prompt_hash: string | null;
+  temperature: number | null;
+  seed: number | null;
+  open_count: number;
+  first_opened_at: string | null;
+  last_opened_at: string | null;
+  last_opened_by: string | null;
+  is_latest: boolean;
+  review_status: ReviewStatus | null;
+}
+
+export interface AttentionCounts {
+  title_abstract_auto: number;
+  title_abstract_pending: number;
+  fulltext_auto: number;
+  fulltext_pending: number;
 }
 
 export interface AiCodingProgress {
@@ -787,6 +816,15 @@ export const api = {
   },
   listAiScreeningProposalsForArticles(articleIds: number[]) {
     return invoke<AiScreeningProposal[]>("list_ai_screening_proposals_for_articles", { articleIds });
+  },
+  recordAiScreeningOpen(proposalId: number) {
+    return invoke<void>("record_ai_screening_open", { proposalId });
+  },
+  listAiScreeningLog(articleIds?: number[], stage?: "title_abstract" | "fulltext") {
+    return invoke<AiScreeningLogEntry[]>("list_ai_screening_log", { articleIds: articleIds ?? null, stage: stage ?? null });
+  },
+  aiScreeningAttentionCounts() {
+    return invoke<AttentionCounts>("ai_screening_attention_counts");
   },
   acceptAiScreeningProposal(proposalId: number) {
     return invoke<void>("accept_ai_screening_proposal", { proposalId });

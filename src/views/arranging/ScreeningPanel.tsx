@@ -950,7 +950,7 @@ function RaterCard({
     ? rawRationale.replace(/^\[weak rationale[^\]]*\]\s*/, "")
     : rawRationale;
   const sentences = splitSentences(rationaleText);
-  const confPct = Math.round(proposal.confidence * 100);
+  const confPct = proposal.confidence == null ? 0 : Math.round(proposal.confidence * 100);
   return (
     <div
       className={cn(
