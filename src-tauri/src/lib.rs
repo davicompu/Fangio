@@ -1904,6 +1904,16 @@ async fn run_ai_fulltext_screening(
         let call_id = db.insert_ai_call("screening_ft", &meta).await.ok();
         let (action, auto_applied) =
             transparency::screening_outcome(&decision.decision, decision.confidence, threshold, false);
+        // Apply first, then log, so the row only claims "applied automatically"
+        // when the article change actually happened.
+        let applied = match action {
+            Some("include") => db.fulltext_keep(c.id).await.is_ok(),
+            Some("exclude") => db
+                .fulltext_exclude(c.id, decision.criterion_number, Some(decision.rationale.as_str()))
+                .await
+                .is_ok(),
+            _ => false,
+        };
         let _ = db
             .save_ai_screening_decision(&db::NewScreeningDecision {
                 article_id: c.id,
@@ -1915,13 +1925,12 @@ async fn run_ai_fulltext_screening(
                 confidence: Some(decision.confidence),
                 model_name: Some(&model),
                 ai_call_id: call_id,
-                auto_applied,
+                auto_applied: auto_applied && applied,
                 run_id: &run_id,
             })
             .await;
         match action {
-            Some("include") => {
-                let _ = db.fulltext_keep(c.id).await;
+            Some("include") if applied => {
                 let _ = db.set_ai_screening_fields(c.id, &decision.rationale, decision.confidence).await;
                 let _ = db
                     .log_review_event(
@@ -1935,22 +1944,23 @@ async fn run_ai_fulltext_screening(
                     .await;
                 res.kept += 1;
             }
-            Some("exclude") => {
-                if db.fulltext_exclude(c.id, decision.criterion_number, Some(decision.rationale.as_str())).await.is_ok() {
-                    let _ = db.set_ai_screening_fields(c.id, &decision.rationale, decision.confidence).await;
-                    let _ = db.delete_chunks_for_article(c.id).await;
-                    let _ = db
-                        .log_review_event(
-                            "arranging",
-                            "fulltext_exclude",
-                            Some(&format!("article {}", c.id)),
-                            Some(&format!("AI full-text exclusion: {}", c.title)),
-                            Some(&decision.rationale),
-                            "ai",
-                        )
-                        .await;
-                    res.excluded += 1;
-                }
+            Some("exclude") if applied => {
+                let _ = db.set_ai_screening_fields(c.id, &decision.rationale, decision.confidence).await;
+                let _ = db.delete_chunks_for_article(c.id).await;
+                let _ = db
+                    .log_review_event(
+                        "arranging",
+                        "fulltext_exclude",
+                        Some(&format!("article {}", c.id)),
+                        Some(&format!("AI full-text exclusion: {}", c.title)),
+                        Some(&decision.rationale),
+                        "ai",
+                    )
+                    .await;
+                res.excluded += 1;
+            }
+            Some("include") | Some("exclude") => {
+                // The article change failed; the row above records it as not applied.
             }
             _ => {
                 res.uncertain += 1;
@@ -3837,6 +3847,15 @@ async fn run_ai_screening(
         let call_id = db.insert_ai_call("screening_ta", &meta).await.ok();
         let (action, auto_applied) =
             transparency::screening_outcome(&decision.decision, decision.confidence, threshold, args.exclude_only);
+        // Apply first, then log, so the row only claims "applied automatically"
+        // when the article change actually happened.
+        let applied = match action {
+            Some(a) => {
+                let crit = if a == "include" { None } else { decision.criterion_number };
+                db.apply_ai_outcome(article.id, a, crit, &decision.rationale, decision.confidence).await
+            }
+            None => Ok(()),
+        };
         let _ = db
             .save_ai_screening_decision(&db::NewScreeningDecision {
                 article_id: article.id,
@@ -3848,18 +3867,14 @@ async fn run_ai_screening(
                 confidence: Some(decision.confidence),
                 model_name: Some(&model),
                 ai_call_id: call_id,
-                auto_applied,
+                auto_applied: auto_applied && applied.is_ok(),
                 run_id: &run_id,
             })
             .await;
+        applied.map_err(err)?;
 
         let progress = match action {
             Some("exclude") => {
-                db.apply_ai_outcome(
-                    article.id, "exclude", decision.criterion_number, &decision.rationale, decision.confidence,
-                )
-                .await
-                .map_err(err)?;
                 excluded += 1;
                 if let Some(n) = decision.criterion_number {
                     *excluded_per_criterion.entry(n).or_insert(0) += 1;
@@ -3867,19 +3882,11 @@ async fn run_ai_screening(
                 "exclude"
             }
             Some("include") => {
-                db.apply_ai_outcome(article.id, "include", None, &decision.rationale, decision.confidence)
-                    .await
-                    .map_err(err)?;
                 included += 1;
                 "include"
             }
             Some(_) => {
                 // Uncertain / low-confidence: stay pending, rationale kept for the researcher.
-                db.apply_ai_outcome(
-                    article.id, "uncertain", decision.criterion_number, &decision.rationale, decision.confidence,
-                )
-                .await
-                .map_err(err)?;
                 uncertain += 1;
                 "uncertain"
             }

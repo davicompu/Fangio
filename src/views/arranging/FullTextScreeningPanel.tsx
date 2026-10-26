@@ -398,10 +398,11 @@ export function FullTextScreeningPanel({ refreshKey, onChanged, screening, stepC
                   <span className="text-[var(--color-paper-400)] font-normal">· EC{a.exclusion_criterion}</span>
                 )}
               </div>
-              {!aiEntry && a.exclusion_rationale && (
+              {/* No log row (legacy AI exclusion or a human one): show the stored text. */}
+              {!aiEntry && (a.ai_rationale || a.exclusion_rationale) && (
                 <p className="mt-1.5 text-[11px] text-[var(--color-paper-600)] leading-[1.55] bg-[var(--color-paper-100)] border border-[var(--color-paper-200)] rounded-[var(--radius-sm)] px-2.5 py-1.5">
-                  <span className="font-semibold text-[var(--color-ink-700)]">Reason: </span>
-                  {a.exclusion_rationale}
+                  <span className="font-semibold text-[var(--color-ink-700)]">{a.ai_rationale ? "AI logic: " : "Reason: "}</span>
+                  {a.ai_rationale || a.exclusion_rationale}
                 </p>
               )}
             </div>
