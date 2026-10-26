@@ -252,6 +252,15 @@ export interface CodingRow {
   source: string;
   model_name: string | null;
   created_at: string;
+  rationale2: string | null;
+  model_name2: string | null;
+  /** The model's own 0–1 estimate, not a measured probability. */
+  confidence: number | null;
+  confidence2: number | null;
+  model_used: string | null;
+  model_used2: string | null;
+  prompt_hash: string | null;
+  temperature: number | null;
 }
 
 export interface CodingBatchResult {
@@ -349,6 +358,17 @@ export interface AiCodingProposal {
   model_name: string | null;
   run_id: string;
   created_at: string;
+  /** "both" = agreed by both agents; "one" = one agent only */
+  agreement: "both" | "one";
+  rationale2: string | null;
+  model_name2: string | null;
+  /** The model's own 0–1 estimate, not a measured probability. */
+  confidence: number | null;
+  confidence2: number | null;
+  model_used: string | null;
+  model_used2: string | null;
+  prompt_hash: string | null;
+  temperature: number | null;
 }
 
 /** A disagreement pair the independent adjudicator merged into one applied code. */
@@ -856,6 +876,9 @@ export const api = {
   },
   acceptAiCodingProposal(proposalId: number) {
     return invoke<void>("accept_ai_coding_proposal", { proposalId });
+  },
+  acceptAgreedAiCodingProposals(articleIds?: number[]) {
+    return invoke<number>("accept_agreed_ai_coding_proposals", { articleIds: articleIds ?? null });
   },
   rejectAiCodingProposal(proposalId: number) {
     return invoke<void>("reject_ai_coding_proposal", { proposalId });

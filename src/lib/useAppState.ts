@@ -56,6 +56,7 @@ export interface AppSettings {
   /** Rater profiles for dual-rater AI screening and coding */
   "ai_raters.rater1.profile": string;
   "ai_raters.rater2.profile": string;
+  "coding.agreed_codes_mode": "auto" | "suggest";
 }
 
 /** Mirrors `suggest::DEFAULT_RATER_SYSTEM_PROMPT` in the Rust backend. Shown as the
@@ -80,6 +81,7 @@ const DEFAULTS: AppSettings = {
   "ai_raters.system_prompt": "",
   "ai_raters.rater1.profile": "",
   "ai_raters.rater2.profile": "",
+  "coding.agreed_codes_mode": "suggest",
 };
 
 export interface LmState {

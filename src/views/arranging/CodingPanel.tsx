@@ -77,6 +77,8 @@ export function CodingPanel({ project, refreshKey, onChanged, initialCodeFilter,
   const [indexedIds, setIndexedIds] = useState<Set<number>>(new Set());
   const [loading, setLoading] = useState(true);
   const [proposals, setProposals] = useState<AiCodingProposal[]>([]);
+  const [agreedMode, setAgreedMode] = useState<string>("suggest");
+  const [acceptingAgreed, setAcceptingAgreed] = useState(false);
   const [adjudications, setAdjudications] = useState<AiAdjudication[]>([]);
   const [scanning, setScanning] = useState(false);
   const [scanMsg, setScanMsg] = useState<string | null>(null);
@@ -123,6 +125,12 @@ export function CodingPanel({ project, refreshKey, onChanged, initialCodeFilter,
       : [[], []];
     setProposals(props);
     setAdjudications(adjs);
+    try {
+      const st = (await api.getSettings()) as Record<string, unknown>;
+      setAgreedMode(st["coding.agreed_codes_mode"] === "auto" ? "auto" : "suggest");
+    } catch {
+      /* keep default */
+    }
     if (!silent) setLoading(false);
   }, []);
 
@@ -151,6 +159,8 @@ export function CodingPanel({ project, refreshKey, onChanged, initialCodeFilter,
     for (const c of codings) s.add(c.article_id);
     return s;
   }, [codings]);
+
+  const agreedCount = useMemo(() => proposals.filter((p) => p.agreement === "both").length, [proposals]);
 
   const articleIdsWithProposals = useMemo(() => {
     const s = new Set<number>();
@@ -524,6 +534,23 @@ export function CodingPanel({ project, refreshKey, onChanged, initialCodeFilter,
           <p className="text-[12px] font-medium">
             {articleIdsWithProposals.size} article{articleIdsWithProposals.size !== 1 ? "s have" : " has"} AI coding suggestions awaiting review
           </p>
+          {agreedMode === "suggest" && agreedCount > 0 && (
+            <button
+              disabled={acceptingAgreed}
+              onClick={async () => {
+                setAcceptingAgreed(true);
+                try {
+                  await api.acceptAgreedAiCodingProposals();
+                  await reload(true);
+                } finally {
+                  setAcceptingAgreed(false);
+                }
+              }}
+              className="ml-auto px-2.5 py-1 text-[11px] font-semibold rounded-full bg-[var(--color-ok-100)] border border-[var(--color-ok-300)] text-[var(--color-ok-700)] hover:bg-[var(--color-ok-200)] disabled:opacity-40 transition-paper"
+            >
+              {acceptingAgreed ? <Loader2 size={11} className="animate-spin" /> : `Accept all agreed (${agreedCount})`}
+            </button>
+          )}
         </div>
       )}
 
@@ -1338,6 +1365,45 @@ function ArticleCodingCard({
 
 // ── Dimension row ──────────────────────────────────────────────────────────────
 
+const CONFIDENCE_TOOLTIP = "Model's own estimate, not a measured probability.";
+
+function ConfidenceChip({ value }: { value: number | null | undefined }) {
+  if (value == null) return null;
+  return (
+    <span
+      title={CONFIDENCE_TOOLTIP}
+      className="inline-flex items-center px-1.5 py-px rounded-full text-[10px] font-semibold tabular-nums bg-[var(--color-paper-100)] border border-[var(--color-paper-300)] text-[var(--color-paper-600)]"
+    >
+      {Math.round(value * 100)}%
+    </span>
+  );
+}
+
+/** One agent's reason, with its model name and confidence chip. */
+function AgentReason({
+  label,
+  model,
+  rationale,
+  confidence,
+}: {
+  label: string;
+  model: string | null;
+  rationale: string | null;
+  confidence: number | null;
+}) {
+  if (!rationale && confidence == null) return null;
+  return (
+    <p className="text-[11px] text-[var(--color-paper-600)] leading-snug mt-0.5 flex items-start gap-1.5 flex-wrap">
+      <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--color-paper-500)]">
+        {label}
+        {model && <span className="ml-1 font-mono font-normal normal-case tracking-normal">· {model}</span>}
+      </span>
+      <ConfidenceChip value={confidence} />
+      {rationale && <span className="italic">{rationale}</span>}
+    </p>
+  );
+}
+
 function DimensionRow({
   article,
   dimension,
@@ -1574,34 +1640,46 @@ function DimensionRow({
                 </button>
               </div>
 
-              {/* Group by rater */}
-              {[1, 2].map((rater) => {
-                const raterProposals = proposals.filter((p) => p.rater === rater);
-                if (raterProposals.length === 0) return null;
+              {/* Agreed by both agents (suggestion mode), then one-agent-only per rater */}
+              {[0, 1, 2].map((group) => {
+                const list =
+                  group === 0
+                    ? proposals.filter((p) => p.agreement === "both")
+                    : proposals.filter((p) => p.agreement !== "both" && p.rater === group);
+                if (list.length === 0) return null;
                 return (
-                  <div key={rater} className="px-3 py-2.5 border-b border-amber-100 last:border-b-0">
+                  <div key={group} className="px-3 py-2.5 border-b border-amber-100 last:border-b-0">
                     <p className="text-[10px] font-semibold uppercase tracking-wider text-amber-600 mb-1.5">
-                      Rater {rater}
-                      {raterProposals[0].model_name && (
+                      {group === 0 ? "Agreed by both agents" : `One agent only · Rater ${group}`}
+                      {group > 0 && list[0].model_name && (
                         <span className="ml-1 font-mono font-normal normal-case tracking-normal text-amber-500">
-                          · {raterProposals[0].model_name}
+                          · {list[0].model_name}
                         </span>
                       )}
                     </p>
                     <div className="space-y-1.5">
-                      {raterProposals.map((p) => (
+                      {list.map((p) => (
                         <div key={p.id} className="flex items-start gap-2 rounded-[var(--radius-xs)] bg-white/60 border border-amber-100 px-2.5 py-1.5">
                           <div className="flex-1 min-w-0">
                             <div className="flex items-center gap-2 flex-wrap">
                               <span className="text-[12px] font-medium text-[var(--color-ink-900)]">{p.code}</span>
                               <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--color-paper-500)]">
-                                Rater {p.rater}
+                                {p.agreement === "both" ? "Agreed by both agents" : "One agent only"}
                               </span>
                             </div>
-                            {p.rationale && (
-                              <p className="text-[11px] text-[var(--color-paper-600)] italic leading-snug mt-0.5">
-                                {p.rationale}
-                              </p>
+                            <AgentReason
+                              label={p.agreement === "both" ? "Agent 1" : `Agent ${p.rater}`}
+                              model={p.model_name}
+                              rationale={p.rationale}
+                              confidence={p.confidence}
+                            />
+                            {p.agreement === "both" && (
+                              <AgentReason
+                                label="Agent 2"
+                                model={p.model_name2}
+                                rationale={p.rationale2}
+                                confidence={p.confidence2}
+                              />
                             )}
                           </div>
                           <div className="flex items-center gap-1 shrink-0">
@@ -1713,6 +1791,15 @@ function DimensionRow({
 
 // ── Applied code chip ──────────────────────────────────────────────────────────
 
+function appliedTooltip(c: CodingRow): string | undefined {
+  const parts: string[] = [];
+  const pct = (v: number | null) => (v == null ? "" : ` (${Math.round(v * 100)}%)`);
+  if (c.rationale) parts.push(`${c.rationale2 ? "Agent 1" + (c.model_name ? ` · ${c.model_name}` : "") + ": " : ""}${c.rationale}${pct(c.confidence)}`);
+  if (c.rationale2) parts.push(`Agent 2${c.model_name2 ? ` · ${c.model_name2}` : ""}: ${c.rationale2}${pct(c.confidence2)}`);
+  if (parts.length === 0) return undefined;
+  return parts.join("\n") + `\n${CONFIDENCE_TOOLTIP}`;
+}
+
 function AppliedCode({ coding, onRemove }: { coding: CodingRow; onRemove: () => void }) {
   const isModel = coding.source.startsWith("model-");
   // Adjudicator-resolved codes get a distinct green bubble so they're
@@ -1733,10 +1820,11 @@ function AppliedCode({ coding, onRemove }: { coding: CodingRow; onRemove: () => 
           ? "bg-[var(--color-accent-50)] border-[var(--color-accent-200)] text-[var(--color-accent-700)]"
           : "bg-[var(--color-ink-100)] border-[var(--color-ink-200)] text-[var(--color-ink-800)]",
       )}
-      title={coding.rationale ?? undefined}
+      title={appliedTooltip(coding)}
     >
       {isModel && <Sparkles size={9} strokeWidth={2} />}
       <span className="font-medium">{coding.code}</span>
+      <ConfidenceChip value={coding.confidence} />
       <button
         onClick={onRemove}
         className="opacity-0 group-hover:opacity-100 p-0.5 rounded-full hover:bg-black/10 transition-paper"

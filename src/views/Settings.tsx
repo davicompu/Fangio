@@ -454,6 +454,29 @@ export function Settings({ open: openSetting, onClose, settings, onUpdate, lm, o
                     />
                   </div>
                   <div className="hairline" />
+                  <fieldset>
+                    <legend className="text-[13px] font-medium text-[var(--color-ink-800)] mb-1.5">
+                      Agreed codes
+                    </legend>
+                    {([
+                      ["auto", "Apply automatically"],
+                      ["suggest", "Show as suggestions"],
+                    ] as const).map(([val, label]) => (
+                      <label key={val} className="flex items-center gap-2 text-[13px] text-[var(--color-ink-800)] py-0.5">
+                        <input
+                          type="radio"
+                          name="agreed-codes-mode"
+                          checked={settings["coding.agreed_codes_mode"] === val}
+                          onChange={() => onUpdate("coding.agreed_codes_mode", val)}
+                        />
+                        {label}
+                      </label>
+                    ))}
+                    <p className="text-[11px] text-[var(--color-paper-500)] mt-1">
+                      When both coding agents pick the same code: apply it straight to the article, or list it as a suggestion for you to accept.
+                    </p>
+                  </fieldset>
+                  <div className="hairline" />
                   <TextArea
                     label="Rater 1 profile"
                     rows={6}
