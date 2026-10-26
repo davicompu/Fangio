@@ -558,6 +558,19 @@ pub async fn generate_decision_report(db: &ProjectDb) -> Result<String> {
         .map(|e| ((e.article_id, e.stage.as_str()), crate::transparency::status_label(e.review_status.as_deref())))
         .collect();
 
+    // Latest real (include/exclude/uncertain) AI row per (article, stage).
+    let mut latest_real: std::collections::HashMap<(i64, &str), &crate::db::AiScreeningLogEntry> =
+        std::collections::HashMap::new();
+    for e in &ai_log {
+        if matches!(e.decision.as_str(), "include" | "exclude" | "uncertain") {
+            let k = (e.article_id, e.stage.as_str());
+            if latest_real.get(&k).map_or(true, |p| p.id < e.id) {
+                latest_real.insert(k, e);
+            }
+        }
+    }
+    let logged_articles: std::collections::HashSet<i64> = ai_log.iter().map(|e| e.article_id).collect();
+
     let crit_label: std::collections::HashMap<i64, String> =
         criteria.iter().map(|c| (c.number, c.label.clone())).collect();
     let title_of: std::collections::HashMap<i64, String> =
@@ -578,7 +591,7 @@ pub async fn generate_decision_report(db: &ProjectDb) -> Result<String> {
         for d in &effective {
             s.push_str(&format!(
                 "| {} | {} | {} | {} |\n",
-                cell(&short(&d.created_at, 19)),
+                cell(&crate::transparency::utc_time(&d.created_at)),
                 cell(&d.stage),
                 cell(&key_label(&d.decision_key)),
                 cell(&short(&decode_value(&d.value_json), 100)),
@@ -599,13 +612,6 @@ pub async fn generate_decision_report(db: &ProjectDb) -> Result<String> {
     } else {
         s.push_str("| Article | Decision | Stage | Criterion | Decided by | Review status | When |\n|---|---|---|---|---|---|---|\n");
         for a in &screened {
-            let decided_by = if a.ai_rationale.is_some() {
-                "AI"
-            } else if a.screened_at.is_some() {
-                "Human"
-            } else {
-                "Auto (PDF attached)"
-            };
             // Which screening pass produced the final decision, derived from the
             // article's full-text status: a full-text exclusion/inclusion is
             // marked on `fulltext_status`; otherwise the call was at title/abstract.
@@ -615,6 +621,24 @@ pub async fn generate_decision_report(db: &ProjectDb) -> Result<String> {
                 ("included", Some("included")) => "Full text",
                 _ => "Title & abstract",
             };
+            let st_key = if stage == "Full text" { "fulltext" } else { "title_abstract" };
+            let human_or_auto = if a.screened_at.is_some() { "Human" } else { "Auto (PDF attached)" };
+            // Decided by the AI only when the logged decision for that stage was
+            // applied automatically, still stands, and matches the article.
+            let decided_by = match latest_real.get(&(a.id, st_key)) {
+                Some(e) => {
+                    let matches_article = (e.decision == "include" && a.status == "included")
+                        || (e.decision == "exclude" && a.status == "excluded");
+                    if e.auto_applied && e.overridden_at.is_none() && matches_article {
+                        "AI"
+                    } else {
+                        human_or_auto
+                    }
+                }
+                // No log row at that stage (decisions made before the log existed).
+                None if a.ai_rationale.is_some() && !logged_articles.contains(&a.id) => "AI",
+                None => human_or_auto,
+            };
             let criterion = if a.status == "excluded" {
                 a.exclusion_criterion
                     .and_then(|n| crit_label.get(&n).cloned().or(Some(format!("Criterion {n}"))))
@@ -622,7 +646,6 @@ pub async fn generate_decision_report(db: &ProjectDb) -> Result<String> {
             } else {
                 "—".into()
             };
-            let st_key = if stage == "Full text" { "fulltext" } else { "title_abstract" };
             let review_status = latest_status.get(&(a.id, st_key)).copied().unwrap_or("—");
             s.push_str(&format!(
                 "| {} | {} | {} | {} | {} | {} | {} |\n",
@@ -632,7 +655,7 @@ pub async fn generate_decision_report(db: &ProjectDb) -> Result<String> {
                 cell(&criterion),
                 decided_by,
                 review_status,
-                cell(&a.screened_at.clone().map(|t| short(&t, 19)).unwrap_or_else(|| "—".into())),
+                cell(&a.screened_at.as_deref().map(crate::transparency::utc_time).unwrap_or_else(|| "—".into())),
             ));
         }
         s.push_str("\n");
@@ -640,10 +663,29 @@ pub async fn generate_decision_report(db: &ProjectDb) -> Result<String> {
 
     // 2a. Full AI screening log
     s.push_str("## 2a. AI screening log\n\n");
+    // Decisions whose review status can't be determined: latest logged decisions
+    // decided outside the log, plus AI-decided articles with no log row at all.
+    let undetermined_logged = ai_log
+        .iter()
+        .filter(|e| e.is_latest && e.review_status.is_none() && !matches!(e.decision.as_str(), "error" | "skipped"))
+        .count();
+    let unlogged = articles
+        .iter()
+        .filter(|a| a.ai_rationale.is_some() && (a.status == "included" || a.status == "excluded"))
+        .filter(|a| !logged_articles.contains(&a.id))
+        .count();
+    let undetermined_note = match undetermined_logged + unlogged {
+        0 => None,
+        1 => Some("1 earlier AI screening decision was recorded before this log existed, or was decided outside it; its review status can't be determined.\n\n".to_string()),
+        n => Some(format!("{n} earlier AI screening decisions were recorded before this log existed, or were decided outside it; their review status can't be determined.\n\n")),
+    };
     if ai_log.is_empty() {
         s.push_str("_No AI screening decisions recorded._\n\n");
+        if let Some(note) = &undetermined_note {
+            s.push_str(note);
+        }
     } else {
-        s.push_str("Every AI screening decision, including earlier ones that were later replaced.\n\n");
+        s.push_str("AI screening decisions recorded in this log, including earlier ones that were later replaced.\n\n");
         s.push_str("| Article | Stage | Mode | AI decision | Criterion | Confidence | Model used | Prompt fingerprint | Temperature | Applied automatically | Review status | Opened |\n|---|---|---|---|---|---|---|---|---|---|---|---|\n");
         for e in &ai_log {
             let model = e.model_used.clone().or_else(|| e.model_name.clone()).unwrap_or_else(|| "—".into());
@@ -667,9 +709,15 @@ pub async fn generate_decision_report(db: &ProjectDb) -> Result<String> {
                 cell(&crate::transparency::opens_cell(
                     e.open_count,
                     e.first_opened_at.as_deref(),
-                    e.last_opened_at.as_deref()
+                    e.last_opened_at.as_deref(),
+                    e.last_opened_by.as_deref(),
                 )),
             ));
+        }
+        if let Some(note) = &undetermined_note {
+            s.push_str("\n");
+            s.push_str(note.trim_end());
+            s.push_str("\n");
         }
         let mut seeds: Vec<i64> = ai_calls
             .values()
@@ -705,7 +753,12 @@ pub async fn generate_decision_report(db: &ProjectDb) -> Result<String> {
             let mut detail = format!(
                 "{}, {}",
                 pct(e.confidence),
-                crate::transparency::opens_cell(e.open_count, e.first_opened_at.as_deref(), e.last_opened_at.as_deref())
+                crate::transparency::opens_cell(
+                    e.open_count,
+                    e.first_opened_at.as_deref(),
+                    e.last_opened_at.as_deref(),
+                    e.last_opened_by.as_deref(),
+                )
             );
             if e.review_status.as_deref() == Some("overridden") {
                 detail.push_str(", Overridden");
@@ -770,7 +823,7 @@ pub async fn generate_decision_report(db: &ProjectDb) -> Result<String> {
                 cell(&model),
                 cell(&hash),
                 temp,
-                cell(&short(&c.created_at, 19)),
+                cell(&crate::transparency::utc_time(&c.created_at)),
             ));
         }
         s.push_str("\nConfidence is the model's own estimate, not a measured probability.\n\n");
@@ -835,7 +888,7 @@ pub async fn generate_decision_report(db: &ProjectDb) -> Result<String> {
         for e in &review_events {
             s.push_str(&format!(
                 "| {} | {} | {} | {} | {} |\n",
-                cell(&short(&e.created_at, 19)),
+                cell(&crate::transparency::utc_time(&e.created_at)),
                 cell(&e.stage),
                 cell(&e.action.replace('_', " ")),
                 cell(&short(e.detail.as_deref().unwrap_or("—"), 80)),
@@ -859,7 +912,7 @@ fn capitalize(s: &str) -> String {
 #[cfg(test)]
 mod report_tests {
     use super::*;
-    use crate::db::{test_db, NewArticle, NewScreeningDecision};
+    use crate::db::{test_db, NewArticle, NewScreeningDecision, ProjectDb};
     use crate::suggest::CallMeta;
 
     #[tokio::test]
@@ -994,5 +1047,105 @@ mod report_tests {
         assert!(!md.to_lowercase().contains("adjudicat"));
         assert!(!md.contains("reviewed"));
         assert!(!md.contains("reproducible"));
+        assert!(md.contains("UTC"));
+        assert!(md.contains("last opened by tester"));
+        assert!(!md.contains("earlier AI screening decisions"));
+        assert!(!md.contains("Every AI screening decision"));
+    }
+
+    async fn plain_article(db: &ProjectDb, title: &str) -> i64 {
+        db.insert_article(&NewArticle {
+            title: title.into(),
+            authors: None,
+            year: None,
+            journal: None,
+            abstract_text: None,
+            doi: None,
+            url: None,
+            source_databases: vec![],
+            import_batches: vec![],
+        })
+        .await
+        .unwrap()
+    }
+
+    fn ta<'a>(id: i64, decision: &'a str, auto: bool) -> NewScreeningDecision<'a> {
+        NewScreeningDecision {
+            article_id: id,
+            stage: "title_abstract",
+            mode: "screening",
+            decision,
+            criterion_number: None,
+            rationale: "why",
+            confidence: Some(if auto { 0.95 } else { 0.5 }),
+            model_name: Some("m"),
+            ai_call_id: None,
+            auto_applied: auto,
+            run_id: "r",
+        }
+    }
+
+    fn screening_row<'a>(md: &'a str, title: &str) -> &'a str {
+        md.lines()
+            .find(|l| l.starts_with(&format!("| {title} |")) && (l.contains("| Included |") || l.contains("| Excluded |")))
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn decided_by_follows_the_log_not_ai_rationale() {
+        let (db, _d) = test_db().await;
+        // AI unsure, then the researcher excluded it.
+        let a = plain_article(&db, "Unsure then human").await;
+        db.save_ai_screening_decision(&ta(a, "uncertain", false)).await.unwrap();
+        db.apply_ai_outcome(a, "uncertain", None, "why", 0.5).await.unwrap();
+        db.apply_exclusion(a, 4, Some("Wrong population")).await.unwrap();
+        // AI excluded automatically and nobody changed it.
+        let b = plain_article(&db, "Auto excluded").await;
+        db.save_ai_screening_decision(&ta(b, "exclude", true)).await.unwrap();
+        db.apply_ai_outcome(b, "exclude", Some(8), "why", 0.95).await.unwrap();
+        // AI included automatically, researcher overrode to exclude.
+        let c = plain_article(&db, "Overridden include").await;
+        db.save_ai_screening_decision(&ta(c, "include", true)).await.unwrap();
+        db.apply_ai_outcome(c, "include", None, "why", 0.95).await.unwrap();
+        db.apply_exclusion(c, 4, None).await.unwrap();
+        db.mark_ai_decision_overridden(c, "title_abstract", "exclude").await.unwrap();
+
+        let md = generate_decision_report(&db).await.unwrap();
+        assert!(screening_row(&md, "Unsure then human").contains("| Human |"), "{md}");
+        assert!(screening_row(&md, "Auto excluded").contains("| AI |"));
+        assert!(screening_row(&md, "Overridden include").contains("| Human |"));
+    }
+
+    #[tokio::test]
+    async fn report_counts_decisions_whose_status_cannot_be_determined() {
+        let (db, _d) = test_db().await;
+        // Legacy: AI-excluded before the log existed (no log row at all).
+        let a = plain_article(&db, "Legacy exclusion").await;
+        db.apply_ai_outcome(a, "exclude", Some(8), "old reason", 0.95).await.unwrap();
+        // Logged as unsure, then decided outside the log.
+        let b = plain_article(&db, "Decided elsewhere").await;
+        db.save_ai_screening_decision(&ta(b, "uncertain", false)).await.unwrap();
+        sqlx::query("UPDATE article SET status='excluded' WHERE id=?").bind(b).execute(&db.pool).await.unwrap();
+        // Error rows never count.
+        let c = plain_article(&db, "Errored").await;
+        db.save_ai_screening_decision(&ta(c, "error", false)).await.unwrap();
+        // Legacy AI unsure that is still undecided does not count (no decision was applied).
+        let d = plain_article(&db, "Still open").await;
+        db.apply_ai_outcome(d, "uncertain", None, "hmm", 0.4).await.unwrap();
+
+        let md = generate_decision_report(&db).await.unwrap();
+        assert!(md.contains(
+            "2 earlier AI screening decisions were recorded before this log existed, or were decided outside it; their review status can't be determined."
+        ), "{md}");
+        assert!(!md.contains("Every AI screening decision"));
+    }
+
+    #[tokio::test]
+    async fn legacy_note_shown_even_without_log_rows() {
+        let (db, _d) = test_db().await;
+        let a = plain_article(&db, "Legacy only").await;
+        db.apply_ai_outcome(a, "include", None, "old", 0.95).await.unwrap();
+        let md = generate_decision_report(&db).await.unwrap();
+        assert!(md.contains("1 earlier AI screening decision was recorded before this log existed, or was decided outside it; its review status can't be determined."), "{md}");
     }
 }

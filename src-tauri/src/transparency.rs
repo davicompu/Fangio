@@ -51,18 +51,34 @@ pub fn status_label(s: Option<&str>) -> &'static str {
     }
 }
 
-fn trim_ts(t: &str) -> String {
-    t.chars().take(16).collect::<String>().replace('T', " ")
+/// Report timestamp in UTC to the minute, labelled: "2026-10-26 14:02 UTC".
+/// RFC 3339 values are converted to UTC; zone-less SQLite values are UTC
+/// already. Anything unparseable is returned unchanged.
+pub fn utc_time(t: &str) -> String {
+    let t = t.trim();
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(t) {
+        return format!("{} UTC", dt.with_timezone(&chrono::Utc).format("%Y-%m-%d %H:%M"));
+    }
+    for f in ["%Y-%m-%d %H:%M:%S%.f", "%Y-%m-%dT%H:%M:%S%.f", "%Y-%m-%d %H:%M"] {
+        if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(t, f) {
+            return format!("{} UTC", dt.format("%Y-%m-%d %H:%M"));
+        }
+    }
+    t.to_string()
 }
 
-/// Report cell describing how often a decision was opened.
-pub fn opens_cell(count: i64, first: Option<&str>, last: Option<&str>) -> String {
+/// Report cell describing how often a decision was opened, and by whom last.
+pub fn opens_cell(count: i64, first: Option<&str>, last: Option<&str>, last_by: Option<&str>) -> String {
     let dash = || "—".to_string();
-    let (f, l) = (first.map(trim_ts).unwrap_or_else(dash), last.map(trim_ts).unwrap_or_else(dash));
+    let (f, l) = (first.map(utc_time).unwrap_or_else(dash), last.map(utc_time).unwrap_or_else(dash));
+    let by = last_by
+        .filter(|b| !b.trim().is_empty())
+        .map(|b| format!(", last opened by {b}"))
+        .unwrap_or_default();
     match count {
         c if c <= 0 => "Never opened".into(),
-        1 => format!("1 ({f})"),
-        c => format!("{c} (first {f}, last {l})"),
+        1 => format!("1 ({f}{by})"),
+        c => format!("{c} (first {f}, last {l}{by})"),
     }
 }
 
@@ -159,15 +175,17 @@ pub struct RevertAttribution {
 
 /// Latest real (non error/skipped) AI row for the stage, reduced to what is needed.
 pub struct AiRowFacts<'a> {
+    pub decision: &'a str,
     pub criterion: Option<i64>,
     pub rationale: &'a str,
     pub confidence: Option<f64>,
     pub model: Option<&'a str>,
 }
 
-/// Decide which criterion/reason/confidence/model to log. AI confidence and
-/// model come only from the stage's AI row; criterion and human reason come
-/// from the article only when the previous state at that stage was an exclusion.
+/// Decide which criterion/reason/confidence/model to log. AI values come only
+/// from the stage's AI row, and only when that row's decision is the state
+/// being cleared (exclude ↔ excluded, include ↔ included); criterion and human
+/// reason come from the article only when the previous state was an exclusion.
 pub fn attribute_reverted_decision(
     kind: &str,
     article_status: &str,
@@ -181,6 +199,8 @@ pub fn attribute_reverted_decision(
     } else {
         article_status == "excluded" || fulltext_status == Some("excluded")
     };
+    let expected = if was_exclusion { "exclude" } else { "include" };
+    let ai = ai.filter(|a| a.decision == expected);
     let non_blank = |s: &str| if s.trim().is_empty() { None } else { Some(s.to_string()) };
     let ai_reason = ai.as_ref().and_then(|a| non_blank(a.rationale));
     let ai_crit = ai.as_ref().and_then(|a| a.criterion);
@@ -394,18 +414,61 @@ mod tests {
 
     #[test]
     fn opens_cell_formats() {
-        assert_eq!(opens_cell(0, None, None), "Never opened");
-        assert_eq!(opens_cell(1, Some("2026-10-26T14:02:11Z"), None), "1 (2026-10-26 14:02)");
+        assert_eq!(opens_cell(0, None, None, None), "Never opened");
+        assert_eq!(opens_cell(1, Some("2026-10-26T14:02:11Z"), None, None), "1 (2026-10-26 14:02 UTC)");
         assert_eq!(
-            opens_cell(2, Some("2026-10-26T14:02:11Z"), Some("2026-10-27T09:15:00Z")),
-            "2 (first 2026-10-26 14:02, last 2026-10-27 09:15)"
+            opens_cell(2, Some("2026-10-26T14:02:11Z"), Some("2026-10-27T09:15:00Z"), None),
+            "2 (first 2026-10-26 14:02 UTC, last 2026-10-27 09:15 UTC)"
         );
     }
 
     #[test]
+    fn opens_cell_names_last_opener() {
+        assert_eq!(
+            opens_cell(1, Some("2026-10-26T14:02:11+00:00"), Some("2026-10-26T14:02:11+00:00"), Some("david")),
+            "1 (2026-10-26 14:02 UTC, last opened by david)"
+        );
+        assert_eq!(
+            opens_cell(2, Some("2026-10-26T14:02:11Z"), Some("2026-10-27T09:15:00Z"), Some("ana")),
+            "2 (first 2026-10-26 14:02 UTC, last 2026-10-27 09:15 UTC, last opened by ana)"
+        );
+        assert_eq!(opens_cell(0, None, None, Some("ana")), "Never opened");
+    }
+
+    #[test]
     fn opens_cell_missing_timestamps() {
-        assert_eq!(opens_cell(3, None, Some("2026-10-27T09:15:00Z")), "3 (first —, last 2026-10-27 09:15)");
-        assert_eq!(opens_cell(1, None, None), "1 (—)");
+        assert_eq!(opens_cell(3, None, Some("2026-10-27T09:15:00Z"), None), "3 (first —, last 2026-10-27 09:15 UTC)");
+        assert_eq!(opens_cell(1, None, None, None), "1 (—)");
+    }
+
+    #[test]
+    fn utc_time_labels_zone_and_converts_offsets() {
+        assert_eq!(utc_time("2026-10-26T14:02:11.123+00:00"), "2026-10-26 14:02 UTC");
+        assert_eq!(utc_time("2026-10-26T16:02:11+02:00"), "2026-10-26 14:02 UTC");
+        // SQLite datetime('now') values carry no zone and are UTC.
+        assert_eq!(utc_time("2026-10-26 14:02:11"), "2026-10-26 14:02 UTC");
+        assert_eq!(utc_time("garbage"), "garbage");
+    }
+
+    #[test]
+    fn revert_after_human_exclude_of_ai_include_has_no_ai_values() {
+        // AI included; the researcher then excluded; the exclusion is reverted.
+        let ai = AiRowFacts { decision: "include", criterion: None, rationale: "Relevant", confidence: Some(0.95), model: Some("qwen") };
+        let a = attribute_reverted_decision("revert", "excluded", None, Some(4), Some("Wrong population"), Some(ai));
+        assert_eq!(a.confidence, None);
+        assert_eq!(a.model, None);
+        assert_eq!(a.reason.as_deref(), Some("Wrong population"));
+        assert_eq!(a.criterion, Some(4));
+        let (d, _) = describe_reverted_decision("revert", 1, "excluded", None, a.criterion, a.reason.as_deref(), a.confidence, a.model.as_deref());
+        assert!(!d.contains("AI confidence") && !d.contains("model"));
+    }
+
+    #[test]
+    fn revert_of_ai_include_keeps_ai_values() {
+        let ai = AiRowFacts { decision: "include", criterion: None, rationale: "Relevant", confidence: Some(0.95), model: Some("qwen") };
+        let a = attribute_reverted_decision("revert", "included", None, None, None, Some(ai));
+        assert_eq!(a.confidence, Some(0.95));
+        assert_eq!(a.model.as_deref(), Some("qwen"));
     }
 
     #[test]
@@ -469,7 +532,7 @@ mod tests {
 
     #[test]
     fn reset_of_ai_fulltext_exclusion_carries_fulltext_row() {
-        let ai = AiRowFacts { criterion: Some(2), rationale: "No PDF match", confidence: Some(0.91), model: Some("qwen") };
+        let ai = AiRowFacts { decision: "exclude", criterion: Some(2), rationale: "No PDF match", confidence: Some(0.91), model: Some("qwen") };
         let a = attribute_reverted_decision("reset", "excluded", Some("excluded"), Some(2), Some(""), Some(ai));
         assert_eq!(a.confidence, Some(0.91));
         assert_eq!(a.model.as_deref(), Some("qwen"));

@@ -1721,6 +1721,7 @@ async fn log_reverted_decision(db: &db::ProjectDb, kind: &str, article_id: i64) 
         art.exclusion_criterion,
         human_reason.as_deref(),
         ai.as_ref().map(|p| transparency::AiRowFacts {
+            decision: &p.decision,
             criterion: p.criterion_number,
             rationale: &p.rationale,
             confidence: p.confidence,
