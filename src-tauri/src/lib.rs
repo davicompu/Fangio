@@ -32,6 +32,7 @@ use parsers::{FormatKind, ParseResult, ParsedRecord};
 use recent::{RecentMeta, RecentProject, RecentStore};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use transparency::{canonical_theme, themes_match, AiCodeVote};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -1476,36 +1477,6 @@ async fn reset_all_coding(state: State<'_, AppState>) -> Result<(), String> {
 // plural ("statistical testing" vs "statistical tests"). These should count as
 // agreement, not as separate disagreements to review.
 
-/// Crude suffix stripping so "tests"/"testing"/"tested" collapse to one stem,
-/// and the English y→ies plural collapses too ("theories"→"theory",
-/// "studies"→"study") so it matches the singular.
-fn theme_stem(token: &str) -> String {
-    // y→ies plural must be handled before the generic "es"/"s" rules, which
-    // would otherwise turn "theories" into "theori" (≠ "theory").
-    if token.len() > 4 && token.ends_with("ies") {
-        return format!("{}y", &token[..token.len() - 3]);
-    }
-    for suf in ["ing", "ed", "es", "s"] {
-        if token.len() > suf.len() + 2 && token.ends_with(suf) {
-            return token[..token.len() - suf.len()].to_string();
-        }
-    }
-    token.to_string()
-}
-
-/// Lowercase, drop punctuation, split on whitespace, stem each token.
-fn theme_tokens(s: &str) -> Vec<String> {
-    let lowered: String = s
-        .to_lowercase()
-        .chars()
-        .map(|c| if c.is_alphanumeric() { c } else { ' ' })
-        .collect();
-    lowered.split_whitespace().map(theme_stem).collect()
-}
-
-/// True when two theme labels refer to the same theme despite casing or minor
-/// wording differences: identical token streams, one token set contained in the
-/// other (qualifier words), or high token overlap (Jaccard ≥ 0.6).
 /// Sentence-case a code label for a uniform codebook: capitalise the first
 /// character and leave the remainder as-is, so acronyms and proper nouns
 /// (PRISMA, Industry 4.0, Bayesian) survive intact.
@@ -1541,39 +1512,6 @@ fn normalize_doi(doi: Option<String>) -> Option<String> {
         None
     } else {
         Some(t.to_string())
-    }
-}
-
-fn themes_match(a: &str, b: &str) -> bool {
-    let ta_v = theme_tokens(a);
-    let tb_v = theme_tokens(b);
-    if ta_v.is_empty() || tb_v.is_empty() {
-        return ta_v == tb_v;
-    }
-    if ta_v == tb_v {
-        return true;
-    }
-    let ta: std::collections::HashSet<&String> = ta_v.iter().collect();
-    let tb: std::collections::HashSet<&String> = tb_v.iter().collect();
-    // Containment (e.g. "information management" ⊂ "information management context"),
-    // but require ≥2 shared-side tokens so single words don't swallow phrases.
-    if ta.len().min(tb.len()) >= 2 && (ta.is_subset(&tb) || tb.is_subset(&ta)) {
-        return true;
-    }
-    let inter = ta.intersection(&tb).count();
-    let union = ta.union(&tb).count();
-    union > 0 && (inter as f32 / union as f32) >= 0.6
-}
-
-/// Canonical display casing for a theme: trim and uppercase the first letter,
-/// leaving the rest untouched so acronyms (LLM, GenAI) survive. Keeps every
-/// stored theme consistently capitalised.
-fn canonical_theme(s: &str) -> String {
-    let t = s.trim();
-    let mut chars = t.chars();
-    match chars.next() {
-        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
-        None => String::new(),
     }
 }
 
@@ -2347,7 +2285,11 @@ async fn compute_coding_agreement(state: State<'_, AppState>) -> Result<CodingAg
         let label = p.code.trim().to_lowercase();
         if label.is_empty() { continue; }
         let g = groups.entry((p.article_id, p.dimension.clone())).or_default();
-        if p.rater == 1 { g.0.push(label); } else if p.rater == 2 { g.1.push(label); }
+        if p.agreement == "both" {
+            // Suggested-but-unaccepted agreed code: both agents coded it.
+            g.0.push(label.clone());
+            g.1.push(label);
+        } else if p.rater == 1 { g.0.push(label); } else if p.rater == 2 { g.1.push(label); }
     }
 
     // Per-dimension code universe: seed with the codebook (canonical, fixed), then
@@ -2703,14 +2645,21 @@ async fn undo_adjudication(id: i64, state: State<'_, AppState>) -> Result<(), St
         if let Some(coding_id) = adj.coding_id {
             let _ = db.delete_coding(coding_id).await;
         }
+        let vote = |rat: &Option<String>, model: &Option<String>| AiCodeVote {
+            rationale: rat.clone(),
+            model_name: model.clone(),
+            confidence: None,
+            ai_call_id: None,
+        };
         let _ = db
             .save_ai_coding_proposal(
                 adj.article_id,
                 &adj.dimension,
                 &adj.label1,
-                adj.rationale1.as_deref(),
                 adj.rater1,
-                adj.model1.as_deref(),
+                "one",
+                &vote(&adj.rationale1, &adj.model1),
+                None,
                 &adj.run_id,
             )
             .await;
@@ -2719,9 +2668,10 @@ async fn undo_adjudication(id: i64, state: State<'_, AppState>) -> Result<(), St
                 adj.article_id,
                 &adj.dimension,
                 &adj.label2,
-                adj.rationale2.as_deref(),
                 adj.rater2,
-                adj.model2.as_deref(),
+                "one",
+                &vote(&adj.rationale2, &adj.model2),
+                None,
                 &adj.run_id,
             )
             .await;
@@ -2743,29 +2693,87 @@ async fn undo_consolidation(id: i64, state: State<'_, AppState>) -> Result<(), S
     Ok(())
 }
 
+/// Accept one proposal into `coding` (source "model-ai-accepted", keeping both
+/// agents' votes for agreed codes), delete it, and log the acceptance.
+async fn accept_proposal_inner(db: &db::ProjectDb, proposal_id: i64) -> Result<(), String> {
+    let proposal = db
+        .get_ai_coding_proposal_by_id(proposal_id)
+        .await
+        .map_err(err)?
+        .ok_or("proposal not found")?;
+    let first = AiCodeVote {
+        rationale: proposal.rationale.clone(),
+        model_name: proposal.model_name.clone(),
+        confidence: proposal.confidence,
+        ai_call_id: proposal.ai_call_id,
+    };
+    let second = (proposal.agreement == "both").then(|| AiCodeVote {
+        rationale: proposal.rationale2.clone(),
+        model_name: proposal.model_name2.clone(),
+        confidence: proposal.confidence2,
+        ai_call_id: proposal.ai_call_id2,
+    });
+    db.save_ai_coding(
+        proposal.article_id,
+        &proposal.dimension,
+        &proposal.code,
+        "model-ai-accepted",
+        &first,
+        second.as_ref(),
+    )
+    .await
+    .map_err(err)?;
+    db.delete_ai_coding_proposal(proposal_id).await.map_err(err)?;
+    let who = if proposal.agreement == "both" {
+        "agreed by both agents".to_string()
+    } else {
+        format!("one agent only, rater {}", proposal.rater)
+    };
+    let detail = format!("Accepted code “{}” in {} ({})", proposal.code, proposal.dimension, who);
+    let _ = db
+        .log_review_event(
+            "arranging",
+            "accept_code",
+            Some(&format!("article {}", proposal.article_id)),
+            Some(&detail),
+            None,
+            "human",
+        )
+        .await;
+    Ok(())
+}
+
 #[tauri::command]
 async fn accept_ai_coding_proposal(
     proposal_id: i64,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let db = state.current().await.ok_or("no project open")?;
-    let proposal = db
-        .get_ai_coding_proposal_by_id(proposal_id)
-        .await
-        .map_err(err)?
-        .ok_or("proposal not found")?;
-    db.save_coding(
-        proposal.article_id,
-        &proposal.dimension,
-        &proposal.code,
-        proposal.rationale.as_deref(),
-        "model-ai-accepted",
-        proposal.model_name.as_deref(),
-    )
-    .await
-    .map_err(err)?;
-    db.delete_ai_coding_proposal(proposal_id).await.map_err(err)?;
-    Ok(())
+    accept_proposal_inner(&db, proposal_id).await
+}
+
+/// Accept every "agreed by both agents" suggestion (optionally only for the
+/// given articles). One log row each. Returns how many were accepted.
+#[tauri::command]
+async fn accept_agreed_ai_coding_proposals(
+    article_ids: Option<Vec<i64>>,
+    state: State<'_, AppState>,
+) -> Result<usize, String> {
+    let db = state.current().await.ok_or("no project open")?;
+    accept_agreed_inner(&db, article_ids.as_deref()).await
+}
+
+async fn accept_agreed_inner(db: &db::ProjectDb, article_ids: Option<&[i64]>) -> Result<usize, String> {
+    let props = match article_ids {
+        Some(ids) => db.list_ai_coding_proposals_for_articles(ids).await.map_err(err)?,
+        None => db.list_all_ai_coding_proposals().await.map_err(err)?,
+    };
+    let mut n = 0;
+    for p in props.into_iter().filter(|p| p.agreement == "both") {
+        accept_proposal_inner(db, p.id).await?;
+        n += 1;
+    }
+    Ok(n)
 }
 
 #[tauri::command]
@@ -2798,6 +2806,20 @@ async fn reject_all_ai_coding_proposals_for_article(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let db = state.current().await.ok_or("no project open")?;
+    let props = db.list_ai_coding_proposals_for_article(article_id).await.map_err(err)?;
+    for p in &props {
+        let detail = format!("Rejected code “{}” in {} (rater {})", p.code, p.dimension, p.rater);
+        let _ = db
+            .log_review_event(
+                "arranging",
+                "reject_code",
+                Some(&format!("article {}", article_id)),
+                Some(&detail),
+                None,
+                "human",
+            )
+            .await;
+    }
     db.delete_ai_coding_proposals_for_article(article_id)
         .await
         .map_err(err)?;
@@ -2948,6 +2970,11 @@ async fn run_ai_coding(
         .to_string();
     let temperature = load_temperature(&settings, "temperature.decisions", 0.2);
     let seed = load_seed(&settings);
+    let agreed_mode = settings
+        .get("coding.agreed_codes_mode")
+        .and_then(|v| v.as_str())
+        .unwrap_or("suggest")
+        .to_string();
 
     // Reset flags from any previous run
     state.coding_paused.store(false, Ordering::SeqCst);
@@ -3166,8 +3193,11 @@ async fn run_ai_coding(
         )
         .await;
 
-        let rater1_codings = match rater1_result {
-            Ok((c, _meta)) => c,
+        let (rater1_codings, rater1_call_id) = match rater1_result {
+            Ok((c, meta)) => {
+                let id = db.insert_ai_call("coding", &meta).await.ok();
+                (c, id)
+            }
             Err(e) => {
                 eprintln!("Rater 1 coding error for article {}: {e}", article.id);
                 processed += 1;
@@ -3176,6 +3206,7 @@ async fn run_ai_coding(
         };
 
         // Rater 2 (optional)
+        let mut rater2_call_id: Option<i64> = None;
         let rater2_codings: Option<Vec<suggest::DimensionCoding>> = if let Some(r2_model) = &args.rater2_model {
             let _ = app.emit(
                 "coding:progress",
@@ -3209,7 +3240,10 @@ async fn run_ai_coding(
             )
             .await
             {
-                Ok((c, _meta)) => Some(c),
+                Ok((c, meta)) => {
+                    rater2_call_id = db.insert_ai_call("coding", &meta).await.ok();
+                    Some(c)
+                }
                 Err(e) => {
                     eprintln!("Rater 2 coding error for article {}: {e}", article.id);
                     None
@@ -3233,81 +3267,46 @@ async fn run_ai_coding(
             },
         );
 
-        if let Some(r2) = &rater2_codings {
-            // Build lookup: dimension -> Vec<code> for each rater
-            let r1_map: std::collections::HashMap<&str, Vec<&str>> = rater1_codings
-                .iter()
-                .map(|dc| (dc.dimension.as_str(), dc.suggestions.iter().map(|s| s.code.as_str()).collect()))
-                .collect();
-            let r2_map: std::collections::HashMap<&str, Vec<&str>> = r2
-                .iter()
-                .map(|dc| (dc.dimension.as_str(), dc.suggestions.iter().map(|s| s.code.as_str()).collect()))
-                .collect();
-
-            for r1_dim_coding in &rater1_codings {
-                let dim = r1_dim_coding.dimension.as_str();
-                let r2_codes = r2_map.get(dim).cloned().unwrap_or_default();
-
-                for s in &r1_dim_coding.suggestions {
-                    // Fuzzy + case-insensitive match so the same theme worded a
-                    // little differently by each rater counts as agreement.
-                    if r2_codes.iter().any(|c| themes_match(c, &s.code)) {
-                        // Both raters agree → save as consensus (canonical casing)
-                        let _ = db.save_coding(
-                            article.id,
-                            dim,
-                            &canonical_theme(&s.code),
-                            s.rationale.as_deref(),
-                            "model-ai-consensus",
-                            Some(&args.rater1_model),
-                        ).await;
+        let dual = rater2_codings.is_some();
+        let r1_model = args.rater1_model.clone();
+        let r2_model_name = args.rater2_model.clone();
+        let resolved = transparency::resolve_rater_codes(
+            &rater1_codings,
+            |s| AiCodeVote {
+                rationale: s.rationale.clone(),
+                model_name: Some(r1_model.clone()),
+                confidence: s.confidence,
+                ai_call_id: rater1_call_id,
+            },
+            rater2_codings.as_deref(),
+            |s| AiCodeVote {
+                rationale: s.rationale.clone(),
+                model_name: r2_model_name.clone(),
+                confidence: s.confidence,
+                ai_call_id: rater2_call_id,
+            },
+        );
+        for rc in &resolved {
+            let first = rc.r1.as_ref().or(rc.r2.as_ref()).expect("resolved code has a vote");
+            let second = if rc.r1.is_some() { rc.r2.as_ref() } else { None };
+            match transparency::coding_disposition(&agreed_mode, dual, rc) {
+                transparency::Disposition::ApplyCoding { source } => {
+                    let _ = db
+                        .save_ai_coding(article.id, &rc.dimension, &rc.code, source, first, second)
+                        .await;
+                    consensus += 1;
+                }
+                transparency::Disposition::Propose { agreement, rater } => {
+                    let _ = db
+                        .save_ai_coding_proposal(
+                            article.id, &rc.dimension, &rc.code, rater, agreement, first, second, &args.run_id,
+                        )
+                        .await;
+                    if agreement == "both" || !dual {
                         consensus += 1;
-                    } else {
-                        // Rater 1 only → save as proposal
-                        let _ = db.save_ai_coding_proposal(
-                            article.id,
-                            dim,
-                            &canonical_theme(&s.code),
-                            s.rationale.as_deref(),
-                            1,
-                            Some(&args.rater1_model),
-                            &args.run_id,
-                        ).await;
+                    } else if rater == 1 {
                         disagreements += 1;
                     }
-                }
-
-                // Rater 2 codes that don't match any of rater 1's codes
-                if let Some(r2_dim_coding) = r2.iter().find(|dc| dc.dimension == dim) {
-                    let r1_codes = r1_map.get(dim).cloned().unwrap_or_default();
-                    for s in &r2_dim_coding.suggestions {
-                        if !r1_codes.iter().any(|c| themes_match(c, &s.code)) {
-                            let _ = db.save_ai_coding_proposal(
-                                article.id,
-                                dim,
-                                &canonical_theme(&s.code),
-                                s.rationale.as_deref(),
-                                2,
-                                args.rater2_model.as_deref(),
-                                &args.run_id,
-                            ).await;
-                        }
-                    }
-                }
-            }
-        } else {
-            // Single rater → apply all directly as consensus
-            for dim_coding in &rater1_codings {
-                for s in &dim_coding.suggestions {
-                    let _ = db.save_coding(
-                        article.id,
-                        &dim_coding.dimension,
-                        &canonical_theme(&s.code),
-                        s.rationale.as_deref(),
-                        "model-ai-consensus",
-                        Some(&args.rater1_model),
-                    ).await;
-                    consensus += 1;
                 }
             }
         }
@@ -3336,7 +3335,7 @@ async fn run_ai_coding(
         // Group this run's proposals by (article, dimension), split by rater.
         let mut groups: std::collections::BTreeMap<(i64, String), (Vec<db::AiCodingProposal>, Vec<db::AiCodingProposal>)> =
             std::collections::BTreeMap::new();
-        for p in proposals.into_iter().filter(|p| p.run_id == args.run_id) {
+        for p in proposals.into_iter().filter(|p| p.run_id == args.run_id && p.agreement == "one") {
             let entry = groups.entry((p.article_id, p.dimension.clone())).or_default();
             if p.rater == 1 { entry.0.push(p); } else { entry.1.push(p); }
         }
@@ -5692,6 +5691,7 @@ pub fn run() {
             undo_adjudication,
             undo_consolidation,
             accept_ai_coding_proposal,
+            accept_agreed_ai_coding_proposals,
             reject_ai_coding_proposal,
             reject_all_ai_coding_proposals_for_article,
             list_ai_screening_proposals_for_article,
@@ -5774,5 +5774,51 @@ mod load_seed_tests {
         assert_eq!(load_seed(&serde_json::json!({})), None);
         assert_eq!(load_seed(&serde_json::json!({"ai.seed": null})), None);
         assert_eq!(load_seed(&serde_json::json!({"ai.seed": 42})), Some(42));
+    }
+}
+
+#[cfg(test)]
+mod coding_accept_tests {
+    use super::*;
+
+    fn vote(r: &str, c: f64) -> AiCodeVote {
+        AiCodeVote { rationale: Some(r.into()), model_name: Some("m".into()), confidence: Some(c), ai_call_id: None }
+    }
+
+    #[tokio::test]
+    async fn accept_logs_review_event() {
+        let (db, _d) = db::test_db().await;
+        sqlx::query("INSERT INTO article (id, title, status, created_at, updated_at) VALUES (7, 'T', 'included', 'n', 'n')")
+            .execute(&db.pool).await.unwrap();
+        let both = db
+            .save_ai_coding_proposal(7, "Method", "Survey", 1, "both", &vote("a", 0.8), Some(&vote("b", 0.6)), "run")
+            .await
+            .unwrap();
+        let one = db
+            .save_ai_coding_proposal(7, "Method", "Interview", 2, "one", &vote("c", 0.5), None, "run")
+            .await
+            .unwrap();
+        accept_proposal_inner(&db, one).await.unwrap();
+        let events = db.list_review_events().await.unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].action, "accept_code");
+        assert_eq!(events[0].actor, "human");
+        assert_eq!(
+            events[0].detail.as_deref(),
+            Some("Accepted code “Interview” in Method (one agent only, rater 2)")
+        );
+        // Bulk accept takes only the agreed one and keeps both votes.
+        assert_eq!(accept_agreed_inner(&db, Some(&[7])).await.unwrap(), 1);
+        let _ = both;
+        let codes = db.list_codings_for_articles(&[7]).await.unwrap();
+        let survey = codes.iter().find(|c| c.code == "Survey").unwrap();
+        assert_eq!(survey.source, "model-ai-accepted");
+        assert_eq!(survey.rationale2.as_deref(), Some("b"));
+        let interview = codes.iter().find(|c| c.code == "Interview").unwrap();
+        assert!(interview.rationale2.is_none());
+        let events = db.list_review_events().await.unwrap();
+        assert_eq!(events.len(), 2);
+        assert!(events[1].detail.as_deref().unwrap().ends_with("(agreed by both agents)"));
+        assert!(db.list_all_ai_coding_proposals().await.unwrap().is_empty());
     }
 }

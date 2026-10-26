@@ -3,6 +3,7 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions};
+use crate::transparency::AiCodeVote;
 use sqlx::Row;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -170,6 +171,14 @@ pub struct CodingRow {
     pub source: String,
     pub model_name: Option<String>,
     pub created_at: String,
+    pub rationale2: Option<String>,
+    pub model_name2: Option<String>,
+    pub confidence: Option<f64>,
+    pub confidence2: Option<f64>,
+    pub model_used: Option<String>,
+    pub model_used2: Option<String>,
+    pub prompt_hash: Option<String>,
+    pub temperature: Option<f64>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -184,6 +193,18 @@ pub struct AiCodingProposal {
     pub model_name: Option<String>,
     pub run_id: String,
     pub created_at: String,
+    /// "both" (agreed by both agents) | "one"
+    pub agreement: String,
+    pub ai_call_id: Option<i64>,
+    pub ai_call_id2: Option<i64>,
+    pub rationale2: Option<String>,
+    pub model_name2: Option<String>,
+    pub confidence: Option<f64>,
+    pub confidence2: Option<f64>,
+    pub model_used: Option<String>,
+    pub model_used2: Option<String>,
+    pub prompt_hash: Option<String>,
+    pub temperature: Option<f64>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -1262,6 +1283,41 @@ impl ProjectDb {
         Ok(result.last_insert_rowid())
     }
 
+    /// Save an AI-applied (or human-accepted) code with the votes of one or two
+    /// agents. `source` is e.g. "model-ai-consensus" or "model-ai-accepted".
+    pub async fn save_ai_coding(
+        &self,
+        article_id: i64,
+        dimension: &str,
+        code: &str,
+        source: &str,
+        first: &AiCodeVote,
+        second: Option<&AiCodeVote>,
+    ) -> Result<i64> {
+        let now = chrono::Utc::now().to_rfc3339();
+        let result = sqlx::query(
+            "INSERT INTO coding (article_id, dimension, code, rationale, source, model_name, created_at, \
+             rationale2, model_name2, confidence, confidence2, ai_call_id, ai_call_id2) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(article_id)
+        .bind(dimension)
+        .bind(code)
+        .bind(&first.rationale)
+        .bind(source)
+        .bind(&first.model_name)
+        .bind(now)
+        .bind(second.and_then(|v| v.rationale.clone()))
+        .bind(second.and_then(|v| v.model_name.clone()))
+        .bind(first.confidence)
+        .bind(second.and_then(|v| v.confidence))
+        .bind(first.ai_call_id)
+        .bind(second.and_then(|v| v.ai_call_id))
+        .execute(&self.pool)
+        .await?;
+        Ok(result.last_insert_rowid())
+    }
+
     pub async fn delete_coding(&self, id: i64) -> Result<()> {
         sqlx::query("DELETE FROM coding WHERE id = ?")
             .bind(id)
@@ -1306,8 +1362,14 @@ impl ProjectDb {
         }
         let placeholders: String = std::iter::repeat("?").take(ids.len()).collect::<Vec<_>>().join(",");
         let sql = format!(
-            "SELECT id, article_id, dimension, code, rationale, source, model_name, created_at \
-             FROM coding WHERE article_id IN ({}) ORDER BY article_id, dimension, code",
+            "SELECT c.id, c.article_id, c.dimension, c.code, c.rationale, c.source, c.model_name, c.created_at, \
+             c.rationale2, c.model_name2, c.confidence, c.confidence2, \
+             a1.model_used AS model_used, a2.model_used AS model_used2, a1.prompt_hash AS prompt_hash, \
+             a1.temperature AS temperature \
+             FROM coding c \
+             LEFT JOIN ai_call a1 ON a1.id = c.ai_call_id \
+             LEFT JOIN ai_call a2 ON a2.id = c.ai_call_id2 \
+             WHERE c.article_id IN ({}) ORDER BY c.article_id, c.dimension, c.code",
             placeholders
         );
         let mut q = sqlx::query(&sql);
@@ -1326,6 +1388,14 @@ impl ProjectDb {
                 source: r.get("source"),
                 model_name: r.get("model_name"),
                 created_at: r.get("created_at"),
+                rationale2: r.get("rationale2"),
+                model_name2: r.get("model_name2"),
+                confidence: r.get("confidence"),
+                confidence2: r.get("confidence2"),
+                model_used: r.get("model_used"),
+                model_used2: r.get("model_used2"),
+                prompt_hash: r.get("prompt_hash"),
+                temperature: r.get("temperature"),
             })
             .collect())
     }
@@ -2839,81 +2909,101 @@ impl ProjectDb {
 
     // ── AI Coding proposals ───────────────────────────────────────────
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn save_ai_coding_proposal(
         &self,
         article_id: i64,
         dimension: &str,
         code: &str,
-        rationale: Option<&str>,
         rater: i64,
-        model_name: Option<&str>,
+        agreement: &str,
+        first: &AiCodeVote,
+        second: Option<&AiCodeVote>,
         run_id: &str,
     ) -> Result<i64> {
         let now = chrono::Utc::now().to_rfc3339();
         let result = sqlx::query(
             "INSERT INTO ai_coding_proposal \
-             (article_id, dimension, code, rationale, rater, model_name, run_id, created_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+             (article_id, dimension, code, rationale, rater, model_name, run_id, created_at, \
+              agreement, confidence, ai_call_id, rationale2, model_name2, confidence2, ai_call_id2) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(article_id)
         .bind(dimension)
         .bind(code)
-        .bind(rationale)
+        .bind(&first.rationale)
         .bind(rater)
-        .bind(model_name)
+        .bind(&first.model_name)
         .bind(run_id)
         .bind(now)
+        .bind(agreement)
+        .bind(first.confidence)
+        .bind(first.ai_call_id)
+        .bind(second.and_then(|v| v.rationale.clone()))
+        .bind(second.and_then(|v| v.model_name.clone()))
+        .bind(second.and_then(|v| v.confidence))
+        .bind(second.and_then(|v| v.ai_call_id))
         .execute(&self.pool)
         .await?;
         Ok(result.last_insert_rowid())
+    }
+
+    const PROPOSAL_SELECT: &'static str = "SELECT p.id, p.article_id, p.dimension, p.code, p.rationale, p.rater, \
+         p.model_name, p.run_id, p.created_at, p.agreement, p.ai_call_id, p.ai_call_id2, p.rationale2, p.model_name2, p.confidence, p.confidence2, \
+         a1.model_used AS model_used, a2.model_used AS model_used2, a1.prompt_hash AS prompt_hash, \
+         a1.temperature AS temperature \
+         FROM ai_coding_proposal p \
+         LEFT JOIN ai_call a1 ON a1.id = p.ai_call_id \
+         LEFT JOIN ai_call a2 ON a2.id = p.ai_call_id2";
+
+    fn proposal_from_row(r: sqlx::sqlite::SqliteRow) -> AiCodingProposal {
+        AiCodingProposal {
+            id: r.get("id"),
+            article_id: r.get("article_id"),
+            dimension: r.get("dimension"),
+            code: r.get("code"),
+            rationale: r.get("rationale"),
+            rater: r.get("rater"),
+            model_name: r.get("model_name"),
+            run_id: r.get("run_id"),
+            created_at: r.get("created_at"),
+            agreement: r.get("agreement"),
+            ai_call_id: r.get("ai_call_id"),
+            ai_call_id2: r.get("ai_call_id2"),
+            rationale2: r.get("rationale2"),
+            model_name2: r.get("model_name2"),
+            confidence: r.get("confidence"),
+            confidence2: r.get("confidence2"),
+            model_used: r.get("model_used"),
+            model_used2: r.get("model_used2"),
+            prompt_hash: r.get("prompt_hash"),
+            temperature: r.get("temperature"),
+        }
     }
 
     pub async fn get_ai_coding_proposal_by_id(
         &self,
         id: i64,
     ) -> Result<Option<AiCodingProposal>> {
-        let row = sqlx::query(
-            "SELECT id, article_id, dimension, code, rationale, rater, model_name, run_id, created_at \
-             FROM ai_coding_proposal WHERE id = ?",
-        )
-        .bind(id)
-        .fetch_optional(&self.pool)
-        .await?;
-        Ok(row.map(|r| AiCodingProposal {
-            id: r.get("id"),
-            article_id: r.get("article_id"),
-            dimension: r.get("dimension"),
-            code: r.get("code"),
-            rationale: r.get("rationale"),
-            rater: r.get("rater"),
-            model_name: r.get("model_name"),
-            run_id: r.get("run_id"),
-            created_at: r.get("created_at"),
-        }))
+        let row = sqlx::query(&format!("{} WHERE p.id = ?", Self::PROPOSAL_SELECT))
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.map(Self::proposal_from_row))
     }
 
     pub async fn list_ai_coding_proposals_for_article(
         &self,
         article_id: i64,
     ) -> Result<Vec<AiCodingProposal>> {
-        let rows = sqlx::query(
-            "SELECT id, article_id, dimension, code, rationale, rater, model_name, run_id, created_at \
-             FROM ai_coding_proposal WHERE article_id = ? ORDER BY dimension, rater",
-        )
+        let rows = sqlx::query(&format!(
+            "{} WHERE p.article_id = ? ORDER BY p.dimension, p.rater",
+            Self::PROPOSAL_SELECT
+        ))
         .bind(article_id)
         .fetch_all(&self.pool)
         .await?;
-        Ok(rows.into_iter().map(|r| AiCodingProposal {
-            id: r.get("id"),
-            article_id: r.get("article_id"),
-            dimension: r.get("dimension"),
-            code: r.get("code"),
-            rationale: r.get("rationale"),
-            rater: r.get("rater"),
-            model_name: r.get("model_name"),
-            run_id: r.get("run_id"),
-            created_at: r.get("created_at"),
-        }).collect())
+        Ok(rows.into_iter().map(Self::proposal_from_row).collect())
     }
 
     pub async fn list_ai_coding_proposals_for_articles(
@@ -2928,48 +3018,27 @@ impl ProjectDb {
             .collect::<Vec<_>>()
             .join(",");
         let sql = format!(
-            "SELECT id, article_id, dimension, code, rationale, rater, model_name, run_id, created_at \
-             FROM ai_coding_proposal WHERE article_id IN ({}) ORDER BY article_id, dimension, rater",
-            placeholders
+            "{} WHERE p.article_id IN ({}) ORDER BY p.article_id, p.dimension, p.rater",
+            Self::PROPOSAL_SELECT, placeholders
         );
         let mut q = sqlx::query(&sql);
         for id in article_ids {
             q = q.bind(*id);
         }
         let rows = q.fetch_all(&self.pool).await?;
-        Ok(rows.into_iter().map(|r| AiCodingProposal {
-            id: r.get("id"),
-            article_id: r.get("article_id"),
-            dimension: r.get("dimension"),
-            code: r.get("code"),
-            rationale: r.get("rationale"),
-            rater: r.get("rater"),
-            model_name: r.get("model_name"),
-            run_id: r.get("run_id"),
-            created_at: r.get("created_at"),
-        }).collect())
+        Ok(rows.into_iter().map(Self::proposal_from_row).collect())
     }
 
     /// Every AI coding proposal across the corpus (both raters). Used to compute
     /// inter-rater agreement on the AI coding pass.
     pub async fn list_all_ai_coding_proposals(&self) -> Result<Vec<AiCodingProposal>> {
-        let rows = sqlx::query(
-            "SELECT id, article_id, dimension, code, rationale, rater, model_name, run_id, created_at \
-             FROM ai_coding_proposal ORDER BY article_id, dimension, rater",
-        )
+        let rows = sqlx::query(&format!(
+            "{} ORDER BY p.article_id, p.dimension, p.rater",
+            Self::PROPOSAL_SELECT
+        ))
         .fetch_all(&self.pool)
         .await?;
-        Ok(rows.into_iter().map(|r| AiCodingProposal {
-            id: r.get("id"),
-            article_id: r.get("article_id"),
-            dimension: r.get("dimension"),
-            code: r.get("code"),
-            rationale: r.get("rationale"),
-            rater: r.get("rater"),
-            model_name: r.get("model_name"),
-            run_id: r.get("run_id"),
-            created_at: r.get("created_at"),
-        }).collect())
+        Ok(rows.into_iter().map(Self::proposal_from_row).collect())
     }
 
     pub async fn delete_ai_coding_proposal(&self, id: i64) -> Result<()> {
@@ -4405,5 +4474,78 @@ mod ai_call_tests {
             .await
             .unwrap();
         assert_eq!(used, "a-q4");
+    }
+}
+
+#[cfg(test)]
+mod coding_transparency_tests {
+    use super::*;
+
+    fn vote(r: &str, c: f64) -> AiCodeVote {
+        AiCodeVote { rationale: Some(r.into()), model_name: Some("m".into()), confidence: Some(c), ai_call_id: None }
+    }
+
+    async fn art(db: &ProjectDb, id: i64) {
+        sqlx::query("INSERT INTO article (id, title, status, created_at, updated_at) VALUES (?, 'T', 'included', 'n', 'n')")
+            .bind(id).execute(&db.pool).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn revert_removes_agreed_proposals() {
+        let (db, _d) = test_db().await;
+        art(&db, 1).await;
+        db.save_ai_coding_proposal(1, "Method", "Survey", 1, "both", &vote("a", 0.8), Some(&vote("b", 0.6)), "run")
+            .await
+            .unwrap();
+        db.save_ai_coding_proposal(1, "Method", "Interview", 2, "one", &vote("c", 0.5), None, "run")
+            .await
+            .unwrap();
+        db.save_ai_coding(1, "Method", "Case study", "model-ai-consensus", &vote("d", 0.9), None)
+            .await
+            .unwrap();
+        db.revert_ai_coding().await.unwrap();
+        assert!(db.list_all_ai_coding_proposals().await.unwrap().is_empty());
+        assert!(db.list_codings_for_articles(&[1]).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn proposal_and_coding_roundtrip_both_votes() {
+        let (db, _d) = test_db().await;
+        art(&db, 1).await;
+        let id = db
+            .save_ai_coding_proposal(1, "Method", "Survey", 1, "both", &vote("a", 0.8), Some(&vote("b", 0.6)), "run")
+            .await
+            .unwrap();
+        let p = db.get_ai_coding_proposal_by_id(id).await.unwrap().unwrap();
+        assert_eq!(p.agreement, "both");
+        assert_eq!(p.rationale2.as_deref(), Some("b"));
+        assert_eq!(p.confidence2, Some(0.6));
+        db.save_ai_coding(1, "Method", "Survey", "model-ai-consensus", &vote("a", 0.8), Some(&vote("b", 0.6)))
+            .await
+            .unwrap();
+        let c = &db.list_codings_for_articles(&[1]).await.unwrap()[0];
+        assert_eq!(c.rationale2.as_deref(), Some("b"));
+        assert_eq!(c.confidence, Some(0.8));
+    }
+
+    #[tokio::test]
+    async fn existing_project_migration_sets_auto() {
+        let (db, _d) = test_db_before(28).await;
+        sqlx::query("INSERT INTO project (id, name, current_stage, created_at, updated_at) VALUES (1,'p','x','n','n')")
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        finish_migrations(&db).await;
+        assert_eq!(
+            db.get_setting("coding.agreed_codes_mode").await.unwrap(),
+            Some(serde_json::json!("auto"))
+        );
+    }
+
+    #[tokio::test]
+    async fn fresh_db_without_project_has_no_mode_setting() {
+        let (db, _d) = test_db_before(28).await;
+        finish_migrations(&db).await;
+        assert_eq!(db.get_setting("coding.agreed_codes_mode").await.unwrap(), None);
     }
 }

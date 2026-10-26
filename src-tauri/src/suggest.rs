@@ -71,6 +71,24 @@ pub struct Suggestion {
     pub rationale: Option<String>,
     #[serde(default, alias = "isNew", alias = "new")]
     pub is_new: bool,
+    /// The model's own 0–1 estimate. Never used to filter or rank codes.
+    #[serde(default, deserialize_with = "de_confidence")]
+    pub confidence: Option<f64>,
+}
+
+/// Lenient confidence parser: numbers or numeric strings; 1 < v ≤ 100 is read
+/// as a percentage; the result is clamped to 0–1. Anything else is `None`.
+fn de_confidence<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<f64>, D::Error> {
+    let v = Option::<serde_json::Value>::deserialize(d)?;
+    let n = match v {
+        Some(serde_json::Value::Number(n)) => n.as_f64(),
+        Some(serde_json::Value::String(s)) => s.trim().trim_end_matches('%').parse::<f64>().ok(),
+        _ => None,
+    };
+    Ok(n.filter(|x| x.is_finite()).map(|x| {
+        let x = if x > 1.0 && x <= 100.0 { x / 100.0 } else { x };
+        x.clamp(0.0, 1.0)
+    }))
 }
 
 #[derive(Debug, Serialize)]
@@ -733,6 +751,19 @@ mod tests {
     }
 
     #[test]
+    fn confidence_parsed_and_clamped() {
+        let p = |c: &str| {
+            let j = format!(r#"{{"Method":[{{"code":"Survey","rationale":"x",{c}"is_new":false}}]}}"#);
+            parse_dimension_codings(&j, &["Method"]).unwrap()[0].suggestions[0].confidence
+        };
+        assert_eq!(p(r#""confidence":85,"#), Some(0.85));
+        assert_eq!(p(r#""confidence":0.4,"#), Some(0.4));
+        assert_eq!(p(r#""confidence":250,"#), Some(1.0));
+        assert_eq!(p(r#""confidence":-1,"#), Some(0.0));
+        assert_eq!(p(""), None);
+    }
+
+    #[test]
     fn parse_query_result_plural_rationales() {
         // gemma-4-26b-a4b and others sometimes emit "rationales" (plural).
         let s = r#"{"query": "X AND Y", "rationales": "because"}"#;
@@ -1331,7 +1362,7 @@ framework. You suggest codes (themes) — you do not make final decisions. The r
 Review domain: {domain}\nOrganising framework: {framework}\nResearch questions:\n{rqs_block}\n\n\
 {task_instruction}\n\n\
 Respond ONLY with a JSON object. The keys are the exact dimension names provided. \
-Each value is a JSON array of objects with keys: code (string), rationale (string, one sentence), is_new (boolean).\n\
+Each value is a JSON array of objects with keys: code (string), rationale (string, one sentence), confidence (number 0.0–1.0, your own estimate of how well the text supports this code), is_new (boolean).\n\
 No prose before or after the JSON."
     );
 

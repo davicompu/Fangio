@@ -48,3 +48,21 @@ CREATE TABLE ai_screening_open (
     opened_at TEXT NOT NULL
 );
 CREATE INDEX idx_aso_proposal ON ai_screening_open(proposal_id);
+
+-- Task 7: coding transparency
+ALTER TABLE coding ADD COLUMN rationale2 TEXT;
+ALTER TABLE coding ADD COLUMN model_name2 TEXT;
+ALTER TABLE coding ADD COLUMN confidence REAL;
+ALTER TABLE coding ADD COLUMN confidence2 REAL;
+ALTER TABLE coding ADD COLUMN ai_call_id INTEGER;
+ALTER TABLE coding ADD COLUMN ai_call_id2 INTEGER;
+ALTER TABLE ai_coding_proposal ADD COLUMN agreement TEXT NOT NULL DEFAULT 'one';
+ALTER TABLE ai_coding_proposal ADD COLUMN confidence REAL;
+ALTER TABLE ai_coding_proposal ADD COLUMN ai_call_id INTEGER;
+ALTER TABLE ai_coding_proposal ADD COLUMN rationale2 TEXT;
+ALTER TABLE ai_coding_proposal ADD COLUMN model_name2 TEXT;
+ALTER TABLE ai_coding_proposal ADD COLUMN confidence2 REAL;
+ALTER TABLE ai_coding_proposal ADD COLUMN ai_call_id2 INTEGER;
+-- Existing projects keep today's behaviour; a brand-new DB has no project row yet at migration time.
+INSERT OR IGNORE INTO settings (key, value, updated_at)
+SELECT 'coding.agreed_codes_mode', '"auto"', datetime('now') WHERE EXISTS (SELECT 1 FROM project WHERE id = 1);
