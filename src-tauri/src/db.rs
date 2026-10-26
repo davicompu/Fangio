@@ -192,6 +192,8 @@ pub struct CodingRow {
     pub model_used2: Option<String>,
     pub prompt_hash: Option<String>,
     pub temperature: Option<f64>,
+    pub prompt_hash2: Option<String>,
+    pub temperature2: Option<f64>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -1429,7 +1431,7 @@ impl ProjectDb {
             "SELECT c.id, c.article_id, c.dimension, c.code, c.rationale, c.source, c.model_name, c.created_at, \
              c.rationale2, c.model_name2, c.confidence, c.confidence2, \
              a1.model_used AS model_used, a2.model_used AS model_used2, a1.prompt_hash AS prompt_hash, \
-             a1.temperature AS temperature \
+             a1.temperature AS temperature, a2.prompt_hash AS prompt_hash2, a2.temperature AS temperature2 \
              FROM coding c \
              LEFT JOIN ai_call a1 ON a1.id = c.ai_call_id \
              LEFT JOIN ai_call a2 ON a2.id = c.ai_call_id2 \
@@ -1460,6 +1462,8 @@ impl ProjectDb {
                 model_used2: r.get("model_used2"),
                 prompt_hash: r.get("prompt_hash"),
                 temperature: r.get("temperature"),
+                prompt_hash2: r.get("prompt_hash2"),
+                temperature2: r.get("temperature2"),
             })
             .collect())
     }

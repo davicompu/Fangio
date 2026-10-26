@@ -47,7 +47,8 @@ fn trim_ts(t: &str) -> String {
 
 /// Report cell describing how often a decision was opened.
 pub fn opens_cell(count: i64, first: Option<&str>, last: Option<&str>) -> String {
-    let (f, l) = (first.map(trim_ts).unwrap_or_default(), last.map(trim_ts).unwrap_or_default());
+    let dash = || "—".to_string();
+    let (f, l) = (first.map(trim_ts).unwrap_or_else(dash), last.map(trim_ts).unwrap_or_else(dash));
     match count {
         c if c <= 0 => "Never opened".into(),
         1 => format!("1 ({f})"),
@@ -389,6 +390,12 @@ mod tests {
             opens_cell(2, Some("2026-10-26T14:02:11Z"), Some("2026-10-27T09:15:00Z")),
             "2 (first 2026-10-26 14:02, last 2026-10-27 09:15)"
         );
+    }
+
+    #[test]
+    fn opens_cell_missing_timestamps() {
+        assert_eq!(opens_cell(3, None, Some("2026-10-27T09:15:00Z")), "3 (first —, last 2026-10-27 09:15)");
+        assert_eq!(opens_cell(1, None, None), "1 (—)");
     }
 
     #[test]

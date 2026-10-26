@@ -671,7 +671,11 @@ pub async fn generate_decision_report(db: &ProjectDb) -> Result<String> {
                 )),
             ));
         }
-        let mut seeds: Vec<i64> = ai_calls.values().filter_map(|c| c.seed).collect();
+        let mut seeds: Vec<i64> = ai_calls
+            .values()
+            .filter(|c| c.purpose == "screening_ta" || c.purpose == "screening_ft")
+            .filter_map(|c| c.seed)
+            .collect();
         seeds.sort();
         seeds.dedup();
         s.push_str("\n");
@@ -744,6 +748,17 @@ pub async fn generate_decision_report(db: &ProjectDb) -> Result<String> {
                 (None, Some(b)) => b,
                 (None, None) => "—".into(),
             };
+            let both = |a: Option<String>, b: Option<String>| match (a, b) {
+                (Some(a), Some(b)) if a != b => format!("{a} / {b}"),
+                (Some(a), _) => a,
+                (None, Some(b)) => b,
+                (None, None) => "—".into(),
+            };
+            let hash = both(c.prompt_hash.clone(), c.prompt_hash2.clone());
+            let temp = both(
+                c.temperature.map(crate::transparency::format_temperature),
+                c.temperature2.map(crate::transparency::format_temperature),
+            );
             s.push_str(&format!(
                 "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
                 cell(&short(&title, 48)),
@@ -753,8 +768,8 @@ pub async fn generate_decision_report(db: &ProjectDb) -> Result<String> {
                 conf,
                 cell(&reasons),
                 cell(&model),
-                cell(c.prompt_hash.as_deref().unwrap_or("—")),
-                c.temperature.map(crate::transparency::format_temperature).unwrap_or_else(|| "—".into()),
+                cell(&hash),
+                temp,
                 cell(&short(&c.created_at, 19)),
             ));
         }
@@ -870,7 +885,7 @@ mod report_tests {
         }
         let call = db
             .insert_ai_call(
-                "screening",
+                "screening_ta",
                 &CallMeta {
                     model_requested: "m".into(),
                     model_used: "m-q4".into(),
@@ -904,7 +919,68 @@ mod report_tests {
         db.record_ai_screening_open(props[0], "tester", "test").await.unwrap();
         db.record_ai_screening_open(props[0], "tester", "test").await.unwrap();
 
+        let mk = |h: &str, t: f32, seed: Option<i64>| CallMeta {
+            model_requested: "c".into(),
+            model_used: "c-used".into(),
+            prompt_hash: h.into(),
+            temperature: t,
+            seed,
+        };
+        let c1 = db.insert_ai_call("coding", &mk("aaaaaaaaaaaa", 0.2, Some(7))).await.unwrap();
+        let c2 = db.insert_ai_call("coding", &mk("bbbbbbbbbbbb", 0.5, None)).await.unwrap();
+        let mc = db.insert_ai_call("merging", &mk("cccccccccccc", 0.3, None)).await.unwrap();
+        let vote = |m: &str, id: i64| crate::transparency::AiCodeVote {
+            rationale: Some("why".into()),
+            model_name: Some(m.into()),
+            confidence: Some(0.8),
+            ai_call_id: Some(id),
+        };
+        db.save_ai_coding(ids[0], "Dim", "Code", "model-ai-consensus", &vote("m1", c1), Some(&vote("m2", c2)))
+            .await
+            .unwrap();
+        let prop = |rater: i64, code: &str| crate::db::AiCodingProposal {
+            id: 0,
+            article_id: ids[0],
+            dimension: "Dim".into(),
+            code: code.into(),
+            rationale: None,
+            rater,
+            model_name: None,
+            run_id: "r".into(),
+            created_at: "".into(),
+            agreement: "one".into(),
+            ai_call_id: None,
+            ai_call_id2: None,
+            rationale2: None,
+            model_name2: None,
+            confidence: None,
+            confidence2: None,
+            model_used: None,
+            model_used2: None,
+            prompt_hash: None,
+            temperature: None,
+        };
+        let (p1, p2) = (prop(1, "x1"), prop(2, "x2"));
+        db.insert_adjudication(&crate::db::NewAdjudication {
+            article_id: ids[0],
+            dimension: "Dim",
+            canonical_code: "MergedKept",
+            coding_id: None,
+            proposal_id: Some(99),
+            p1: &p1,
+            p2: &p2,
+            adjudicator_rationale: Some("same idea"),
+            ai_call_id: Some(mc),
+            run_id: "r",
+        })
+        .await
+        .unwrap();
+
         let md = generate_decision_report(&db).await.unwrap();
+        assert!(md.contains("aaaaaaaaaaaa / bbbbbbbbbbbb"));
+        assert!(md.contains("0.2 / 0.5"));
+        assert!(md.contains("MergedKept (suggestion)"));
+        assert!(md.contains("cccccccccccc"));
         assert!(md.contains("## 2a. AI screening log"));
         assert!(md.contains("Never opened"));
         assert!(md.contains("2 (first"));
