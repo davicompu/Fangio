@@ -48,6 +48,8 @@ export interface AppSettings {
   "temperature.suggestions": number;
   /** Sampling temperature for AI Q&A / synthesis (Ask the paper, Ask the corpus). */
   "temperature.qa": number;
+  /** Optional integer seed sent to model servers that support it; null = off. */
+  "ai.seed": number | null;
   /** Full database configuration — replaces the old per-database.*.url keys */
   "databases.config": DatabaseEntry[];
   /** Shared base system prompt (persona) for every AI rater — screening + coding.
@@ -85,6 +87,7 @@ const DEFAULTS: AppSettings = {
   "temperature.decisions": 0.0,
   "temperature.suggestions": 0.3,
   "temperature.qa": 0.2,
+  "ai.seed": null,
   "databases.config": DEFAULT_DATABASES,
   "ai_raters.system_prompt": "",
   "ai_raters.rater1.profile": "",

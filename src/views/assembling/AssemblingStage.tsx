@@ -52,7 +52,7 @@ const tabInfo: Record<Tab, { headline: string; body: string; tip?: string }> = {
   journals: {
     headline: "Journal scope & quality",
     body: "Use journal quality lists (ABS, ABDC, Scopus) to scope your search and set a quality threshold. Articles below the threshold can be filtered out before screening.\n\nThis step is optional but recommended for domain reviews targeting high-quality outlets.",
-    tip: "Agree on a journal quality threshold before screening — changing it mid-process affects reproducibility.",
+    tip: "Agree on a journal quality threshold before screening — changing it mid-process affects consistency.",
   },
   library: {
     headline: "Retrieved corpus",

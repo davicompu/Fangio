@@ -1,8 +1,11 @@
 # Reeves
 
-A desktop workshop for systematic literature reviews. Implements the SPAR-4-SLR
-protocol (Paul et al. 2021) and PRISMA 2020 (Page et al. 2021), runs entirely on
-your machine, talks only to a local LM Studio instance.
+A desktop workshop for systematic literature reviews, following the SPAR-4-SLR
+protocol (Paul et al. 2021) and PRISMA 2020 (Page et al. 2021). Your project
+lives in a folder on your computer. Some features go online; see
+[What goes over the network](#what-goes-over-the-network).
+
+Tested on macOS with LM Studio. Ollama should work but is untested. Other platforms are untested.
 
 ## Prerequisites
 
@@ -12,14 +15,14 @@ your machine, talks only to a local LM Studio instance.
    source "$HOME/.cargo/env"
    ```
 2. **Node 20+** (for the dev server and tooling).
-3. **LM Studio** (optional for the foundation slice — required for any
-   AI-assisted feature in later sessions). Download from
-   [lmstudio.ai](https://lmstudio.ai) and start the local server from the
-   Developer tab.
+3. **An AI model server** (optional, needed for AI-assisted features). Any
+   OpenAI-compatible server works. Tested with LM Studio on macOS; download it
+   from [lmstudio.ai](https://lmstudio.ai) and start the local server from the
+   Developer tab. Ollama should work but is untested.
 
 ## Running the app
 
-From this `app/` directory:
+From the repository root:
 
 ```sh
 npm install        # one time
@@ -29,39 +32,25 @@ npm run tauri dev  # launches the desktop window
 The first cargo build will take a few minutes (it has to compile sqlx, tauri,
 reqwest with rustls, etc.). Subsequent runs are fast.
 
-## What's in the foundation slice (Session 1)
+## What it does
 
-- Project workspace model: pick a folder, Reeves creates `project.sqlite`,
-  `data/`, `agent_reports/`, `imports/`, `pdfs/`, `drafts/`, `backups/`.
-- Recent projects list, persisted at `~/.config/carta/recent.json`.
-- Onboarding wizard with the seven SPAR-4-SLR identification decisions
-  (project name, SLR type, organising framework, domain, three RQs).
-- "Why this step?" contextual docs beside every decision.
-- Settings panel: LM Studio base URL, model dropdowns (chat + embedding),
-  test connection, telemetry toggles, network allowlist viewer.
-- Persistent status bar showing live LM Studio reachability, active models,
-  latency, telemetry state, and project name.
-- Local-only telemetry (decision saves and model calls).
+- **Projects.** Pick a folder; Reeves creates `project.sqlite`, `data/`,
+  `agent_reports/`, `imports/`, `pdfs/`, `drafts/` and `backups/` in it. Recent
+  projects are listed from `recent.json` in the `carta` folder of your OS config
+  directory (on macOS, `~/Library/Application Support/carta/recent.json`).
+- **Assembling.** Identification, acquisition, importing, journals, library,
+  deduplication and a checkpoint.
+- **Arranging.** Organisation by your framework, purification criteria,
+  title and abstract screening, full-text screening, coding, PRISMA flow, and
+  a review-and-finish step.
+- **Assessing.** Corpus, findings, synthesis, agenda, PRISMA, draft and export.
+- **Settings.** Model server and models, AI rater prompts, temperatures and an
+  optional seed, privacy, backups.
 
-## What's coming next
+## What goes over the network
 
-- **Session 2 — Assembling.** Search-strategy editor, RIS / BibTeX / WoS-tab /
-  Scopus-CSV import pipeline, deduplication review, four-condition checkpoint.
-- **Session 3 — Arranging.** Framework code definitions, batch coding tables,
-  purification with criteria editor, PRISMA flow diagram with live counts.
-- **Session 4 — Assessing.** PDF library, RAG over the corpus via LanceDB,
-  draft generation, Pandoc export to .docx/.tex/.pdf.
-- **Session 5 — Connectors + advisor.** Opt-in WoS / EBSCO / Scopus API
-  connectors, embedded webview with advisor side panel.
-- **Session 6 — Polish.** Backup/restore, multi-window safety, accessibility
-  pass, end-to-end network-lockdown verification.
-
-## Network policy
-
-Reeves refuses to connect to anything that isn't `127.0.0.1` or `localhost`.
-The `lmstudio.rs` client enforces this at the function level. Database
-connectors compile in but are gated behind an explicit user opt-in and key
-entry — none of which is exposed in the foundation slice.
-
-To verify yourself: run the packaged app with `tcpdump` or Little Snitch and
-confirm the only outbound traffic is to your LM Studio loopback port.
+- **Crossref** (`api.crossref.org`): the DOI, when you look up or enrich a reference.
+- **Unpaywall** (`api.unpaywall.org`) and the publisher sites it points to: the DOI and a contact address, when you search for open-access PDFs.
+- **Database browser and "Find online"**: the pages you open, as in any browser.
+- **Your AI model server**: titles, abstracts, full-text excerpts, codes and prompts. With LM Studio on this Mac nothing leaves the computer. A remote server address sends this content to that server.
+- **Stays local**: the project database, PDFs, drafts, backups, and usage statistics (telemetry). Reeves sends no usage data anywhere.

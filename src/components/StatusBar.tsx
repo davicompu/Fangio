@@ -110,7 +110,7 @@ export function StatusBar({
         {serverReachable === false ? (
           <span className="flex items-center gap-1.5 text-[var(--color-error-500)] font-medium">
             <WifiOff size={12} strokeWidth={1.75} />
-            Local server offline
+            Model server offline
           </span>
         ) : (
           <span className="font-mono tracking-tight truncate">{serverLabel}</span>

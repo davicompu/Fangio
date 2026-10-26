@@ -36,7 +36,7 @@ const conditions: Condition[] = [
   {
     id: "criteria",
     label: "Screening criteria set",
-    description: "Inclusion / exclusion criteria are written so screening decisions are reproducible.",
+    description: "Inclusion / exclusion criteria are written down before screening begins.",
     auto: (p) => !!p && p.criteria_count >= 1,
   },
   {

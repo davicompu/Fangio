@@ -174,9 +174,7 @@ export function ExportPanel({ onOpenArranging }: { onOpenArranging: (tab: "scree
         />
         <div className="text-[12px] text-[var(--color-paper-600)] leading-relaxed">
           The draft (<code className="font-mono">drafts/slr_draft.md</code>) is regenerated from
-          the Draft tab. Pandoc-based <code className="font-mono">.docx</code>/
-          <code className="font-mono">.tex</code>/<code className="font-mono">.pdf</code> exports
-          are a future polish.
+          the Draft tab. Word, LaTeX and PDF exports (<code className="font-mono">.docx</code>, <code className="font-mono">.tex</code>, <code className="font-mono">.pdf</code>) are not available yet.
         </div>
       </div>
       {reminderElement}

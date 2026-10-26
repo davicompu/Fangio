@@ -292,7 +292,7 @@ export function Settings({ open: openSetting, onClose, settings, onUpdate, lm, o
                 <SectionHeader
                   icon={<Cpu size={14} strokeWidth={1.75} />}
                   title="Local inference"
-                  description="Reeves talks to any OpenAI-compatible inference server — local (LM Studio, Ollama, llama.cpp) or a remote host."
+                  description="Reeves talks to any OpenAI-compatible model server. Tested with LM Studio on macOS. Ollama should work but is untested. A remote server receives the article text Reeves sends for screening and coding."
                 />
 
                 <div className="space-y-4 mt-5">
@@ -397,7 +397,7 @@ export function Settings({ open: openSetting, onClose, settings, onUpdate, lm, o
                       <SettingRow
                         icon={<Thermometer size={14} strokeWidth={1.75} />}
                         label="Decision temperature"
-                        description="Sampling for AI judgment calls — screening + coding raters. 0 = fully deterministic; same article → same decision every time."
+                        description="Sampling for AI judgment calls — screening + coding raters. 0 = fully deterministic; lower values make decisions more consistent."
                       >
                         <input
                           type="number"
@@ -454,6 +454,17 @@ export function Settings({ open: openSetting, onClose, settings, onUpdate, lm, o
                             }
                           }}
                           className="w-20 px-2.5 py-1.5 text-[13px] font-mono rounded-[var(--radius-xs)] border border-[var(--color-paper-300)] bg-white focus:outline-none focus:ring-1 focus:ring-[var(--color-paper-400)]"
+                        />
+                      </SettingRow>
+
+                      <SettingRow
+                        icon={<Thermometer size={14} strokeWidth={1.75} />}
+                        label="Seed (optional)"
+                        description="Sent to model servers that support it. Recorded in the decision report to help others re-run the analysis; model outputs may still vary between runs."
+                      >
+                        <SeedInput
+                          value={settings["ai.seed"]}
+                          onSave={(v) => onUpdate("ai.seed", v)}
                         />
                       </SettingRow>
                     </motion.div>
@@ -585,6 +596,18 @@ export function Settings({ open: openSetting, onClose, settings, onUpdate, lm, o
               <section>
                 <SectionHeader
                   icon={<Radio size={14} strokeWidth={1.75} />}
+                  title="What goes over the network"
+                  description="Everything Reeves sends off this computer."
+                />
+                <ul className="mt-4 mb-8 space-y-2 text-[13px] text-[var(--color-ink-700)] leading-relaxed list-disc pl-5">
+                  <li><strong>Crossref</strong> (<code className="font-mono">api.crossref.org</code>): the DOI, when you look up or enrich a reference.</li>
+                  <li><strong>Unpaywall</strong> (<code className="font-mono">api.unpaywall.org</code>) and the publisher sites it points to: the DOI and a contact address, when you search for open-access PDFs.</li>
+                  <li><strong>Database browser and "Find online"</strong>: the pages you open, as in any browser.</li>
+                  <li><strong>Your AI model server</strong>: titles, abstracts, full-text excerpts, codes and prompts. With LM Studio on this Mac nothing leaves the computer. A remote server address sends this content to that server.</li>
+                  <li><strong>Stays local</strong>: the project database, PDFs, drafts, backups, and usage statistics (telemetry). Reeves sends no usage data anywhere.</li>
+                </ul>
+                <SectionHeader
+                  icon={<Radio size={14} strokeWidth={1.75} />}
                   title="Local telemetry"
                   description="Time-on-task statistics, batch durations, and model latencies — stored only inside this project's database. Useful for self-reflection and methods sections."
                 />
@@ -612,7 +635,7 @@ export function Settings({ open: openSetting, onClose, settings, onUpdate, lm, o
                 <SectionHeader
                   icon={<Info size={14} strokeWidth={1.75} />}
                   title="About Reeves"
-                  description="Systematic literature reviews, conducted with rigor and on your own machine."
+                  description="Systematic literature reviews following SPAR-4-SLR and PRISMA 2020."
                 />
 
                 <div className="mt-5 space-y-5">
@@ -1390,6 +1413,32 @@ function NewDatabaseForm({
           Cancel
         </Button>
       </div>
+    </div>
+  );
+}
+
+function SeedInput({ value, onSave }: { value: number | null | undefined; onSave: (v: number | null) => void }) {
+  const [text, setText] = useState(value == null ? "" : String(value));
+  const invalid = text.trim() !== "" && !/^-?\d+$/.test(text.trim());
+  return (
+    <div className="flex flex-col items-end gap-1">
+      <input
+        type="text"
+        inputMode="numeric"
+        value={text}
+        placeholder="Off"
+        onChange={(e) => {
+          const t = e.target.value;
+          setText(t);
+          if (t.trim() === "") onSave(null);
+          else if (/^-?\d+$/.test(t.trim())) {
+            const n = Number(t.trim());
+            if (Number.isSafeInteger(n)) onSave(n);
+          }
+        }}
+        className="w-28 px-2.5 py-1.5 text-[13px] font-mono rounded-[var(--radius-xs)] border border-[var(--color-paper-300)] bg-white focus:outline-none focus:ring-1 focus:ring-[var(--color-paper-400)]"
+      />
+      {invalid && <span className="text-[11px] text-[var(--color-error-500)]">Whole numbers only</span>}
     </div>
   );
 }

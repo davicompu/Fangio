@@ -112,8 +112,7 @@ export function ProjectPicker({ onProjectOpened }: ProjectPickerProps) {
               </div>
             </div>
             <p className="text-[15px] text-[var(--color-paper-600)] max-w-xl leading-relaxed">
-              Systematic literature reviews following the SPAR-4-SLR protocol and PRISMA 2020,
-              conducted entirely on your own machine. Nothing about your research leaves your laptop.
+              Systematic literature reviews following the SPAR-4-SLR protocol and PRISMA 2020. Your project lives in a folder on your computer, and usage statistics stay in that folder. Some features go online: reference lookups, open-access PDF searches, the database browser, and any AI model you connect that runs on another computer.
             </p>
           </motion.div>
 
