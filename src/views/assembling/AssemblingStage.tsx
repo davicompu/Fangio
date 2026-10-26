@@ -56,7 +56,7 @@ const tabInfo: Record<Tab, { headline: string; body: string; tip?: string }> = {
   },
   library: {
     headline: "Retrieved corpus",
-    body: "All records imported across every batch are stored here. You can inspect, attach PDFs, and track which articles have been screened.\n\nRecords with attached PDFs are automatically marked as included unless you explicitly exclude them during screening.\n\nEnrich from DOI fills in missing titles, authors, and abstracts by looking each DOI up on Crossref (crossref.org). This is the one step that reaches the internet — every DOI is sent to Crossref's public API.",
+    body: "All records imported across every batch are stored here. You can inspect, attach PDFs, and track which articles have been screened.\n\nRecords with attached PDFs are automatically marked as included unless you explicitly exclude them during screening.\n\nEnrich from DOI fills in missing titles, authors, and abstracts by looking each DOI up on Crossref (crossref.org). Each DOI is sent to Crossref's public API.",
     tip: "Attaching a PDF to an article auto-includes it — save time by uploading PDFs for your target articles early.",
   },
   dedup: {

@@ -50,7 +50,7 @@ reqwest with rustls, etc.). Subsequent runs are fast.
 ## What goes over the network
 
 - **Crossref** (`api.crossref.org`): the DOI, when you look up or enrich a reference.
-- **Unpaywall** (`api.unpaywall.org`) and the publisher sites it points to: the DOI and a contact address, when you search for open-access PDFs.
+- **Unpaywall** (`api.unpaywall.org`) and the publisher sites it points to: the DOI and Reeves' contact address, when you search for open-access PDFs.
 - **Database browser and "Find online"**: the pages you open, as in any browser.
 - **Your AI model server**: titles, abstracts, full-text excerpts, codes and prompts. With LM Studio on this Mac nothing leaves the computer. A remote server address sends this content to that server.
 - **Stays local**: the project database, PDFs, drafts, backups, and usage statistics (telemetry). Reeves sends no usage data anywhere.

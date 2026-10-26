@@ -286,12 +286,12 @@ export function Settings({ open: openSetting, onClose, settings, onUpdate, lm, o
             </nav>
 
             <div className="flex-1 overflow-y-auto px-7 py-6 space-y-8">
-              {/* Local inference section */}
+              {/* Model server section */}
               {tab === "models" && (
               <section>
                 <SectionHeader
                   icon={<Cpu size={14} strokeWidth={1.75} />}
-                  title="Local inference"
+                  title="Model server"
                   description="Reeves talks to any OpenAI-compatible model server. Tested with LM Studio on macOS. Ollama should work but is untested. A remote server receives the article text Reeves sends for screening and coding."
                 />
 
@@ -397,7 +397,7 @@ export function Settings({ open: openSetting, onClose, settings, onUpdate, lm, o
                       <SettingRow
                         icon={<Thermometer size={14} strokeWidth={1.75} />}
                         label="Decision temperature"
-                        description="Sampling for AI judgment calls — screening + coding raters. 0 = fully deterministic; lower values make decisions more consistent."
+                        description="Sampling for AI judgment calls — screening + coding raters. 0 = least random; lower values make decisions more consistent."
                       >
                         <input
                           type="number"
@@ -601,7 +601,7 @@ export function Settings({ open: openSetting, onClose, settings, onUpdate, lm, o
                 />
                 <ul className="mt-4 mb-8 space-y-2 text-[13px] text-[var(--color-ink-700)] leading-relaxed list-disc pl-5">
                   <li><strong>Crossref</strong> (<code className="font-mono">api.crossref.org</code>): the DOI, when you look up or enrich a reference.</li>
-                  <li><strong>Unpaywall</strong> (<code className="font-mono">api.unpaywall.org</code>) and the publisher sites it points to: the DOI and a contact address, when you search for open-access PDFs.</li>
+                  <li><strong>Unpaywall</strong> (<code className="font-mono">api.unpaywall.org</code>) and the publisher sites it points to: the DOI and Reeves' contact address, when you search for open-access PDFs.</li>
                   <li><strong>Database browser and "Find online"</strong>: the pages you open, as in any browser.</li>
                   <li><strong>Your AI model server</strong>: titles, abstracts, full-text excerpts, codes and prompts. With LM Studio on this Mac nothing leaves the computer. A remote server address sends this content to that server.</li>
                   <li><strong>Stays local</strong>: the project database, PDFs, drafts, backups, and usage statistics (telemetry). Reeves sends no usage data anywhere.</li>
