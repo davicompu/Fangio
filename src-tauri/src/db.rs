@@ -3456,6 +3456,25 @@ impl ProjectDb {
         Ok(row.map(|r| proposal_from_row(&r)))
     }
 
+    /// Newest non-error/skipped decision for (article, stage), or None.
+    pub async fn latest_real_ai_screening_decision(
+        &self,
+        article_id: i64,
+        stage: &str,
+    ) -> Result<Option<AiScreeningProposal>> {
+        let sql = format!(
+            "SELECT {} FROM ai_screening_proposal WHERE article_id = ? AND stage = ? \
+             AND decision NOT IN ('error','skipped') ORDER BY id DESC LIMIT 1",
+            Self::PROPOSAL_COLS
+        );
+        let row = sqlx::query(&sql)
+            .bind(article_id)
+            .bind(stage)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.map(|r| proposal_from_row(&r)))
+    }
+
     /// Newest decision for (article, stage), or None.
     pub async fn latest_ai_screening_decision(
         &self,

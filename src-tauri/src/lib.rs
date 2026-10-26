@@ -1631,9 +1631,11 @@ struct ExcludeArgs {
 /// then mark it overridden when the human decision differs.
 async fn note_human_decision(db: &db::ProjectDb, article_id: i64, stage: &str, human: &str) {
     if let Ok(Some(p)) = db.latest_ai_screening_decision(article_id, stage).await {
-        let _ = db
-            .record_ai_screening_open(p.id, &transparency::researcher_name(), "decision")
-            .await;
+        if matches!(p.decision.as_str(), "include" | "exclude" | "uncertain") {
+            let _ = db
+                .record_ai_screening_open(p.id, &transparency::researcher_name(), "decision")
+                .await;
+        }
     }
     let _ = db.mark_ai_decision_overridden(article_id, stage, human).await;
 }
@@ -1771,25 +1773,31 @@ async fn log_reverted_decision(db: &db::ProjectDb, kind: &str, article_id: i64) 
         .await
         .ok()
         .and_then(|m| m.get(&article_id).cloned().flatten());
-    let stage = if kind == "reset" { "fulltext" } else { "title_abstract" };
-    let ai = db.latest_ai_screening_decision(article_id, stage).await.ok().flatten();
+    let stage = transparency::reverted_ai_stage(kind, ft.as_deref());
+    let ai = db.latest_real_ai_screening_decision(article_id, stage).await.ok().flatten();
     let human_reason = db.exclusion_rationale(article_id).await.ok().flatten();
-    let reason = human_reason
-        .filter(|s| !s.trim().is_empty())
-        .or_else(|| art.ai_rationale.clone().filter(|s| !s.trim().is_empty()))
-        .or_else(|| ai.as_ref().map(|p| p.rationale.clone()).filter(|s| !s.trim().is_empty()));
-    let criterion = art.exclusion_criterion.or_else(|| ai.as_ref().and_then(|p| p.criterion_number));
-    let confidence = art.ai_confidence.or_else(|| ai.as_ref().and_then(|p| p.confidence));
-    let model = ai.as_ref().and_then(|p| p.model_name.clone());
+    let attr = transparency::attribute_reverted_decision(
+        kind,
+        &art.status,
+        ft.as_deref(),
+        art.exclusion_criterion,
+        human_reason.as_deref(),
+        ai.as_ref().map(|p| transparency::AiRowFacts {
+            criterion: p.criterion_number,
+            rationale: &p.rationale,
+            confidence: p.confidence,
+            model: p.model_name.as_deref(),
+        }),
+    );
     let (detail, rationale) = transparency::describe_reverted_decision(
         kind,
         article_id,
         &art.status,
         if kind == "reset" { ft.as_deref() } else { None },
-        criterion,
-        reason.as_deref(),
-        confidence,
-        model.as_deref(),
+        attr.criterion,
+        attr.reason.as_deref(),
+        attr.confidence,
+        attr.model.as_deref(),
     );
     let action = if kind == "reset" { "fulltext_reset" } else { "titleabstract_revert" };
     let _ = db

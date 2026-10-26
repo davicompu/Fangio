@@ -96,6 +96,67 @@ pub fn describe_reverted_decision(
     )
 }
 
+/// AI screening stage whose log row describes the decision being cleared.
+pub fn reverted_ai_stage(kind: &str, fulltext_status: Option<&str>) -> &'static str {
+    if kind == "reset" || fulltext_status == Some("excluded") {
+        "fulltext"
+    } else {
+        "title_abstract"
+    }
+}
+
+/// Values attributed to the previous decision in a revert/reset event.
+#[derive(Debug, PartialEq, Default)]
+pub struct RevertAttribution {
+    pub criterion: Option<i64>,
+    pub reason: Option<String>,
+    pub confidence: Option<f64>,
+    pub model: Option<String>,
+}
+
+/// Latest real (non error/skipped) AI row for the stage, reduced to what is needed.
+pub struct AiRowFacts<'a> {
+    pub criterion: Option<i64>,
+    pub rationale: &'a str,
+    pub confidence: Option<f64>,
+    pub model: Option<&'a str>,
+}
+
+/// Decide which criterion/reason/confidence/model to log. AI confidence and
+/// model come only from the stage's AI row; criterion and human reason come
+/// from the article only when the previous state at that stage was an exclusion.
+pub fn attribute_reverted_decision(
+    kind: &str,
+    article_status: &str,
+    fulltext_status: Option<&str>,
+    article_criterion: Option<i64>,
+    human_reason: Option<&str>,
+    ai: Option<AiRowFacts>,
+) -> RevertAttribution {
+    let was_exclusion = if kind == "reset" {
+        fulltext_status == Some("excluded")
+    } else {
+        article_status == "excluded" || fulltext_status == Some("excluded")
+    };
+    let non_blank = |s: &str| if s.trim().is_empty() { None } else { Some(s.to_string()) };
+    let ai_reason = ai.as_ref().and_then(|a| non_blank(a.rationale));
+    let ai_crit = ai.as_ref().and_then(|a| a.criterion);
+    let (criterion, reason) = if was_exclusion {
+        (
+            article_criterion.or(ai_crit),
+            human_reason.and_then(non_blank).or(ai_reason),
+        )
+    } else {
+        (ai_crit, ai_reason)
+    };
+    RevertAttribution {
+        criterion,
+        reason,
+        confidence: ai.as_ref().and_then(|a| a.confidence),
+        model: ai.as_ref().and_then(|a| a.model.map(|m| m.to_string())),
+    }
+}
+
 /// Truncate to at most `max` chars on a char boundary.
 pub fn truncate_chars(s: &str, max: usize) -> String {
     s.chars().take(max).collect()
@@ -126,6 +187,39 @@ mod tests {
     fn reset_detail_for_fulltext() {
         let (d, _) = describe_reverted_decision("reset", 3, "excluded", Some("excluded"), None, None, None, None);
         assert_eq!(d, "Reset full-text decision on article 3 (was: excluded at full text)");
+    }
+
+    #[test]
+    fn reset_of_human_fulltext_keep_has_no_ai_attribution() {
+        // Only a title/abstract AI row exists, so no fulltext row is passed.
+        let a = attribute_reverted_decision("reset", "included", Some("included"), None, None, None);
+        assert_eq!(a, RevertAttribution::default());
+        let (d, r) = describe_reverted_decision("reset", 5, "included", Some("included"), a.criterion, a.reason.as_deref(), a.confidence, a.model.as_deref());
+        assert!(!d.contains("AI confidence") && !d.contains("model"));
+        assert!(r.is_none());
+        assert_eq!(reverted_ai_stage("reset", Some("included")), "fulltext");
+    }
+
+    #[test]
+    fn reset_of_ai_fulltext_exclusion_carries_fulltext_row() {
+        let ai = AiRowFacts { criterion: Some(2), rationale: "No PDF match", confidence: Some(0.91), model: Some("qwen") };
+        let a = attribute_reverted_decision("reset", "excluded", Some("excluded"), Some(2), Some(""), Some(ai));
+        assert_eq!(a.confidence, Some(0.91));
+        assert_eq!(a.model.as_deref(), Some("qwen"));
+        assert_eq!(a.reason.as_deref(), Some("No PDF match"));
+        assert_eq!(a.criterion, Some(2));
+    }
+
+    #[test]
+    fn revert_uses_human_reason_for_exclusion_and_stage_follows_fulltext() {
+        let a = attribute_reverted_decision("revert", "excluded", None, Some(4), Some("Wrong population"), None);
+        assert_eq!(a.reason.as_deref(), Some("Wrong population"));
+        assert_eq!(a.criterion, Some(4));
+        assert_eq!(reverted_ai_stage("revert", Some("excluded")), "fulltext");
+        assert_eq!(reverted_ai_stage("revert", None), "title_abstract");
+        // Not an exclusion: article criterion/reason ignored.
+        let b = attribute_reverted_decision("revert", "included", None, Some(4), Some("stale"), None);
+        assert_eq!(b, RevertAttribution::default());
     }
 
     #[test]
