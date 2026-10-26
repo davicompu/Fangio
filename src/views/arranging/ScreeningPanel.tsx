@@ -12,12 +12,12 @@ import {
   Loader2,
   RotateCcw,
   Sparkles,
-  X,
 } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import {
   api,
   type AiScreeningProgress,
+  type AiScreeningLogEntry,
   type AiScreeningProposal,
   type AiScreeningResult,
   type ArticleRow,
@@ -31,6 +31,14 @@ import { Button } from "../../components/ui/Button";
 import { type AiScreeningHook } from "../../components/AiScreeningModal";
 import { StepConfirmBar } from "../../components/StepConfirmBar";
 import { cn } from "../../lib/utils";
+import {
+  AiDecisionDetailDialog,
+  AiDecisionLine,
+  cleanScreenerRationale,
+  latestByArticle,
+  splitSentences,
+  extractEvidence,
+} from "../../components/AiDecisionStatus";
 
 interface Props {
   project: ProjectRow;
@@ -166,6 +174,8 @@ export function ScreeningPanel({ project, refreshKey, onChanged, onOpenAiModal, 
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const [loading, setLoading] = useState(true);
   const [screeningProposals, setScreeningProposals] = useState<AiScreeningProposal[]>([]);
+  const [aiLog, setAiLog] = useState<AiScreeningLogEntry[]>([]);
+  const aiLatest = useMemo(() => latestByArticle(aiLog), [aiLog]);
 
   const jq = parseJournalQuality(project.journal_quality);
 
@@ -190,6 +200,12 @@ export function ScreeningPanel({ project, refreshKey, onChanged, onOpenAiModal, 
       api.listAiScreeningProposalsForArticles(ids).then(setScreeningProposals).catch(() => {});
     } else {
       setScreeningProposals([]);
+    }
+    // The decision log is needed in every tab: auto-applied decisions sit in included/excluded.
+    if (arts.length > 0) {
+      api.listAiScreeningLog(arts.map((a) => a.id), "title_abstract").then(setAiLog).catch(() => {});
+    } else {
+      setAiLog([]);
     }
     if (!silent) setLoading(false);
   };
@@ -254,6 +270,13 @@ export function ScreeningPanel({ project, refreshKey, onChanged, onOpenAiModal, 
         }).catch(() => {});
       } else if (!cancelled) {
         setScreeningProposals([]);
+      }
+      if (arts.length > 0) {
+        api.listAiScreeningLog(arts.map((a) => a.id), "title_abstract").then((l) => {
+          if (!cancelled) setAiLog(l);
+        }).catch(() => {});
+      } else if (!cancelled) {
+        setAiLog([]);
       }
       setLoading(false);
     }).catch(() => { if (!cancelled) setLoading(false); });
@@ -420,6 +443,7 @@ export function ScreeningPanel({ project, refreshKey, onChanged, onOpenAiModal, 
             jq={jq}
             expanded={expanded.has(a.id)}
             proposals={screeningProposals.filter((p) => p.article_id === a.id)}
+            aiEntry={aiLatest.get(a.id) ?? null}
             onToggle={() => {
               setExpanded((s) => {
                 const n = new Set(s);
@@ -453,6 +477,7 @@ function ScreeningCard({
   jq,
   expanded,
   proposals,
+  aiEntry,
   onToggle,
   onDecision,
 }: {
@@ -464,6 +489,7 @@ function ScreeningCard({
   jq: { abs_min?: string; abdc_min?: string; if_min?: number };
   expanded: boolean;
   proposals: AiScreeningProposal[];
+  aiEntry: AiScreeningLogEntry | null;
   onToggle: () => void;
   onDecision: () => Promise<void>;
 }) {
@@ -480,7 +506,9 @@ function ScreeningCard({
   const qualityFlagged = absFails || abdcFails || ifFails;
 
   // Disagreement detection
-  const p1 = proposals.find((p) => p.rater === 1);
+  // Latest run only: re-runs leave older rater-1 rows behind.
+  const p1 = proposals.find((p) => p.rater === 1 && (aiEntry ? p.id === aiEntry.id : true)) ??
+    proposals.find((p) => p.rater === 1);
   const p2 = proposals.find((p) => p.rater === 2);
   const hasDisagreement =
     !isDecided &&
@@ -638,74 +666,21 @@ function ScreeningCard({
             </div>
           )}
 
-          {/* AI rationale — shown for AI-screened and AI-uncertain articles */}
-          {article.ai_rationale && (
+          {/* AI decision — latest logged screening outcome with review status */}
+          {aiEntry ? (
             <>
-              <button
-                onClick={() => setRationaleOpen(true)}
-                className="mt-2 flex items-start gap-1.5 text-[11px] text-left w-full group"
-              >
-                <Bot size={11} strokeWidth={1.75} className="shrink-0 mt-0.5 text-[var(--color-accent-500)]" />
-                <span className={cn(
-                  "leading-snug group-hover:underline",
-                  article.ai_confidence !== null && article.status === "retrieved"
-                    ? "text-[var(--color-paper-500)] italic"
-                    : "text-[var(--color-paper-500)]",
-                )}>
-                  {article.ai_confidence !== null && article.status === "retrieved" && (
-                    <span className="font-medium text-[var(--color-warn-600)] not-italic mr-1">
-                      AI couldn't decide —
-                    </span>
-                  )}
-                  <span className="line-clamp-2">{cleanScreenerRationale(article.ai_rationale)}</span>
-                  {article.ai_confidence !== null && (
-                    <span className="ml-1 text-[var(--color-paper-400)] not-italic">
-                      ({Math.round(article.ai_confidence * 100)}% confidence)
-                    </span>
-                  )}
-                </span>
-              </button>
-              <AnimatePresence>
-                {rationaleOpen && (
-                  <motion.div
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    exit={{ opacity: 0 }}
-                    transition={{ duration: 0.12 }}
-                    className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-black/30 backdrop-blur-sm"
-                    onClick={() => setRationaleOpen(false)}
-                  >
-                    <motion.div
-                      initial={{ opacity: 0, scale: 0.97, y: 6 }}
-                      animate={{ opacity: 1, scale: 1, y: 0 }}
-                      exit={{ opacity: 0, scale: 0.97, y: 6 }}
-                      transition={{ duration: 0.15 }}
-                      className="w-full max-w-md bg-white rounded-[var(--radius-lg)] border border-[var(--color-paper-300)] shadow-[var(--shadow-paper-lg)] overflow-hidden"
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      <div className="flex items-center gap-2 px-5 py-3.5 border-b border-[var(--color-paper-200)]">
-                        <Bot size={14} strokeWidth={1.75} className="text-[var(--color-accent-500)]" />
-                        <span className="text-[13px] font-semibold text-[var(--color-ink-900)] flex-1">
-                          AI screener — rationale
-                        </span>
-                        <button
-                          onClick={() => setRationaleOpen(false)}
-                          className="p-1 rounded-[var(--radius-xs)] hover:bg-[var(--color-paper-200)] text-[var(--color-paper-500)] transition-paper"
-                        >
-                          <X size={13} strokeWidth={2} />
-                        </button>
-                      </div>
-                      <div className="px-5 py-4">
-                        <RationaleBody
-                          text={article.ai_rationale ?? ""}
-                          confidence={article.ai_confidence}
-                        />
-                      </div>
-                    </motion.div>
-                  </motion.div>
-                )}
-              </AnimatePresence>
+              <AiDecisionLine entry={aiEntry} onOpen={() => setRationaleOpen(true)} />
+              {rationaleOpen && (
+                <AiDecisionDetailDialog entry={aiEntry} onClose={() => { setRationaleOpen(false); void onDecision(); }} />
+              )}
             </>
+          ) : (
+            article.ai_rationale && (
+              <div className="mt-2 flex items-start gap-1.5 text-[11px] text-[var(--color-paper-500)]">
+                <Bot size={11} strokeWidth={1.75} className="shrink-0 mt-0.5 text-[var(--color-accent-500)]" />
+                <span className="leading-snug line-clamp-2">{cleanScreenerRationale(article.ai_rationale)}</span>
+              </div>
+            )
           )}
 
           <button
@@ -818,104 +793,6 @@ function DecisionChip({ decision, criterionNumber }: { decision: string; criteri
       Uncertain
     </span>
   );
-}
-
-/** The AI screener is a single rater. Legacy rows may have stored a combined
- *  "Rater 1: …\n\nRater 2: …" string (from the old dual-rater screener); since
- *  that was one model's output duplicated, collapse to the first block and drop
- *  the rater labels. New rows have no "Rater N:" prefix and pass through. */
-export function cleanScreenerRationale(text: string): string {
-  const t = (text ?? "").trim();
-  if (!t) return "";
-  const matches = [...t.matchAll(/(^|\n+)\s*Rater\s+\d+:\s*/g)];
-  if (matches.length === 0) return t;
-  const first = matches[0];
-  const firstStart = (first.index ?? 0) + first[0].length;
-  const secondStart = matches[1]?.index ?? t.length;
-  return t.slice(firstStart, secondStart).trim();
-}
-
-function RationaleBody({ text, confidence }: { text: string; confidence: number | null }) {
-  const rawBody = cleanScreenerRationale(text);
-  const isWeak = rawBody.startsWith("[weak rationale");
-  const cleanBody = isWeak ? rawBody.replace(/^\[weak rationale[^\]]*\]\s*/, "") : rawBody;
-  const sentences = splitSentences(cleanBody);
-  return (
-    <div className="space-y-4">
-      <div className="relative pl-3 border-l-2 border-[var(--color-accent-300)]">
-        {isWeak && (
-          <div className="flex items-start gap-1.5 mb-1.5 text-[11px] text-[var(--color-warn-700)]">
-            <AlertTriangle size={11} strokeWidth={2} className="shrink-0 mt-0.5" />
-            <span>Weak rationale — recommend manual review.</span>
-          </div>
-        )}
-        <ul className="text-[13px] text-[var(--color-ink-800)] leading-relaxed divide-y divide-[var(--color-paper-200)]">
-          {sentences.map((s, j) => (
-            <li key={j} className="flex gap-2 py-1.5 first:pt-0 last:pb-0">
-              <span className="font-mono text-[10px] text-[var(--color-paper-400)] shrink-0 select-none mt-1 tabular-nums">
-                {j + 1}
-              </span>
-              <span className="flex-1">
-                {extractEvidence(s).map((frag, k) =>
-                  frag.evidence ? (
-                    <span
-                      key={k}
-                      className="font-medium text-[var(--color-ink-900)] bg-[var(--color-accent-50)] border-b border-[var(--color-accent-300)] px-0.5 rounded-sm"
-                    >
-                      "{frag.text}"
-                    </span>
-                  ) : (
-                    <span key={k}>{frag.text}</span>
-                  ),
-                )}
-              </span>
-            </li>
-          ))}
-        </ul>
-      </div>
-      {confidence !== null && (
-        <div className="text-[11px] text-[var(--color-paper-500)] font-mono pt-2 border-t border-[var(--color-paper-200)]">
-          {Math.round(confidence * 100)}% confidence
-        </div>
-      )}
-    </div>
-  );
-}
-
-/** Split a rationale into 1-N sentences for cleaner reading. Conservative —
- *  splits on `. `/`! `/`? ` followed by an uppercase letter or end of string,
- *  preserves trailing punctuation, drops empties. Single-sentence rationales
- *  come back as a one-element array. */
-function splitSentences(text: string): string[] {
-  const trimmed = text.trim();
-  if (!trimmed) return [];
-  // Look-behind for sentence-ending punctuation, look-ahead for whitespace then capital or end.
-  const parts = trimmed
-    .split(/(?<=[.!?])\s+(?=[A-Z“"'(\[]|$)/u)
-    .map((s) => s.trim())
-    .filter(Boolean);
-  return parts.length > 0 ? parts : [trimmed];
-}
-
-/** Pull out anything in straight or curly quotes so the UI can emphasise it as
- *  evidence. Returns the rationale text broken into ordered fragments
- *  ({text} | {evidence}). */
-function extractEvidence(sentence: string): { text: string; evidence: boolean }[] {
-  const out: { text: string; evidence: boolean }[] = [];
-  const re = /[“"']([^"'“”]{4,200}?)["”']/g;
-  let lastIndex = 0;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(sentence)) !== null) {
-    if (m.index > lastIndex) {
-      out.push({ text: sentence.slice(lastIndex, m.index), evidence: false });
-    }
-    out.push({ text: m[1], evidence: true });
-    lastIndex = m.index + m[0].length;
-  }
-  if (lastIndex < sentence.length) {
-    out.push({ text: sentence.slice(lastIndex), evidence: false });
-  }
-  return out.length > 0 ? out : [{ text: sentence, evidence: false }];
 }
 
 function RaterCard({

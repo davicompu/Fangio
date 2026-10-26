@@ -17,7 +17,8 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { GraduationCap, Upload } from "lucide-react";
-import { api, type ExclusionCriterionRow, type FulltextCandidate } from "../../lib/api";
+import { api, type AiScreeningLogEntry, type ExclusionCriterionRow, type FulltextCandidate } from "../../lib/api";
+import { AiDecisionDetailDialog, AiDecisionLine } from "../../components/AiDecisionStatus";
 import { StepConfirmBar } from "../../components/StepConfirmBar";
 import { Button } from "../../components/ui/Button";
 import { cn } from "../../lib/utils";
@@ -96,6 +97,19 @@ export function FullTextScreeningPanel({ refreshKey, onChanged, screening, stepC
   const [criteria, setCriteria] = useState<ExclusionCriterionRow[]>([]);
   const [findProgress, setFindProgress] = useState<{ done: number; total: number; title?: string } | null>(null);
   const [page, setPage] = useState(0);
+  const [aiLog, setAiLog] = useState<AiScreeningLogEntry[]>([]);
+  const [dialogEntry, setDialogEntry] = useState<AiScreeningLogEntry | null>(null);
+  // Latest logged AI decision per article: full-text stage first, then the
+  // title/abstract stage (purification exclusions live there).
+  const aiByArticle = useMemo(() => {
+    const ft = new Map<number, AiScreeningLogEntry>();
+    const ta = new Map<number, AiScreeningLogEntry>();
+    for (const e of aiLog) {
+      if (!e.is_latest) continue;
+      (e.stage === "fulltext" ? ft : ta).set(e.article_id, e);
+    }
+    return { ft, ta };
+  }, [aiLog]);
 
   // The AI run is owned by the parent hook so it keeps going (with a banner +
   // pause/cancel) when you leave the tab. Mirror its state locally.
@@ -106,6 +120,7 @@ export function FullTextScreeningPanel({ refreshKey, onChanged, screening, stepC
     try {
       const [list, crits] = await Promise.all([api.listFulltextCandidates(), api.listCriteria()]);
       setItems(list);
+      api.listAiScreeningLog(list.map((i) => i.id)).then(setAiLog).catch(() => {});
       // EC1 (Duplicate) is handled at deduplication, not screening — omit it.
       setCriteria(crits.filter((c) => c.number > 1));
     } finally {
@@ -331,6 +346,8 @@ export function FullTextScreeningPanel({ refreshKey, onChanged, screening, stepC
     // (kept = confirmed eligible / pending promoted; excluded = removed here).
     const canReview = !ftKept && !ftExcluded && !earlierExcluded;
     const number = currentPage * PAGE_SIZE + idx + 1;
+    const aiEntry =
+      aiByArticle.ft.get(a.id) ?? (tab === "excluded" ? aiByArticle.ta.get(a.id) : undefined) ?? null;
     return (
     <div
       key={a.id}
@@ -369,6 +386,9 @@ export function FullTextScreeningPanel({ refreshKey, onChanged, screening, stepC
             <p className="text-[12px] text-[var(--color-paper-500)] leading-[1.6] mt-1.5 line-clamp-2">{a.abstract_text}</p>
           )}
 
+          {/* Logged AI decision (full-text stage; title/abstract stage for purification exclusions) */}
+          {aiEntry && <AiDecisionLine entry={aiEntry} onOpen={() => setDialogEntry(aiEntry)} />}
+
           {/* Exclusion provenance — where it left the corpus + the AI logic, if any. */}
           {tab === "excluded" && (
             <div className="mt-2">
@@ -378,10 +398,10 @@ export function FullTextScreeningPanel({ refreshKey, onChanged, screening, stepC
                   <span className="text-[var(--color-paper-400)] font-normal">· EC{a.exclusion_criterion}</span>
                 )}
               </div>
-              {(a.ai_rationale || a.exclusion_rationale) && (
+              {!aiEntry && a.exclusion_rationale && (
                 <p className="mt-1.5 text-[11px] text-[var(--color-paper-600)] leading-[1.55] bg-[var(--color-paper-100)] border border-[var(--color-paper-200)] rounded-[var(--radius-sm)] px-2.5 py-1.5">
-                  <span className="font-semibold text-[var(--color-ink-700)]">{a.ai_rationale ? "AI logic: " : "Reason: "}</span>
-                  {a.ai_rationale || a.exclusion_rationale}
+                  <span className="font-semibold text-[var(--color-ink-700)]">Reason: </span>
+                  {a.exclusion_rationale}
                 </p>
               )}
             </div>
@@ -508,6 +528,15 @@ export function FullTextScreeningPanel({ refreshKey, onChanged, screening, stepC
 
   return (
     <div className="w-full pl-6 pr-4 xl:pl-12 xl:pr-8">
+      {dialogEntry && (
+        <AiDecisionDetailDialog
+          entry={dialogEntry}
+          onClose={() => {
+            setDialogEntry(null);
+            reload();
+          }}
+        />
+      )}
       <div className="flex items-end justify-between gap-6 mb-4">
         <div>
           <div className="eyebrow text-[var(--color-paper-500)]">Eligibility</div>
