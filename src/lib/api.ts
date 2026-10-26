@@ -453,8 +453,11 @@ export interface AiCodingProgress {
   article_title: string;
   phase: "indexing" | "coding-rater1" | "coding-rater2" | "resolving" | "adjudicating" | "consolidating";
   skipped_no_pdf: number;
+  /** Agreed codes: applied (auto mode) or held as suggestions (suggest mode). */
   consensus: number;
   disagreements: number;
+  /** True when agreed codes are shown as suggestions, not applied. */
+  suggest_mode: boolean;
 }
 
 /** One variant→canonical merge from the corpus-level consolidation phase. */
@@ -478,6 +481,10 @@ export interface AiCodingResult {
   consolidated: number;
   /** Per-merge detail for the modal summary + Undo. */
   consolidations: ConsolidationSummary[];
+  /** True when agreed codes are shown as suggestions, not applied. */
+  suggest_mode: boolean;
+  /** Consolidation runs only when agreed codes are applied automatically. */
+  consolidation_skipped: boolean;
 }
 
 export interface ClusterArticle {

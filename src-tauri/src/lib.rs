@@ -2171,8 +2171,11 @@ struct AiCodingProgress {
     /// "indexing" | "coding-rater1" | "coding-rater2" | "resolving"
     phase: String,
     skipped_no_pdf: usize,
+    /// Agreed codes: applied (auto mode) or held as suggestions (suggest mode).
     consensus: usize,
     disagreements: usize,
+    /// True when agreed codes are shown as suggestions, not applied.
+    suggest_mode: bool,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -2187,6 +2190,7 @@ struct ConsolidationSummary {
 #[derive(Debug, Serialize)]
 struct AiCodingResult {
     processed: usize,
+    /// Agreed codes: applied (auto mode) or held as suggestions (suggest mode).
     consensus: usize,
     disagreements: usize,
     skipped_no_pdf: usize,
@@ -2197,6 +2201,10 @@ struct AiCodingResult {
     consolidated: usize,
     /// Per-merge detail for the modal summary + Undo.
     consolidations: Vec<ConsolidationSummary>,
+    /// True when agreed codes are shown as suggestions, not applied.
+    suggest_mode: bool,
+    /// Consolidation runs only when agreed codes are applied automatically.
+    consolidation_skipped: bool,
 }
 
 #[tauri::command]
@@ -2275,9 +2283,25 @@ struct CodingAgreement {
 /// `codebook_based = false` so the UI doesn't show a misleading κ.
 #[tauri::command]
 async fn compute_coding_agreement(state: State<'_, AppState>) -> Result<CodingAgreement, String> {
-    use std::collections::{BTreeSet, HashMap, HashSet};
     let db = state.current().await.ok_or("no project open")?;
-    let props = db.list_all_ai_coding_proposals().await.map_err(err)?;
+    coding_agreement_inner(&db).await
+}
+
+/// An agreed code counts once as both raters wherever it lives: a `coding` row
+/// carrying a second vote (auto mode, or an accepted agreed suggestion) or an
+/// agreement='both' proposal (suggest mode). So the result is the same in both
+/// modes and does not drift as the researcher accepts suggestions. Merged
+/// suggestions are left out, as merged codes in `coding` are.
+async fn coding_agreement_inner(db: &db::ProjectDb) -> Result<CodingAgreement, String> {
+    use std::collections::{BTreeSet, HashMap, HashSet};
+    let props: Vec<db::AiCodingProposal> = db
+        .list_all_ai_coding_proposals()
+        .await
+        .map_err(err)?
+        .into_iter()
+        .filter(|p| p.agreement != "merged")
+        .collect();
+    let agreed_codings = db.agreed_ai_codings().await.map_err(err)?;
     let codebook_defs = db.list_framework_code_defs().await.map_err(err)?;
     let codebook_present = !codebook_defs.is_empty();
 
@@ -2286,12 +2310,22 @@ async fn compute_coding_agreement(state: State<'_, AppState>) -> Result<CodingAg
         kappa: 0.0, observed_agreement: 0.0, articles: 0,
         codebook_based: false, note: Some(msg.to_string()),
     };
-    if !props.iter().any(|p| p.rater == 1) || !props.iter().any(|p| p.rater == 2) {
+    // A dual-rater run leaves a second vote somewhere: an agreed code, or a rater-2 suggestion.
+    let dual_rater = !agreed_codings.is_empty()
+        || props.iter().any(|p| p.agreement == "both" || p.rater == 2);
+    if !dual_rater {
         return Ok(not_enough("Run AI coding with two raters to measure inter-rater agreement."));
     }
 
     // (article, dimension) -> (rater1 labels, rater2 labels), lowercased.
     let mut groups: HashMap<(i64, String), (Vec<String>, Vec<String>)> = HashMap::new();
+    for (article_id, dimension, code) in &agreed_codings {
+        let label = code.trim().to_lowercase();
+        if label.is_empty() { continue; }
+        let g = groups.entry((*article_id, dimension.clone())).or_default();
+        g.0.push(label.clone());
+        g.1.push(label);
+    }
     for p in &props {
         let label = p.code.trim().to_lowercase();
         if label.is_empty() { continue; }
@@ -3125,6 +3159,7 @@ async fn run_ai_coding(
         .and_then(|v| v.as_str())
         .unwrap_or("suggest")
         .to_string();
+    let suggest_mode = agreed_mode == "suggest";
 
     // Reset flags from any previous run
     state.coding_paused.store(false, Ordering::SeqCst);
@@ -3234,6 +3269,7 @@ async fn run_ai_coding(
                     skipped_no_pdf,
                     consensus,
                     disagreements,
+                    suggest_mode,
                 },
             );
             continue;
@@ -3261,6 +3297,7 @@ async fn run_ai_coding(
                     skipped_no_pdf,
                     consensus,
                     disagreements,
+                    suggest_mode,
                 },
             );
 
@@ -3320,6 +3357,7 @@ async fn run_ai_coding(
                 skipped_no_pdf,
                 consensus,
                 disagreements,
+                suggest_mode,
             },
         );
 
@@ -3368,6 +3406,7 @@ async fn run_ai_coding(
                     skipped_no_pdf,
                     consensus,
                     disagreements,
+                    suggest_mode,
                 },
             );
             match suggest::code_article_for_dimensions(
@@ -3414,6 +3453,7 @@ async fn run_ai_coding(
                 skipped_no_pdf,
                 consensus,
                 disagreements,
+                suggest_mode,
             },
         );
 
@@ -3500,6 +3540,7 @@ async fn run_ai_coding(
                         skipped_no_pdf,
                         consensus,
                         disagreements,
+                        suggest_mode,
                     },
                 );
                 // Need leftovers from BOTH raters to have a pair to adjudicate.
@@ -3575,9 +3616,12 @@ async fn run_ai_coding(
     // After adjudication, an independent pass clusters synonymous codes within
     // each dimension across the whole corpus and renames variants to a canonical
     // label. Researcher-typed codes are canonical anchors and never renamed.
+    // Suggest mode: skipped, because it renames saved codes and nothing may
+    // change saved codes until the researcher accepts a suggestion.
     let mut consolidated = 0usize;
     let mut consolidations: Vec<ConsolidationSummary> = Vec::new();
-    if !cancelled.load(Ordering::SeqCst) {
+    let consolidation_skipped = suggest_mode && !cancelled.load(Ordering::SeqCst);
+    if !suggest_mode && !cancelled.load(Ordering::SeqCst) {
         let adj_model = agent_model(&settings, "ai_agents.consolidating_model");
         if !adj_model.is_empty() {
             let total_dims = dims_to_code.len();
@@ -3593,6 +3637,7 @@ async fn run_ai_coding(
                         skipped_no_pdf,
                         consensus,
                         disagreements,
+                        suggest_mode,
                     },
                 );
 
@@ -3674,6 +3719,8 @@ async fn run_ai_coding(
         adjudicated,
         consolidated,
         consolidations,
+        suggest_mode,
+        consolidation_skipped,
     })
 }
 
@@ -5903,6 +5950,72 @@ mod load_seed_tests {
         assert_eq!(load_seed(&serde_json::json!({})), None);
         assert_eq!(load_seed(&serde_json::json!({"ai.seed": null})), None);
         assert_eq!(load_seed(&serde_json::json!({"ai.seed": 42})), Some(42));
+    }
+}
+
+#[cfg(test)]
+mod coding_agreement_tests {
+    use super::*;
+
+    fn vote(r: &str) -> AiCodeVote {
+        AiCodeVote { rationale: Some(r.into()), model_name: Some("m".into()), confidence: Some(0.7), ai_call_id: None }
+    }
+
+    async fn seed(db: &db::ProjectDb, mode: &str) {
+        for id in [1, 2] {
+            sqlx::query("INSERT INTO article (id, title, status, created_at, updated_at) VALUES (?, 'T', 'included', 'n', 'n')")
+                .bind(id).execute(&db.pool).await.unwrap();
+        }
+        // Agreed codes: auto mode saves them to `coding`, suggest mode keeps 'both' proposals.
+        for (art, code) in [(1, "Survey"), (2, "Survey"), (2, "Case study")] {
+            if mode == "auto" {
+                db.save_ai_coding(art, "Method", code, "model-ai-consensus", &vote("a"), Some(&vote("b"))).await.unwrap();
+            } else {
+                db.save_ai_coding_proposal(art, "Method", code, 1, "both", &vote("a"), Some(&vote("b")), "r").await.unwrap();
+            }
+        }
+        // Disagreements are 'one' proposals in both modes.
+        db.save_ai_coding_proposal(1, "Method", "Interview", 1, "one", &vote("a"), None, "r").await.unwrap();
+        db.save_ai_coding_proposal(2, "Method", "Experiment", 2, "one", &vote("b"), None, "r").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn agreement_same_in_auto_and_suggest_and_stable_on_accept() {
+        let (auto_db, _a) = db::test_db().await;
+        seed(&auto_db, "auto").await;
+        let (sugg_db, _b) = db::test_db().await;
+        seed(&sugg_db, "suggest").await;
+        let a = coding_agreement_inner(&auto_db).await.unwrap();
+        let s = coding_agreement_inner(&sugg_db).await.unwrap();
+        assert!(a.note.is_none(), "{:?}", a.note);
+        assert_eq!(a.units, 2);
+        assert_eq!((a.kappa, a.overlap, a.units, a.articles), (s.kappa, s.overlap, s.units, s.articles));
+        // Accepting the agreed suggestions changes nothing.
+        accept_agreed_inner(&sugg_db, None).await.unwrap();
+        let s2 = coding_agreement_inner(&sugg_db).await.unwrap();
+        assert_eq!((s.kappa, s.overlap, s.units), (s2.kappa, s2.overlap, s2.units));
+    }
+
+    #[tokio::test]
+    async fn all_agreed_suggest_run_counts_as_two_raters() {
+        let (db, _d) = db::test_db().await;
+        sqlx::query("INSERT INTO article (id, title, status, created_at, updated_at) VALUES (1, 'T', 'included', 'n', 'n')")
+            .execute(&db.pool).await.unwrap();
+        db.save_ai_coding_proposal(1, "Method", "Survey", 1, "both", &vote("a"), Some(&vote("b")), "r").await.unwrap();
+        let r = coding_agreement_inner(&db).await.unwrap();
+        assert!(r.note.is_none(), "{:?}", r.note);
+        assert_eq!(r.overlap, 1.0);
+    }
+
+    #[tokio::test]
+    async fn single_rater_run_reports_no_agreement() {
+        let (db, _d) = db::test_db().await;
+        sqlx::query("INSERT INTO article (id, title, status, created_at, updated_at) VALUES (1, 'T', 'included', 'n', 'n')")
+            .execute(&db.pool).await.unwrap();
+        db.save_ai_coding(1, "Method", "Survey", "model-ai-consensus", &vote("a"), None).await.unwrap();
+        db.save_ai_coding_proposal(1, "Method", "Interview", 1, "one", &vote("a"), None, "r").await.unwrap();
+        let r = coding_agreement_inner(&db).await.unwrap();
+        assert!(r.note.is_some());
     }
 }
 

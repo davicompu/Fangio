@@ -1435,6 +1435,21 @@ impl ProjectDb {
         Ok(result.last_insert_rowid())
     }
 
+    /// AI codes saved with a second rater's vote: (article_id, dimension, code).
+    pub async fn agreed_ai_codings(&self) -> Result<Vec<(i64, String, String)>> {
+        let rows = sqlx::query(
+            "SELECT article_id, dimension, code FROM coding \
+             WHERE model_name2 IS NOT NULL OR rationale2 IS NOT NULL OR ai_call_id2 IS NOT NULL \
+                OR confidence2 IS NOT NULL",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .iter()
+            .map(|r| (r.get("article_id"), r.get("dimension"), r.get("code")))
+            .collect())
+    }
+
     pub async fn delete_coding(&self, id: i64) -> Result<()> {
         sqlx::query("DELETE FROM coding WHERE id = ?")
             .bind(id)

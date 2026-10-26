@@ -161,6 +161,11 @@ export function CodingPanel({ project, refreshKey, onChanged, initialCodeFilter,
   }, [codings]);
 
   const agreedCount = useMemo(() => proposals.filter((p) => p.agreement === "both").length, [proposals]);
+  // Articles behind the count above, so "Accept all agreed (N)" accepts exactly N.
+  const agreedArticleIds = useMemo(
+    () => [...new Set(proposals.filter((p) => p.agreement === "both").map((p) => p.article_id))],
+    [proposals],
+  );
 
   const articleIdsWithProposals = useMemo(() => {
     const s = new Set<number>();
@@ -540,7 +545,7 @@ export function CodingPanel({ project, refreshKey, onChanged, initialCodeFilter,
               onClick={async () => {
                 setAcceptingAgreed(true);
                 try {
-                  await api.acceptAgreedAiCodingProposals();
+                  await api.acceptAgreedAiCodingProposals(agreedArticleIds);
                   await reload(true);
                 } finally {
                   setAcceptingAgreed(false);

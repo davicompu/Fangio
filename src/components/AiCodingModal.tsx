@@ -579,7 +579,9 @@ export function AiCodingModal({
                   </div>
                   <div className="flex gap-4 text-[11px] text-[var(--color-paper-500)]">
                     {progress.consensus > 0 && (
-                      <span className="text-[var(--color-ok-600)]">✓ {progress.consensus} consensus</span>
+                      <span className="text-[var(--color-ok-600)]">
+                        ✓ {progress.consensus} {progress.suggest_mode ? "agreed suggestions" : "consensus"}
+                      </span>
                     )}
                     {progress.disagreements > 0 && (
                       <span className="text-[var(--color-warn-600)]">⚠ {progress.disagreements} need review</span>
@@ -606,7 +608,9 @@ export function AiCodingModal({
                   <span className="font-medium">{coding.result.processed}</span>
                 </div>
                 <div className="flex justify-between px-3 py-2 text-[12px]">
-                  <span className="text-[var(--color-ok-600)]">Consensus codes applied</span>
+                  <span className="text-[var(--color-ok-600)]">
+                    {coding.result.suggest_mode ? "Agreed suggestions" : "Consensus codes applied"}
+                  </span>
                   <span className="font-medium text-[var(--color-ok-700)]">{coding.result.consensus}</span>
                 </div>
                 {coding.result.adjudicated > 0 && (
@@ -619,6 +623,11 @@ export function AiCodingModal({
                   <div className="flex justify-between px-3 py-2 text-[12px]">
                     <span className="text-[var(--color-ok-600)]">Codes consolidated</span>
                     <span className="font-medium text-[var(--color-ok-700)]">{coding.result.consolidated}</span>
+                  </div>
+                )}
+                {coding.result.consolidation_skipped && (
+                  <div className="px-3 py-2 text-[12px] text-[var(--color-paper-500)]">
+                    Consolidation runs only when agreed codes are applied automatically.
                   </div>
                 )}
                 {coding.result.disagreements > 0 && (
