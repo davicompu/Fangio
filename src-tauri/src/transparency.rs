@@ -162,9 +162,22 @@ pub fn truncate_chars(s: &str, max: usize) -> String {
     s.chars().take(max).collect()
 }
 
+/// Detail line logged when the researcher answers an AI-review reminder.
+pub fn reminder_detail(context: &str, auto: i64, pending: i64) -> String {
+    format!("Before {context}: {auto} applied automatically, {pending} pending")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reminder_detail_text() {
+        assert_eq!(
+            reminder_detail("exporting docx", 3, 2),
+            "Before exporting docx: 3 applied automatically, 2 pending"
+        );
+    }
 
     #[test]
     fn outcome_matches_previous_threshold_rules() {

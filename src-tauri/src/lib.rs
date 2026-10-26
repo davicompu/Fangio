@@ -2888,6 +2888,27 @@ async fn ai_screening_attention_counts(
 }
 
 #[tauri::command]
+async fn log_ai_reminder_choice(
+    context: String,
+    choice: String,
+    auto_count: i64,
+    pending_count: i64,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let action = match choice.as_str() {
+        "open_now" => "ai_reminder_open_now",
+        "continue" => "ai_reminder_continue",
+        other => return Err(format!("unknown reminder choice: {other}")),
+    };
+    let db = state.current().await.ok_or("no project open")?;
+    let detail = transparency::reminder_detail(&context, auto_count, pending_count);
+    db.log_review_event("arranging", action, None, Some(&detail), None, "human")
+        .await
+        .map_err(err)?;
+    Ok(())
+}
+
+#[tauri::command]
 async fn run_ai_coding(
     args: RunAiCodingArgs,
     app: tauri::AppHandle<tauri::Wry>,
@@ -5605,6 +5626,7 @@ pub fn run() {
             record_ai_screening_open,
             list_ai_screening_log,
             ai_screening_attention_counts,
+            log_ai_reminder_choice,
             create_project,
             open_project,
             close_project,

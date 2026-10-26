@@ -46,6 +46,7 @@ interface Props {
   onChanged: () => void;
   onOpenAiModal: () => void;
   stepComplete: boolean;
+  onOpenTab?: (tab: "screening" | "fulltext") => void;
   autoComplete: boolean;
 }
 
@@ -159,7 +160,7 @@ export function useAiScreening(): AiScreeningHook {
   return { step, progress, result, error, isPaused, start, pause, resume, cancel, reset };
 }
 
-export function ScreeningPanel({ project, refreshKey, onChanged, onOpenAiModal, stepComplete, autoComplete }: Props) {
+export function ScreeningPanel({ project, refreshKey, onChanged, onOpenAiModal, stepComplete, autoComplete, onOpenTab }: Props) {
   const [activeTab, setActiveTab] = useState<ScreeningTab>("pending");
   const [articles, setArticles] = useState<ArticleRow[]>([]);
   const [total, setTotal] = useState(0);
@@ -337,6 +338,7 @@ export function ScreeningPanel({ project, refreshKey, onChanged, onOpenAiModal, 
         stepComplete={stepComplete}
         autoComplete={autoComplete}
         label="Title & abstract screening"
+        onOpenTab={onOpenTab}
         pendingHint={`${tabCounts.pending} article${tabCounts.pending === 1 ? "" : "s"} still pending — finish screening, or confirm to override.`}
         onChanged={onChanged}
       />

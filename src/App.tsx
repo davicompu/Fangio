@@ -221,7 +221,7 @@ function App() {
             exit={{ opacity: 0 }}
             transition={{ duration: 0.35 }}
           >
-            <AssessingStage project={project} onLeaveStage={() => setRoute("hub")} onProjectChanged={refreshProject} onOpenRag={() => openRag("assessing")} />
+            <AssessingStage project={project} onLeaveStage={() => setRoute("hub")} onProjectChanged={refreshProject} onOpenRag={() => openRag("assessing")} onOpenArranging={async (tab) => { await api.setSetting("last_tab.arranging", tab); setRoute("arranging"); }} />
           </motion.div>
         )}
         {project && project.onboarding_complete && route === "rag" && (

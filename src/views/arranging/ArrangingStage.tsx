@@ -38,6 +38,7 @@ import { ScreeningPanel, useAiScreening } from "./ScreeningPanel";
 import { FullTextScreeningPanel, useAiFulltextScreening } from "./FullTextScreeningPanel";
 import { PrismaPanel } from "./PrismaPanel";
 import { ArrangingCheckpoint } from "./ArrangingCheckpoint";
+import { useAiReviewReminder } from "../../components/AiReviewReminder";
 
 interface Props {
   project: ProjectRow;
@@ -102,6 +103,7 @@ const tabInfo: Record<Tab, { headline: string; body: string; tip?: string }> = {
 export function ArrangingStage({ project, onLeaveStage, onProjectChanged, onAdvanceStage, onOpenRag, lmModels, defaultChatModel }: Props) {
   const [tab, setTab] = useState<Tab>("organization");
   const [advancing, setAdvancing] = useState(false);
+  const { guard, element: reminderElement } = useAiReviewReminder();
   const [refreshTick, setRefreshTick] = useState(0);
   const [progress, setProgress] = useState<ArrangingProgress | null>(null);
   const [progressSettings, setProgressSettings] = useState<Record<string, unknown>>({});
@@ -275,22 +277,24 @@ export function ArrangingStage({ project, onLeaveStage, onProjectChanged, onAdva
                   screening={screening}
                 />
               )}
-              {tab === "screening" && <ScreeningPanel project={project} refreshKey={refreshTick} onChanged={onChanged} onOpenAiModal={() => setAiModalOpen(true)} stepComplete={manualFlags.screening} autoComplete={progress != null && progress.articles_screened > 0 && progress.articles_retrieved === 0} />}
-              {tab === "fulltext" && <FullTextScreeningPanel refreshKey={refreshTick} onChanged={onChanged} screening={fulltextScreening} stepComplete={manualFlags.fulltext} autoComplete={progress != null && progress.articles_included > 0 && progress.articles_fulltext_pending === 0} />}
+              {tab === "screening" && <ScreeningPanel project={project} refreshKey={refreshTick} onChanged={onChanged} onOpenAiModal={() => setAiModalOpen(true)} onOpenTab={setTab} stepComplete={manualFlags.screening} autoComplete={progress != null && progress.articles_screened > 0 && progress.articles_retrieved === 0} />}
+              {tab === "fulltext" && <FullTextScreeningPanel onOpenTab={setTab} refreshKey={refreshTick} onChanged={onChanged} screening={fulltextScreening} stepComplete={manualFlags.fulltext} autoComplete={progress != null && progress.articles_included > 0 && progress.articles_fulltext_pending === 0} />}
               {tab === "prisma" && <PrismaPanel refreshKey={refreshTick} />}
               {tab === "finish" && (
                 <ArrangingCheckpoint
                   progress={progress}
                   settings={progressSettings}
                   advancing={advancing}
-                  onAdvance={async () => {
-                    setAdvancing(true);
-                    try {
-                      await onAdvanceStage("assessing");
-                    } finally {
-                      setAdvancing(false);
-                    }
-                  }}
+                  onAdvance={() =>
+                    guard("moving to Stage 3", async () => {
+                      setAdvancing(true);
+                      try {
+                        await onAdvanceStage("assessing");
+                      } finally {
+                        setAdvancing(false);
+                      }
+                    }, setTab)
+                  }
                 />
               )}
               </ErrorBoundary>
@@ -773,6 +777,7 @@ export function ArrangingStage({ project, onLeaveStage, onProjectChanged, onAdva
         onDismiss={() => setAiModalOpen(false)}
         onSendToBackground={() => setAiModalOpen(false)}
       />
+      {reminderElement}
     </div>
   );
 }

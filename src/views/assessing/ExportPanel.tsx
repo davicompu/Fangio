@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useAiReviewReminder } from "../../components/AiReviewReminder";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   BookMarked,
@@ -27,12 +28,15 @@ type Job =
   | "svg"
   | null;
 
-export function ExportPanel() {
+export function ExportPanel({ onOpenArranging }: { onOpenArranging: (tab: "screening" | "fulltext") => void }) {
+  const { guard, element: reminderElement } = useAiReviewReminder();
   const [busy, setBusy] = useState<Job>(null);
   const [result, setResult] = useState<{ kind: Job; files: string[] } | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const run = async (kind: Exclude<Job, null>) => {
+  const run = (kind: Exclude<Job, null>) => guard(`exporting ${kind}`, () => doRun(kind), onOpenArranging);
+
+  const doRun = async (kind: Exclude<Job, null>) => {
     setBusy(kind);
     setError(null);
     try {
@@ -175,6 +179,7 @@ export function ExportPanel() {
           are a future polish.
         </div>
       </div>
+      {reminderElement}
     </div>
   );
 }

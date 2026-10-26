@@ -30,6 +30,7 @@ interface Props {
   onLeaveStage: () => void;
   onProjectChanged: () => Promise<void> | void;
   onOpenRag: () => void;
+  onOpenArranging: (tab: "screening" | "fulltext") => void;
 }
 
 type Tab = "library" | "findings" | "ask" | "agenda" | "prisma" | "draft" | "export";
@@ -84,7 +85,7 @@ const tabInfo: Record<Tab, { headline: string; body: string; tip?: string }> = {
   },
 };
 
-export function AssessingStage({ project, onLeaveStage, onProjectChanged, onOpenRag }: Props) {
+export function AssessingStage({ project, onLeaveStage, onProjectChanged, onOpenRag, onOpenArranging }: Props) {
   const [tab, setTab] = useState<Tab>("library");
   const [refreshTick, setRefreshTick] = useState(0);
 
@@ -200,7 +201,7 @@ export function AssessingStage({ project, onLeaveStage, onProjectChanged, onOpen
               {tab === "agenda" && <AgendaPanel project={project} onSaved={onSaved} />}
               {tab === "prisma" && <PrismaPanel refreshKey={refreshTick} />}
               {tab === "draft" && <DraftPanel project={project} onSaved={onSaved} />}
-              {tab === "export" && <ExportPanel />}
+              {tab === "export" && <ExportPanel onOpenArranging={onOpenArranging} />}
             </motion.div>
           </AnimatePresence>
         </div>

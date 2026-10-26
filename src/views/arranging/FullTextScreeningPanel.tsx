@@ -87,7 +87,7 @@ export function useAiFulltextScreening(): AiFulltextHook {
 /** Full-text (eligibility) screening — PRISMA's second pass. Operates on the
  * title/abstract-included set; fetch missing PDFs, read the full text, and keep
  * or exclude. Excluding here removes the article from the corpus. */
-export function FullTextScreeningPanel({ refreshKey, onChanged, screening, stepComplete, autoComplete }: { refreshKey: number; onChanged: () => void; screening: AiFulltextHook; stepComplete: boolean; autoComplete: boolean }) {
+export function FullTextScreeningPanel({ refreshKey, onChanged, screening, stepComplete, autoComplete, onOpenTab }: { onOpenTab?: (tab: "screening" | "fulltext") => void; refreshKey: number; onChanged: () => void; screening: AiFulltextHook; stepComplete: boolean; autoComplete: boolean }) {
   const [items, setItems] = useState<FulltextCandidate[]>([]);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<Tab>("pending");
@@ -616,6 +616,7 @@ export function FullTextScreeningPanel({ refreshKey, onChanged, screening, stepC
             stepComplete={stepComplete}
             autoComplete={autoComplete}
             label="Full-text screening"
+            onOpenTab={onOpenTab}
             pendingHint={`${ftPending} included article${ftPending === 1 ? "" : "s"} without a full-text decision — decide them, or confirm to override.`}
             onChanged={onChanged}
           />

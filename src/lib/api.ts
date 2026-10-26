@@ -826,6 +826,9 @@ export const api = {
   aiScreeningAttentionCounts() {
     return invoke<AttentionCounts>("ai_screening_attention_counts");
   },
+  logAiReminderChoice(context: string, choice: "open_now" | "continue", autoCount: number, pendingCount: number) {
+    return invoke<void>("log_ai_reminder_choice", { context, choice, autoCount, pendingCount });
+  },
   acceptAiScreeningProposal(proposalId: number) {
     return invoke<void>("accept_ai_screening_proposal", { proposalId });
   },

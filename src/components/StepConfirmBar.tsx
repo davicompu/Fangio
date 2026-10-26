@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Check, CircleCheck, Loader2, RotateCcw } from "lucide-react";
 import { api } from "../lib/api";
 import { cn } from "../lib/utils";
+import { useAiReviewReminder } from "./AiReviewReminder";
 
 interface Props {
   stage: "assembling" | "arranging" | "assessing";
@@ -15,13 +16,16 @@ interface Props {
   /** Shown when the step is neither confirmed nor auto-complete. */
   pendingHint: string;
   onChanged: () => void;
+  /** Jump to a screening tab (used by the AI-review reminder's "Open them now"). */
+  onOpenTab?: (tab: "screening" | "fulltext") => void;
 }
 
 /** A confirm/override bar for a screening step: lets the user mark the step
  *  complete (or reopen it), and shows whether the data already looks done. The
  *  end-of-stage checklist reads the same persisted flag. */
-export function StepConfirmBar({ stage, tab, stepComplete, autoComplete, label, pendingHint, onChanged }: Props) {
+export function StepConfirmBar({ stage, tab, stepComplete, autoComplete, label, pendingHint, onChanged, onOpenTab }: Props) {
   const [busy, setBusy] = useState(false);
+  const { guard, element } = useAiReviewReminder();
   const key = `progress.${stage}.${tab}.complete`;
 
   const setFlag = async (value: boolean) => {
@@ -32,6 +36,13 @@ export function StepConfirmBar({ stage, tab, stepComplete, autoComplete, label, 
     } finally {
       setBusy(false);
     }
+  };
+
+  const confirm = () => {
+    const guarded = stage === "arranging" && (tab === "screening" || tab === "fulltext");
+    if (!guarded) return setFlag(true);
+    const ctx = tab === "screening" ? "confirming title/abstract screening" : "confirming full-text screening";
+    return guard(ctx, () => setFlag(true), (t) => onOpenTab?.(t));
   };
 
   if (stepComplete) {
@@ -71,7 +82,7 @@ export function StepConfirmBar({ stage, tab, stepComplete, autoComplete, label, 
       </span>
       <button
         type="button"
-        onClick={() => setFlag(true)}
+        onClick={confirm}
         disabled={busy}
         className={cn(
           "shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-[var(--radius-sm)] text-[12px] font-medium transition-paper disabled:opacity-50",
@@ -83,6 +94,7 @@ export function StepConfirmBar({ stage, tab, stepComplete, autoComplete, label, 
         {busy ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} strokeWidth={2} />}
         {autoComplete ? "Confirm complete" : "Mark complete anyway"}
       </button>
+      {element}
     </div>
   );
 }
