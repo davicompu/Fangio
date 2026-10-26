@@ -2705,7 +2705,7 @@ async fn accept_ai_screening_proposal(
         &proposal.decision,
         proposal.criterion_number,
         &proposal.rationale,
-        proposal.confidence,
+        proposal.confidence.unwrap_or(0.0),
     )
     .await
     .map_err(err)?;
@@ -3516,10 +3516,19 @@ async fn run_ai_screening(
 
         if confident_exclude {
             // A confident exclusion applies in either mode.
-            db.save_ai_screening_proposal(
-                article.id, 1, &decision.decision, decision.criterion_number,
-                &decision.rationale, decision.confidence, Some(&model), &run_id,
-            ).await.ok();
+            db.save_ai_screening_decision(&db::NewScreeningDecision {
+                article_id: article.id,
+                stage: "title_abstract",
+                mode: if args.exclude_only { "purification" } else { "screening" },
+                decision: &decision.decision,
+                criterion_number: decision.criterion_number,
+                rationale: &decision.rationale,
+                confidence: Some(decision.confidence),
+                model_name: Some(&model),
+                ai_call_id: None,
+                auto_applied: true,
+                run_id: &run_id,
+            }).await.ok();
             db.apply_ai_outcome(
                 article.id,
                 "exclude",
@@ -3555,12 +3564,21 @@ async fn run_ai_screening(
             // Title/abstract screening: record the rater's proposal and apply a
             // confident include; uncertain / low-confidence stay pending with the
             // rationale kept so the researcher sees the AI's reasoning.
-            db.save_ai_screening_proposal(
-                article.id, 1, &decision.decision, decision.criterion_number,
-                &decision.rationale, decision.confidence, Some(&model), &run_id,
-            ).await.ok();
             let confident_include =
                 decision.decision == "include" && decision.confidence >= threshold;
+            db.save_ai_screening_decision(&db::NewScreeningDecision {
+                article_id: article.id,
+                stage: "title_abstract",
+                mode: "screening",
+                decision: &decision.decision,
+                criterion_number: decision.criterion_number,
+                rationale: &decision.rationale,
+                confidence: Some(decision.confidence),
+                model_name: Some(&model),
+                ai_call_id: None,
+                auto_applied: confident_include,
+                run_id: &run_id,
+            }).await.ok();
             if confident_include {
                 db.apply_ai_outcome(
                     article.id, "include", None, &decision.rationale, decision.confidence,

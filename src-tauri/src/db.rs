@@ -278,13 +278,90 @@ pub struct AiScreeningProposal {
     pub article_id: i64,
     /// 1 or 2
     pub rater: i64,
+    /// title_abstract | fulltext
+    pub stage: String,
+    /// screening | purification
+    pub mode: String,
     pub decision: String,
     pub criterion_number: Option<i64>,
     pub rationale: String,
-    pub confidence: f64,
+    pub confidence: Option<f64>,
     pub model_name: Option<String>,
+    pub ai_call_id: Option<i64>,
+    pub auto_applied: bool,
+    pub overridden_at: Option<String>,
+    pub overridden_to: Option<String>,
     pub run_id: String,
     pub created_at: String,
+}
+
+fn proposal_from_row(r: &sqlx::sqlite::SqliteRow) -> AiScreeningProposal {
+    AiScreeningProposal {
+        id: r.get("id"),
+        article_id: r.get("article_id"),
+        rater: r.get("rater"),
+        stage: r.get("stage"),
+        mode: r.get("mode"),
+        decision: r.get("decision"),
+        criterion_number: r.get("criterion_number"),
+        rationale: r.get("rationale"),
+        confidence: r.get("confidence"),
+        model_name: r.get("model_name"),
+        ai_call_id: r.get("ai_call_id"),
+        auto_applied: r.get::<i64, _>("auto_applied") != 0,
+        overridden_at: r.get("overridden_at"),
+        overridden_to: r.get("overridden_to"),
+        run_id: r.get("run_id"),
+        created_at: r.get("created_at"),
+    }
+}
+
+/// Input for recording one AI screening decision.
+pub struct NewScreeningDecision<'a> {
+    pub article_id: i64,
+    pub stage: &'a str,
+    pub mode: &'a str,
+    pub decision: &'a str,
+    pub criterion_number: Option<i64>,
+    pub rationale: &'a str,
+    pub confidence: Option<f64>,
+    pub model_name: Option<&'a str>,
+    pub ai_call_id: Option<i64>,
+    pub auto_applied: bool,
+    pub run_id: &'a str,
+}
+
+/// One row of the AI screening log, with call provenance and open-event aggregates.
+#[derive(Debug, Serialize, Clone)]
+pub struct AiScreeningLogEntry {
+    #[serde(flatten)]
+    pub proposal: AiScreeningProposal,
+    pub article_title: String,
+    pub model_used: Option<String>,
+    pub prompt_hash: Option<String>,
+    pub temperature: Option<f64>,
+    pub seed: Option<i64>,
+    pub open_count: i64,
+    pub first_opened_at: Option<String>,
+    pub last_opened_at: Option<String>,
+    pub last_opened_by: Option<String>,
+    pub is_latest: bool,
+    pub review_status: Option<String>,
+}
+
+impl std::ops::Deref for AiScreeningLogEntry {
+    type Target = AiScreeningProposal;
+    fn deref(&self) -> &AiScreeningProposal {
+        &self.proposal
+    }
+}
+
+#[derive(Debug, Serialize, Default, Clone)]
+pub struct AttentionCounts {
+    pub title_abstract_auto: i64,
+    pub title_abstract_pending: i64,
+    pub fulltext_auto: i64,
+    pub fulltext_pending: i64,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -482,7 +559,6 @@ impl ProjectDb {
         })
     }
 
-    /// Apply a single project field update from a decision and append to the log.
     /// Record the provenance of one AI call and return its id.
     pub async fn insert_ai_call(&self, purpose: &str, meta: &crate::suggest::CallMeta) -> Result<i64> {
         let now = chrono::Utc::now().to_rfc3339();
@@ -503,6 +579,7 @@ impl ProjectDb {
         Ok(id)
     }
 
+    /// Apply a single project field update from a decision and append to the log.
     pub async fn apply_decision(&self, d: DecisionInput) -> Result<i64> {
         let now = chrono::Utc::now().to_rfc3339();
 
@@ -3330,85 +3407,72 @@ impl ProjectDb {
 
     // ── AI Screening proposals ────────────────────────────────────────────
 
-    pub async fn save_ai_screening_proposal(
-        &self,
-        article_id: i64,
-        rater: i64,
-        decision: &str,
-        criterion_number: Option<i64>,
-        rationale: &str,
-        confidence: f64,
-        model_name: Option<&str>,
-        run_id: &str,
-    ) -> Result<i64> {
+    pub async fn save_ai_screening_decision(&self, d: &NewScreeningDecision<'_>) -> Result<i64> {
         let now = chrono::Utc::now().to_rfc3339();
         let result = sqlx::query(
             "INSERT INTO ai_screening_proposal \
-             (article_id, rater, decision, criterion_number, rationale, confidence, model_name, run_id, created_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             (article_id, rater, stage, mode, decision, criterion_number, rationale, confidence, \
+              model_name, ai_call_id, auto_applied, run_id, created_at) \
+             VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
-        .bind(article_id)
-        .bind(rater)
-        .bind(decision)
-        .bind(criterion_number)
-        .bind(rationale)
-        .bind(confidence)
-        .bind(model_name)
-        .bind(run_id)
+        .bind(d.article_id)
+        .bind(d.stage)
+        .bind(d.mode)
+        .bind(d.decision)
+        .bind(d.criterion_number)
+        .bind(d.rationale)
+        .bind(d.confidence)
+        .bind(d.model_name)
+        .bind(d.ai_call_id)
+        .bind(d.auto_applied as i64)
+        .bind(d.run_id)
         .bind(now)
         .execute(&self.pool)
         .await?;
         Ok(result.last_insert_rowid())
     }
 
+    const PROPOSAL_COLS: &'static str = "id, article_id, rater, stage, mode, decision, criterion_number, \
+        rationale, confidence, model_name, ai_call_id, auto_applied, overridden_at, overridden_to, run_id, created_at";
+
     pub async fn get_ai_screening_proposal_by_id(
         &self,
         id: i64,
     ) -> Result<Option<AiScreeningProposal>> {
-        let row = sqlx::query(
-            "SELECT id, article_id, rater, decision, criterion_number, rationale, confidence, model_name, run_id, created_at \
-             FROM ai_screening_proposal WHERE id = ?",
-        )
-        .bind(id)
-        .fetch_optional(&self.pool)
-        .await?;
-        Ok(row.map(|r| AiScreeningProposal {
-            id: r.get("id"),
-            article_id: r.get("article_id"),
-            rater: r.get("rater"),
-            decision: r.get("decision"),
-            criterion_number: r.get("criterion_number"),
-            rationale: r.get("rationale"),
-            confidence: r.get("confidence"),
-            model_name: r.get("model_name"),
-            run_id: r.get("run_id"),
-            created_at: r.get("created_at"),
-        }))
+        let sql = format!("SELECT {} FROM ai_screening_proposal WHERE id = ?", Self::PROPOSAL_COLS);
+        let row = sqlx::query(&sql).bind(id).fetch_optional(&self.pool).await?;
+        Ok(row.map(|r| proposal_from_row(&r)))
+    }
+
+    /// Newest decision for (article, stage), or None.
+    pub async fn latest_ai_screening_decision(
+        &self,
+        article_id: i64,
+        stage: &str,
+    ) -> Result<Option<AiScreeningProposal>> {
+        let sql = format!(
+            "SELECT {} FROM ai_screening_proposal WHERE article_id = ? AND stage = ? \
+             ORDER BY id DESC LIMIT 1",
+            Self::PROPOSAL_COLS
+        );
+        let row = sqlx::query(&sql)
+            .bind(article_id)
+            .bind(stage)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.map(|r| proposal_from_row(&r)))
     }
 
     pub async fn list_ai_screening_proposals_for_article(
         &self,
         article_id: i64,
     ) -> Result<Vec<AiScreeningProposal>> {
-        let rows = sqlx::query(
-            "SELECT id, article_id, rater, decision, criterion_number, rationale, confidence, model_name, run_id, created_at \
-             FROM ai_screening_proposal WHERE article_id = ? ORDER BY rater",
-        )
-        .bind(article_id)
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows.into_iter().map(|r| AiScreeningProposal {
-            id: r.get("id"),
-            article_id: r.get("article_id"),
-            rater: r.get("rater"),
-            decision: r.get("decision"),
-            criterion_number: r.get("criterion_number"),
-            rationale: r.get("rationale"),
-            confidence: r.get("confidence"),
-            model_name: r.get("model_name"),
-            run_id: r.get("run_id"),
-            created_at: r.get("created_at"),
-        }).collect())
+        let sql = format!(
+            "SELECT {} FROM ai_screening_proposal WHERE article_id = ? AND stage = 'title_abstract' ORDER BY rater",
+            Self::PROPOSAL_COLS
+        );
+        let rows = sqlx::query(&sql).bind(article_id).fetch_all(&self.pool).await?;
+        Ok(rows.iter().map(proposal_from_row).collect())
     }
 
     pub async fn list_ai_screening_proposals_for_articles(
@@ -3423,27 +3487,161 @@ impl ProjectDb {
             .collect::<Vec<_>>()
             .join(",");
         let sql = format!(
-            "SELECT id, article_id, rater, decision, criterion_number, rationale, confidence, model_name, run_id, created_at \
-             FROM ai_screening_proposal WHERE article_id IN ({}) ORDER BY article_id, rater",
-            placeholders
+            "SELECT {} FROM ai_screening_proposal WHERE article_id IN ({}) AND stage = 'title_abstract' \
+             ORDER BY article_id, rater",
+            Self::PROPOSAL_COLS, placeholders
         );
         let mut q = sqlx::query(&sql);
         for id in article_ids {
             q = q.bind(*id);
         }
         let rows = q.fetch_all(&self.pool).await?;
-        Ok(rows.into_iter().map(|r| AiScreeningProposal {
-            id: r.get("id"),
-            article_id: r.get("article_id"),
-            rater: r.get("rater"),
-            decision: r.get("decision"),
-            criterion_number: r.get("criterion_number"),
-            rationale: r.get("rationale"),
-            confidence: r.get("confidence"),
-            model_name: r.get("model_name"),
-            run_id: r.get("run_id"),
-            created_at: r.get("created_at"),
-        }).collect())
+        Ok(rows.iter().map(proposal_from_row).collect())
+    }
+
+    /// Record that the researcher opened an AI decision (`via` = detail | decision).
+    pub async fn record_ai_screening_open(&self, proposal_id: i64, opened_by: &str, via: &str) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO ai_screening_open (proposal_id, opened_by, via, opened_at) VALUES (?, ?, ?, ?)",
+        )
+        .bind(proposal_id)
+        .bind(opened_by)
+        .bind(via)
+        .bind(chrono::Utc::now().to_rfc3339())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Mark the latest un-overridden, non-error AI decision for (article, stage) as
+    /// overridden, but only if the human decision differs from it.
+    pub async fn mark_ai_decision_overridden(
+        &self,
+        article_id: i64,
+        stage: &str,
+        human_decision: &str,
+    ) -> Result<()> {
+        sqlx::query(
+            "UPDATE ai_screening_proposal SET overridden_at = ?, overridden_to = ? \
+             WHERE id = (SELECT id FROM ai_screening_proposal \
+                         WHERE article_id = ? AND stage = ? AND overridden_at IS NULL \
+                           AND decision NOT IN ('error','skipped') \
+                         ORDER BY id DESC LIMIT 1) \
+               AND decision != ?",
+        )
+        .bind(chrono::Utc::now().to_rfc3339())
+        .bind(human_decision)
+        .bind(article_id)
+        .bind(stage)
+        .bind(human_decision)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Full AI screening log with call provenance and open-event aggregates.
+    pub async fn list_ai_screening_log(
+        &self,
+        article_ids: Option<&[i64]>,
+        stage: Option<&str>,
+    ) -> Result<Vec<AiScreeningLogEntry>> {
+        let mut sql = String::from(
+            "SELECT p.id, p.article_id, p.rater, p.stage, p.mode, p.decision, p.criterion_number, \
+                    p.rationale, p.confidence, p.model_name, p.ai_call_id, p.auto_applied, \
+                    p.overridden_at, p.overridden_to, p.run_id, p.created_at, \
+                    a.title AS article_title, c.model_used, c.prompt_hash, c.temperature, c.seed, \
+                    (SELECT COUNT(*) FROM ai_screening_open o WHERE o.proposal_id = p.id) AS open_count, \
+                    (SELECT MIN(o.opened_at) FROM ai_screening_open o WHERE o.proposal_id = p.id) AS first_opened_at, \
+                    (SELECT MAX(o.opened_at) FROM ai_screening_open o WHERE o.proposal_id = p.id) AS last_opened_at, \
+                    (SELECT o.opened_by FROM ai_screening_open o WHERE o.proposal_id = p.id \
+                       ORDER BY o.opened_at DESC, o.id DESC LIMIT 1) AS last_opened_by, \
+                    NOT EXISTS (SELECT 1 FROM ai_screening_proposal n \
+                                WHERE n.article_id = p.article_id AND n.stage = p.stage AND n.id > p.id) AS is_latest \
+             FROM ai_screening_proposal p \
+             JOIN article a ON a.id = p.article_id \
+             LEFT JOIN ai_call c ON c.id = p.ai_call_id \
+             WHERE 1=1",
+        );
+        if let Some(ids) = article_ids {
+            if ids.is_empty() {
+                return Ok(vec![]);
+            }
+            let ph = std::iter::repeat("?").take(ids.len()).collect::<Vec<_>>().join(",");
+            sql.push_str(&format!(" AND p.article_id IN ({ph})"));
+        }
+        if stage.is_some() {
+            sql.push_str(" AND p.stage = ?");
+        }
+        sql.push_str(" ORDER BY p.article_id, p.stage, p.created_at, p.id");
+        let mut q = sqlx::query(&sql);
+        if let Some(ids) = article_ids {
+            for id in ids {
+                q = q.bind(*id);
+            }
+        }
+        if let Some(s) = stage {
+            q = q.bind(s);
+        }
+        let rows = q.fetch_all(&self.pool).await?;
+        Ok(rows
+            .iter()
+            .map(|r| {
+                let proposal = proposal_from_row(r);
+                let open_count: i64 = r.get("open_count");
+                let review_status = crate::transparency::review_status(
+                    &proposal.decision,
+                    proposal.auto_applied,
+                    proposal.overridden_at.is_some(),
+                    open_count,
+                )
+                .map(str::to_string);
+                AiScreeningLogEntry {
+                    article_title: r.get("article_title"),
+                    model_used: r.get("model_used"),
+                    prompt_hash: r.get("prompt_hash"),
+                    temperature: r.get("temperature"),
+                    seed: r.get("seed"),
+                    open_count,
+                    first_opened_at: r.get("first_opened_at"),
+                    last_opened_at: r.get("last_opened_at"),
+                    last_opened_by: r.get("last_opened_by"),
+                    is_latest: r.get::<i64, _>("is_latest") != 0,
+                    review_status,
+                    proposal,
+                }
+            })
+            .collect())
+    }
+
+    /// Counts of latest AI screening decisions the researcher has not yet acted on.
+    pub async fn ai_screening_attention_counts(&self) -> Result<AttentionCounts> {
+        let rows = sqlx::query(
+            "SELECT p.stage, p.auto_applied, a.status, a.fulltext_status \
+             FROM ai_screening_proposal p JOIN article a ON a.id = p.article_id \
+             WHERE p.overridden_at IS NULL AND p.decision NOT IN ('error','skipped') \
+               AND NOT EXISTS (SELECT 1 FROM ai_screening_open o WHERE o.proposal_id = p.id) \
+               AND NOT EXISTS (SELECT 1 FROM ai_screening_proposal n \
+                               WHERE n.article_id = p.article_id AND n.stage = p.stage AND n.id > p.id)",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        let mut c = AttentionCounts::default();
+        for r in rows {
+            let stage: String = r.get("stage");
+            let auto = r.get::<i64, _>("auto_applied") != 0;
+            let status: String = r.get("status");
+            let ft: Option<String> = r.get("fulltext_status");
+            let ta = stage == "title_abstract";
+            if auto {
+                if ta { c.title_abstract_auto += 1 } else { c.fulltext_auto += 1 }
+            } else {
+                let undecided = if ta { status == "retrieved" } else { status == "included" && ft.is_none() };
+                if undecided {
+                    if ta { c.title_abstract_pending += 1 } else { c.fulltext_pending += 1 }
+                }
+            }
+        }
+        Ok(c)
     }
 
 
@@ -3962,6 +4160,168 @@ pub(crate) async fn test_db() -> (ProjectDb, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
     let db = ProjectDb::open_or_create(dir.path(), Some("test".into())).await.unwrap();
     (db, dir)
+}
+
+/// Open a temp DB migrated only up to (excluding) `version`, to seed old-shape rows.
+/// Call `finish_migrations` afterwards to apply the rest.
+#[cfg(test)]
+pub(crate) async fn test_db_before(version: i64) -> (ProjectDb, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join(DB_FILENAME);
+    let opts = SqliteConnectOptions::from_str(&format!("sqlite://{}", db_path.display()))
+        .unwrap()
+        .create_if_missing(true)
+        .foreign_keys(true)
+        .journal_mode(SqliteJournalMode::Wal);
+    let pool = SqlitePoolOptions::new().max_connections(4).connect_with(opts).await.unwrap();
+    let mut migrator = sqlx::migrate!("./migrations");
+    migrator.migrations = migrator
+        .migrations
+        .iter()
+        .filter(|m| m.version < version)
+        .cloned()
+        .collect::<Vec<_>>()
+        .into();
+    migrator.run(&pool).await.unwrap();
+    (ProjectDb { pool, workspace: dir.path().to_path_buf() }, dir)
+}
+
+/// Apply every remaining migration to a DB from `test_db_before`.
+#[cfg(test)]
+pub(crate) async fn finish_migrations(db: &ProjectDb) {
+    sqlx::migrate!("./migrations").run(&db.pool).await.unwrap();
+}
+
+#[cfg(test)]
+mod screening_log_tests {
+    use super::*;
+    use crate::transparency::researcher_name;
+
+    async fn art(db: &ProjectDb, status: &str) -> i64 {
+        sqlx::query(
+            "INSERT INTO article (title, status, created_at, updated_at) VALUES ('T', ?, 'n', 'n')",
+        )
+        .bind(status)
+        .execute(&db.pool)
+        .await
+        .unwrap()
+        .last_insert_rowid()
+    }
+
+    fn nd<'a>(article_id: i64, decision: &'a str, auto: bool, conf: Option<f64>) -> NewScreeningDecision<'a> {
+        NewScreeningDecision {
+            article_id,
+            stage: "title_abstract",
+            mode: "screening",
+            decision,
+            criterion_number: None,
+            rationale: "R",
+            confidence: conf,
+            model_name: Some("m"),
+            ai_call_id: None,
+            auto_applied: auto,
+            run_id: "run",
+        }
+    }
+
+    #[tokio::test]
+    async fn two_opens_counted_and_untouched_never_opened() {
+        let (db, _d) = test_db().await;
+        let a = art(&db, "excluded").await;
+        let b = art(&db, "excluded").await;
+        let pa = db.save_ai_screening_decision(&nd(a, "exclude", true, Some(0.95))).await.unwrap();
+        db.save_ai_screening_decision(&nd(b, "exclude", true, Some(0.95))).await.unwrap();
+        db.record_ai_screening_open(pa, &researcher_name(), "detail").await.unwrap();
+        db.record_ai_screening_open(pa, &researcher_name(), "decision").await.unwrap();
+        let log = db.list_ai_screening_log(None, None).await.unwrap();
+        let ea = log.iter().find(|e| e.article_id == a).unwrap();
+        let eb = log.iter().find(|e| e.article_id == b).unwrap();
+        assert_eq!(ea.open_count, 2);
+        assert!(ea.first_opened_at.as_ref().unwrap() <= ea.last_opened_at.as_ref().unwrap());
+        assert_eq!(ea.last_opened_by.as_deref(), Some(researcher_name().as_str()));
+        assert_eq!(ea.review_status.as_deref(), Some("opened"));
+        assert_eq!(eb.open_count, 0);
+        assert!(eb.first_opened_at.is_none());
+        assert_eq!(eb.review_status.as_deref(), Some("auto_applied"));
+    }
+
+    #[tokio::test]
+    async fn latest_per_article_stage_wins() {
+        let (db, _d) = test_db().await;
+        let a = art(&db, "retrieved").await;
+        db.save_ai_screening_decision(&nd(a, "uncertain", false, Some(0.5))).await.unwrap();
+        let second = db.save_ai_screening_decision(&nd(a, "uncertain", false, Some(0.6))).await.unwrap();
+        let log = db.list_ai_screening_log(Some(&[a]), Some("title_abstract")).await.unwrap();
+        assert_eq!(log.len(), 2);
+        let latest: Vec<_> = log.iter().filter(|e| e.is_latest).collect();
+        assert_eq!(latest.len(), 1);
+        assert_eq!(latest[0].id, second);
+        assert_eq!(db.latest_ai_screening_decision(a, "title_abstract").await.unwrap().unwrap().id, second);
+        assert_eq!(db.ai_screening_attention_counts().await.unwrap().title_abstract_pending, 1);
+    }
+
+    #[tokio::test]
+    async fn override_only_when_decision_differs() {
+        let (db, _d) = test_db().await;
+        let a = art(&db, "excluded").await;
+        let id = db.save_ai_screening_decision(&nd(a, "exclude", true, Some(0.95))).await.unwrap();
+        db.mark_ai_decision_overridden(a, "title_abstract", "exclude").await.unwrap();
+        assert!(db.get_ai_screening_proposal_by_id(id).await.unwrap().unwrap().overridden_at.is_none());
+        db.mark_ai_decision_overridden(a, "title_abstract", "include").await.unwrap();
+        let p = db.get_ai_screening_proposal_by_id(id).await.unwrap().unwrap();
+        assert!(p.overridden_at.is_some());
+        assert_eq!(p.overridden_to.as_deref(), Some("include"));
+    }
+
+    #[tokio::test]
+    async fn attention_counts_ignore_articles_no_longer_undecided() {
+        let (db, _d) = test_db().await;
+        let a = art(&db, "retrieved").await;
+        db.save_ai_screening_decision(&nd(a, "uncertain", false, Some(0.4))).await.unwrap();
+        assert_eq!(db.ai_screening_attention_counts().await.unwrap().title_abstract_pending, 1);
+        sqlx::query("UPDATE article SET status='excluded' WHERE id=?").bind(a).execute(&db.pool).await.unwrap();
+        assert_eq!(db.ai_screening_attention_counts().await.unwrap().title_abstract_pending, 0);
+    }
+
+    #[tokio::test]
+    async fn attention_counts_auto_applied_and_fulltext() {
+        let (db, _d) = test_db().await;
+        let a = art(&db, "excluded").await;
+        db.save_ai_screening_decision(&nd(a, "exclude", true, Some(0.95))).await.unwrap();
+        let b = art(&db, "included").await;
+        let mut ft = nd(b, "uncertain", false, None);
+        ft.stage = "fulltext";
+        db.save_ai_screening_decision(&ft).await.unwrap();
+        let c = db.ai_screening_attention_counts().await.unwrap();
+        assert_eq!(c.title_abstract_auto, 1);
+        assert_eq!(c.fulltext_pending, 1);
+        assert_eq!(c.fulltext_auto, 0);
+    }
+
+    #[tokio::test]
+    async fn migration_backfills_auto_applied() {
+        let (db, _d) = test_db_before(28).await;
+        let a = art(&db, "excluded").await;
+        sqlx::query("UPDATE article SET ai_rationale='R' WHERE id=?").bind(a).execute(&db.pool).await.unwrap();
+        let b = art(&db, "retrieved").await;
+        for (art_id, dec) in [(a, "exclude"), (b, "uncertain")] {
+            sqlx::query(
+                "INSERT INTO ai_screening_proposal (article_id, rater, decision, rationale, confidence, run_id, created_at) \
+                 VALUES (?, 1, ?, 'R', 0.9, 'r', 'n')",
+            )
+            .bind(art_id).bind(dec).execute(&db.pool).await.unwrap();
+        }
+        finish_migrations(&db).await;
+        let rows = db.list_ai_screening_log(None, None).await.unwrap();
+        assert_eq!(rows.iter().find(|e| e.article_id == a).unwrap().auto_applied, true);
+        assert_eq!(rows.iter().find(|e| e.article_id == b).unwrap().auto_applied, false);
+        assert_eq!(rows[0].stage, "title_abstract");
+        sqlx::query(
+            "INSERT INTO ai_screening_proposal (article_id, decision, rationale, confidence, run_id, created_at) \
+             VALUES (?, 'error', 'x', NULL, 'r', 'n')",
+        )
+        .bind(b).execute(&db.pool).await.unwrap();
+    }
 }
 
 #[cfg(test)]
