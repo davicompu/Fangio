@@ -1821,6 +1821,7 @@ async fn run_ai_fulltext_screening(
     let paused = Arc::clone(&state.fulltext_paused);
     let cancelled = Arc::clone(&state.fulltext_cancelled);
 
+    let run_id = chrono::Utc::now().timestamp_millis().to_string();
     let mut res = FulltextScreenResult { processed: 0, kept: 0, excluded: 0, uncertain: 0, skipped_no_pdf: 0 };
     for (i, c) in candidates.iter().enumerate() {
         if cancelled.load(Ordering::SeqCst) { break; }
@@ -1833,9 +1834,27 @@ async fn run_ai_fulltext_screening(
             "fulltext_screen:progress",
             FulltextScreenProgress { done: i, total, title: c.title.clone() },
         );
+        let (dbr, modelr, run_idr, cid) = (&db, &model, &run_id, c.id);
+        let skip = |reason: &'static str| async move {
+            dbr.save_ai_screening_decision(&db::NewScreeningDecision {
+                article_id: cid,
+                stage: "fulltext",
+                mode: "screening",
+                decision: "skipped",
+                criterion_number: None,
+                rationale: reason,
+                confidence: None,
+                model_name: Some(modelr),
+                ai_call_id: None,
+                auto_applied: false,
+                run_id: run_idr,
+            })
+            .await
+        };
         let path = match c.pdf_path.as_deref() {
             Some(p) => p,
             None => {
+                let _ = skip("No PDF attached").await;
                 res.skipped_no_pdf += 1;
                 continue;
             }
@@ -1843,30 +1862,76 @@ async fn run_ai_fulltext_screening(
         let text = match pdf::extract(std::path::Path::new(path)) {
             Ok(e) => e.text,
             Err(_) => {
+                let _ = skip("PDF text could not be extracted").await;
                 res.skipped_no_pdf += 1;
                 continue;
             }
         };
-        let decision = match suggest::screen_article_fulltext(
+        let (decision, meta) = match suggest::screen_article_fulltext(
             &base_url, &model, &c.title, &text, &domain, &criteria, &base_prompt, &profile, temperature, seed, api_key.as_deref(),
         )
         .await
         {
-            Ok((d, _meta)) => d,
-            Err(_) => {
+            Ok(r) => r,
+            Err(e) => {
+                let msg = transparency::truncate_chars(&e.to_string(), 500);
+                let _ = db
+                    .save_ai_screening_decision(&db::NewScreeningDecision {
+                        article_id: c.id,
+                        stage: "fulltext",
+                        mode: "screening",
+                        decision: "error",
+                        criterion_number: None,
+                        rationale: &msg,
+                        confidence: None,
+                        model_name: Some(&model),
+                        ai_call_id: None,
+                        auto_applied: false,
+                        run_id: &run_id,
+                    })
+                    .await;
                 res.uncertain += 1;
                 continue;
             }
         };
         res.processed += 1;
-        let confident = decision.confidence >= threshold;
-        match decision.decision.as_str() {
-            "include" if confident => {
+        let call_id = db.insert_ai_call("screening_ft", &meta).await.ok();
+        let (action, auto_applied) =
+            transparency::screening_outcome(&decision.decision, decision.confidence, threshold, false);
+        let _ = db
+            .save_ai_screening_decision(&db::NewScreeningDecision {
+                article_id: c.id,
+                stage: "fulltext",
+                mode: "screening",
+                decision: &decision.decision,
+                criterion_number: decision.criterion_number,
+                rationale: &decision.rationale,
+                confidence: Some(decision.confidence),
+                model_name: Some(&model),
+                ai_call_id: call_id,
+                auto_applied,
+                run_id: &run_id,
+            })
+            .await;
+        match action {
+            Some("include") => {
                 let _ = db.fulltext_keep(c.id).await;
+                let _ = db.set_ai_screening_fields(c.id, &decision.rationale, decision.confidence).await;
+                let _ = db
+                    .log_review_event(
+                        "arranging",
+                        "fulltext_include",
+                        Some(&format!("article {}", c.id)),
+                        Some(&format!("AI full-text inclusion: {}", c.title)),
+                        Some(&decision.rationale),
+                        "ai",
+                    )
+                    .await;
                 res.kept += 1;
             }
-            "exclude" if confident => {
+            Some("exclude") => {
                 if db.fulltext_exclude(c.id, decision.criterion_number, Some(decision.rationale.as_str())).await.is_ok() {
+                    let _ = db.set_ai_screening_fields(c.id, &decision.rationale, decision.confidence).await;
                     let _ = db.delete_chunks_for_article(c.id).await;
                     let _ = db
                         .log_review_event(
@@ -3494,10 +3559,27 @@ async fn run_ai_screening(
         )
         .await;
 
-        let decision = match result {
-            Ok((d, _meta)) => d,
+        let mode = if args.exclude_only { "purification" } else { "screening" };
+        let (decision, meta) = match result {
+            Ok(r) => r,
             Err(e) => {
                 eprintln!("AI screening error for article {}: {e}", article.id);
+                let msg = transparency::truncate_chars(&e.to_string(), 500);
+                let _ = db
+                    .save_ai_screening_decision(&db::NewScreeningDecision {
+                        article_id: article.id,
+                        stage: "title_abstract",
+                        mode,
+                        decision: "error",
+                        criterion_number: None,
+                        rationale: &msg,
+                        confidence: None,
+                        model_name: Some(&model),
+                        ai_call_id: None,
+                        auto_applied: false,
+                        run_id: &run_id,
+                    })
+                    .await;
                 let _ = app.emit(
                     "screen:progress",
                     AiScreeningProgress {
@@ -3511,105 +3593,68 @@ async fn run_ai_screening(
             }
         };
 
-        let confident_exclude =
-            decision.decision == "exclude" && decision.confidence >= threshold;
+        let call_id = db.insert_ai_call("screening_ta", &meta).await.ok();
+        let (action, auto_applied) =
+            transparency::screening_outcome(&decision.decision, decision.confidence, threshold, args.exclude_only);
+        let _ = db
+            .save_ai_screening_decision(&db::NewScreeningDecision {
+                article_id: article.id,
+                stage: "title_abstract",
+                mode,
+                decision: &decision.decision,
+                criterion_number: decision.criterion_number,
+                rationale: &decision.rationale,
+                confidence: Some(decision.confidence),
+                model_name: Some(&model),
+                ai_call_id: call_id,
+                auto_applied,
+                run_id: &run_id,
+            })
+            .await;
 
-        if confident_exclude {
-            // A confident exclusion applies in either mode.
-            db.save_ai_screening_decision(&db::NewScreeningDecision {
-                article_id: article.id,
-                stage: "title_abstract",
-                mode: if args.exclude_only { "purification" } else { "screening" },
-                decision: &decision.decision,
-                criterion_number: decision.criterion_number,
-                rationale: &decision.rationale,
-                confidence: Some(decision.confidence),
-                model_name: Some(&model),
-                ai_call_id: None,
-                auto_applied: true,
-                run_id: &run_id,
-            }).await.ok();
-            db.apply_ai_outcome(
-                article.id,
-                "exclude",
-                decision.criterion_number,
-                &decision.rationale,
-                decision.confidence,
-            )
-            .await
-            .map_err(err)?;
-            excluded += 1;
-            if let Some(n) = decision.criterion_number {
-                *excluded_per_criterion.entry(n).or_insert(0) += 1;
-            }
-            let _ = app.emit(
-                "screen:progress",
-                AiScreeningProgress {
-                    done: i + 1, total, article_title: article.title.clone(),
-                    decision: "exclude".into(),
-                },
-            );
-        } else if args.exclude_only {
-            // Purification: only excludes. The article isn't excluded, so leave it
-            // pending (status='retrieved') untouched — no decision, no note.
-            uncertain += 1;
-            let _ = app.emit(
-                "screen:progress",
-                AiScreeningProgress {
-                    done: i + 1, total, article_title: article.title.clone(),
-                    decision: "pending".into(),
-                },
-            );
-        } else {
-            // Title/abstract screening: record the rater's proposal and apply a
-            // confident include; uncertain / low-confidence stay pending with the
-            // rationale kept so the researcher sees the AI's reasoning.
-            let confident_include =
-                decision.decision == "include" && decision.confidence >= threshold;
-            db.save_ai_screening_decision(&db::NewScreeningDecision {
-                article_id: article.id,
-                stage: "title_abstract",
-                mode: "screening",
-                decision: &decision.decision,
-                criterion_number: decision.criterion_number,
-                rationale: &decision.rationale,
-                confidence: Some(decision.confidence),
-                model_name: Some(&model),
-                ai_call_id: None,
-                auto_applied: confident_include,
-                run_id: &run_id,
-            }).await.ok();
-            if confident_include {
+        let progress = match action {
+            Some("exclude") => {
                 db.apply_ai_outcome(
-                    article.id, "include", None, &decision.rationale, decision.confidence,
+                    article.id, "exclude", decision.criterion_number, &decision.rationale, decision.confidence,
                 )
                 .await
                 .map_err(err)?;
+                excluded += 1;
+                if let Some(n) = decision.criterion_number {
+                    *excluded_per_criterion.entry(n).or_insert(0) += 1;
+                }
+                "exclude"
+            }
+            Some("include") => {
+                db.apply_ai_outcome(article.id, "include", None, &decision.rationale, decision.confidence)
+                    .await
+                    .map_err(err)?;
                 included += 1;
-                let _ = app.emit(
-                    "screen:progress",
-                    AiScreeningProgress {
-                        done: i + 1, total, article_title: article.title.clone(),
-                        decision: "include".into(),
-                    },
-                );
-            } else {
+                "include"
+            }
+            Some(_) => {
+                // Uncertain / low-confidence: stay pending, rationale kept for the researcher.
                 db.apply_ai_outcome(
-                    article.id, "uncertain", decision.criterion_number,
-                    &decision.rationale, decision.confidence,
+                    article.id, "uncertain", decision.criterion_number, &decision.rationale, decision.confidence,
                 )
                 .await
                 .map_err(err)?;
                 uncertain += 1;
-                let _ = app.emit(
-                    "screen:progress",
-                    AiScreeningProgress {
-                        done: i + 1, total, article_title: article.title.clone(),
-                        decision: "uncertain".into(),
-                    },
-                );
+                "uncertain"
             }
-        }
+            None => {
+                // Purification: article untouched, stays pending.
+                uncertain += 1;
+                "pending"
+            }
+        };
+        let _ = app.emit(
+            "screen:progress",
+            AiScreeningProgress {
+                done: i + 1, total, article_title: article.title.clone(),
+                decision: progress.into(),
+            },
+        );
     }
 
     db.record_telemetry(

@@ -37,9 +37,49 @@ pub fn researcher_name() -> String {
         .unwrap_or_else(|| "researcher".to_string())
 }
 
+/// Article change to apply for a returned screening decision, and whether it
+/// was applied automatically. `None` leaves the article untouched (purification).
+pub fn screening_outcome(
+    decision: &str,
+    confidence: f64,
+    threshold: f64,
+    exclude_only: bool,
+) -> (Option<&'static str>, bool) {
+    let confident = confidence >= threshold;
+    if decision == "exclude" && confident {
+        (Some("exclude"), true)
+    } else if exclude_only {
+        (None, false)
+    } else if decision == "include" && confident {
+        (Some("include"), true)
+    } else {
+        (Some("uncertain"), false)
+    }
+}
+
+/// Truncate to at most `max` chars on a char boundary.
+pub fn truncate_chars(s: &str, max: usize) -> String {
+    s.chars().take(max).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn outcome_matches_previous_threshold_rules() {
+        assert_eq!(screening_outcome("exclude", 0.90, 0.90, false), (Some("exclude"), true));
+        assert_eq!(screening_outcome("exclude", 0.89, 0.90, false), (Some("uncertain"), false));
+        assert_eq!(screening_outcome("include", 0.95, 0.90, false), (Some("include"), true));
+        assert_eq!(screening_outcome("include", 0.95, 0.90, true), (None, false));
+        assert_eq!(screening_outcome("exclude", 0.95, 0.90, true), (Some("exclude"), true));
+        assert_eq!(screening_outcome("uncertain", 0.99, 0.90, false), (Some("uncertain"), false));
+    }
+
+    #[test]
+    fn truncates_on_char_boundary() {
+        assert_eq!(truncate_chars("ééé", 2), "éé");
+    }
 
     #[test]
     fn status_precedence() {

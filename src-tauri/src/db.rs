@@ -1755,6 +1755,18 @@ impl ProjectDb {
     /// Record an AI screening decision on an article.
     /// decision: "include" | "exclude" | "uncertain"
     /// For "uncertain" the status stays 'retrieved'; ai_rationale and ai_confidence are stored.
+    /// Store the AI's rationale/confidence on an article without touching its status.
+    pub async fn set_ai_screening_fields(&self, article_id: i64, rationale: &str, confidence: f64) -> Result<()> {
+        sqlx::query("UPDATE article SET ai_rationale = ?, ai_confidence = ?, updated_at = ? WHERE id = ?")
+            .bind(rationale)
+            .bind(confidence)
+            .bind(chrono::Utc::now().to_rfc3339())
+            .bind(article_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     pub async fn apply_ai_outcome(
         &self,
         article_id: i64,
