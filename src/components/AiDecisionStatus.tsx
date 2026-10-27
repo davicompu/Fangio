@@ -77,10 +77,18 @@ export function AiDecisionLine({
           <span className="italic text-[var(--color-paper-400)]">{muted}</span>
         ) : (
           <>
-            {entry.decision === "uncertain" && (
+            {entry.decision === "uncertain" ? (
               <span className="font-medium text-[var(--color-warn-600)] mr-1">AI couldn't decide —</span>
+            ) : (
+              <span className="font-medium text-[var(--color-paper-600)] mr-1">
+                AI: {entry.decision === "include" ? "include" : "exclude"} —
+              </span>
             )}
-            <span className="line-clamp-2">{cleanScreenerRationale(entry.rationale)}</span>
+            <span className="line-clamp-2">
+              {entry.rationale.trim()
+                ? cleanScreenerRationale(entry.rationale)
+                : <span className="italic text-[var(--color-paper-400)]">no reason recorded</span>}
+            </span>
             {entry.confidence !== null && (
               <span className="ml-1 text-[var(--color-paper-400)]">
                 ({Math.round(entry.confidence * 100)}% confidence)
@@ -234,7 +242,13 @@ export function AiDecisionDetailDialog({
               )}
             </dl>
             {hasDecision ? (
-              <RationaleBody text={entry.rationale} confidence={null} />
+              entry.rationale.trim() ? (
+                <RationaleBody text={entry.rationale} confidence={null} />
+              ) : (
+                <p className="text-[12px] italic text-[var(--color-paper-500)]">
+                  No reason was recorded for this decision.
+                </p>
+              )
             ) : (
               <p className="text-[12px] italic text-[var(--color-paper-500)]">
                 {entry.decision === "skipped" ? "Skipped — no PDF" : "AI error — no decision"}

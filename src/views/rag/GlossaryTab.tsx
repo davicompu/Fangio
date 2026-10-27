@@ -115,6 +115,9 @@ export function GlossaryTab() {
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
+            autoCapitalize="off"
+            autoCorrect="off"
+            spellCheck={false}
             placeholder="Search terms…"
             className="w-full pl-8 pr-3 py-1.5 text-[12px] rounded-[var(--radius-xs)] border border-[var(--color-paper-300)] bg-[var(--color-paper-50)] focus:outline-none focus:ring-1 focus:ring-[var(--color-accent-400)] transition-paper"
           />
@@ -316,7 +319,7 @@ export function GlossaryTab() {
       {!loading && filtered.length > 0 && (
         <nav
           aria-label="Jump to letter"
-          className="shrink-0 w-7 flex flex-col items-center justify-center gap-px py-2 border-l border-[var(--color-paper-200)] bg-white overflow-y-auto"
+          className="shrink-0 w-7 flex flex-col items-center gap-px py-2 border-l border-[var(--color-paper-200)] bg-white overflow-y-auto [&>:first-child]:mt-auto [&>:last-child]:mb-auto"
         >
           {INDEX_LETTERS.map((l) => {
             const has = firstIdByLetter.has(l);

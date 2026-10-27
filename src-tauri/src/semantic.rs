@@ -235,6 +235,28 @@ pub fn mentions(text: &str, text_lower: &str, name: &str) -> bool {
     false
 }
 
+/// A readable preview of a PDF passage: single spaces, no leading word
+/// fragment (chunks can start mid-word), at most `max` characters ending on a
+/// whole word.
+pub fn passage_preview(text: &str, max: usize) -> String {
+    let mut words: Vec<&str> = text.split_whitespace().collect();
+    if words.len() > 1 && words[0].chars().next().is_some_and(|c| c.is_lowercase()) {
+        words.remove(0);
+    }
+    let mut out = String::new();
+    for w in words {
+        let extra = if out.is_empty() { w.chars().count() } else { w.chars().count() + 1 };
+        if out.chars().count() + extra > max {
+            break;
+        }
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(w);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -372,5 +394,12 @@ mod tests {
         let t = "Bloom’s taxonomy — naïve façade";
         assert!(mentions(t, &t.to_lowercase(), "Bloom’s taxonomy"));
         assert!(mentions(t, &t.to_lowercase(), "façade"));
+    }
+
+    #[test]
+    fn passage_preview_drops_fragment_and_ends_on_a_word() {
+        assert_eq!(passage_preview("y indicate cognitive  offloading in class", 30), "indicate cognitive offloading");
+        assert_eq!(passage_preview("Students rely on tools", 100), "Students rely on tools");
+        assert_eq!(passage_preview("word", 100), "word");
     }
 }

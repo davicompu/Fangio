@@ -219,6 +219,9 @@ export function LibraryTab() {
         <input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
+          autoCapitalize="off"
+          autoCorrect="off"
+          spellCheck={false}
           placeholder={mode === "ai"
             ? "Describe what you're looking for, e.g. students relying on chatbots instead of thinking"
             : "Search title, author, journal, DOI, database…"}

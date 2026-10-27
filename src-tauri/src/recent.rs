@@ -40,7 +40,7 @@ pub struct RecentProject {
     pub path: PathBuf,
     pub name: String,
     pub last_opened: String, // RFC3339
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub meta: RecentMeta,
     /// `true` when the project path still exists on this machine.
     /// Always `false` in the persisted JSON; set at list time by the backend.
@@ -61,6 +61,11 @@ fn store_path() -> PathBuf {
     base.join("recent.json")
 }
 
+/// `"meta": null` (or any missing value) reads as empty metadata.
+fn null_as_default<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<RecentMeta, D::Error> {
+    Ok(Option::<RecentMeta>::deserialize(d)?.unwrap_or_default())
+}
+
 impl RecentStore {
     pub fn load() -> Result<Self> {
         let p = store_path();
@@ -68,7 +73,30 @@ impl RecentStore {
             return Ok(Self::default());
         }
         let bytes = std::fs::read(&p)?;
-        Ok(serde_json::from_slice(&bytes).unwrap_or_default())
+        match Self::parse(&bytes) {
+            Some(store) => Ok(store),
+            None => {
+                // Not JSON at all: keep the file aside rather than letting the
+                // next save overwrite it, and start an empty list.
+                let aside = p.with_extension(format!("unreadable-{}.json", chrono::Utc::now().format("%Y%m%dT%H%M%SZ")));
+                std::fs::rename(&p, aside).ok();
+                Ok(Self::default())
+            }
+        }
+    }
+
+    /// Read the list one entry at a time, so a single malformed entry is
+    /// skipped instead of hiding every recent project. `None` if the file
+    /// isn't JSON with a `projects` list.
+    fn parse(bytes: &[u8]) -> Option<Self> {
+        let v: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+        let projects = v.get("projects")?.as_array()?;
+        Some(Self {
+            projects: projects
+                .iter()
+                .filter_map(|e| serde_json::from_value::<RecentProject>(e.clone()).ok())
+                .collect(),
+        })
     }
 
     pub fn save(&self) -> Result<()> {
@@ -103,5 +131,28 @@ impl RecentStore {
     pub fn clear() -> Result<()> {
         let store = Self::default();
         store.save()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RecentStore;
+
+    #[test]
+    fn one_bad_entry_does_not_hide_the_others() {
+        let json = br#"{"projects":[
+            {"path":"/a","name":"A","last_opened":"2026-01-01T00:00:00Z","meta":null},
+            {"path":"/b","name":"B"},
+            {"path":"/c","name":"C","last_opened":"2026-01-02T00:00:00Z","meta":{"domain":"x"}}
+        ]}"#;
+        let s = RecentStore::parse(json).unwrap();
+        let names: Vec<&str> = s.projects.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, vec!["A", "C"], "null meta is fine; the entry missing fields is skipped");
+    }
+
+    #[test]
+    fn non_json_is_reported_as_unreadable() {
+        assert!(RecentStore::parse(b"not json").is_none());
+        assert!(RecentStore::parse(br#"{"other":1}"#).is_none());
     }
 }

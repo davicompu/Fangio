@@ -189,8 +189,7 @@ export function CheckpointGate({ assembling, onAdvance }: Props) {
       </motion.div>
 
       <p className="mt-6 text-[12px] text-[var(--color-paper-500)] leading-relaxed max-w-xl">
-        Stage 2 (Arranging) is the next session's build. The gate is wired up and the decisions
-        you confirm here will be persisted, so when Stage 2 ships you can step straight in.
+        Each condition you confirm is saved to the project's decision log.
       </p>
     </div>
   );

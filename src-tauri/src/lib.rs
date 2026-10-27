@@ -5627,7 +5627,8 @@ async fn glossary_merge_suggestions(
     }
     let _ = db.set_setting("glossary.merge_threshold", &serde_json::json!(threshold)).await;
 
-    let terms = db.list_glossary_terms().await.map_err(err)?;
+    // With mentions, so counts match the glossary list (extracted + mentioned).
+    let terms = db.list_glossary_terms_with_mentions().await.map_err(err)?;
     let mut cache = db.glossary_term_embeddings(&embed_model).await.map_err(err)?;
     let missing: Vec<String> = terms
         .iter()
@@ -5655,7 +5656,13 @@ async fn glossary_merge_suggestions(
     let side = |t: &db::GlossaryTerm| MergeSide {
         id: t.id,
         term: t.term.clone(),
-        article_count: serde_json::from_str::<Vec<i64>>(&t.article_ids).map(|v| v.len()).unwrap_or(0),
+        article_count: {
+            let mut ids: Vec<i64> = serde_json::from_str(&t.article_ids).unwrap_or_default();
+            ids.extend(serde_json::from_str::<Vec<i64>>(&t.mention_ids).unwrap_or_default());
+            ids.sort_unstable();
+            ids.dedup();
+            ids.len()
+        },
     };
     let suggestions = semantic::merge_candidates(&vectors, threshold)
         .into_iter()
@@ -5784,7 +5791,7 @@ async fn semantic_search_articles(
             passage: m
                 .passage_chunk_id
                 .and_then(|id| texts.get(&id))
-                .map(|t| t.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(280).collect()),
+                .map(|t| semantic::passage_preview(t, 280)),
         })
         .collect();
     Ok(SemanticSearchResult {
