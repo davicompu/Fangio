@@ -2,6 +2,14 @@
 
 All notable user-facing changes to Reeves.
 
+## 0.3.2 — October 2026
+
+### Added
+
+- **Titles and abstracts are embedded** when you build the index in Ask the
+  Literature, using your embedding model, so they can be searched by meaning.
+  Only changed titles/abstracts are re-embedded on later builds.
+
 ## 0.3.1 — October 2026
 
 ### Added
