@@ -334,6 +334,13 @@ export function ChatTab({ onOpenSettings }: Props) {
           </p>
         )}
 
+        {!building && !buildError && buildTask.result?.abstracts_error && (
+          <p className="mt-3 text-[12px] text-[var(--color-warn-700)] leading-snug">
+            PDFs indexed, but embedding titles &amp; abstracts stopped: {buildTask.result.abstracts_error}.
+            Build again to finish the rest.
+          </p>
+        )}
+
         <AnimatePresence>
           {confirmForceRebuild && (
             <motion.div

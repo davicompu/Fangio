@@ -5000,31 +5000,9 @@ async fn cluster_corpus(
 
     let _ = app.emit("clusters:progress", ClusterProgress { phase: "done".into(), done: total_groups, total: total_groups });
 
-    // Remember the choice, and record the setting used for this build. A number
-    // the researcher picked is theirs; the automatic one is the app's.
+    // Remember the choice for the next build. Ask the Literature tools are not
+    // part of the review's decision log, so nothing is logged here.
     let _ = db.set_setting("clusters.k", &serde_json::json!(requested_k)).await;
-    let embed_model = settings
-        .get("lmstudio.embed_model")
-        .and_then(|v| v.as_str())
-        .unwrap_or("text-embedding-embeddinggemma-300m-qat")
-        .to_string();
-    let _ = db
-        .append_decision_log_entry(
-            "assessing",
-            Some("clusters"),
-            "rag.clusters.k",
-            &serde_json::json!({
-                "requested": requested_k,
-                "clusters_built": k,
-                "non_empty_clusters": total_groups,
-                "articles": n,
-                "embedding_model": embed_model,
-                "label_model": chat_model,
-            }),
-            None,
-            if requested_k.is_some() { "human" } else { "app" },
-        )
-        .await;
 
     Ok(ClusterResult { k_requested: requested_k, k_used: k, articles: n, clusters: nodes })
 }
@@ -5420,6 +5398,9 @@ struct BuildRagResult {
     embedded_chunks: usize,
     /// Titles + abstracts (re)embedded in this build.
     abstracts_embedded: usize,
+    /// Why embedding titles + abstracts failed, if it did. The PDF results
+    /// above still stand.
+    abstracts_error: Option<String>,
 }
 
 #[tauri::command]
@@ -5537,8 +5518,14 @@ async fn build_rag_index(
     }
 
     // Step 4: titles + abstracts of every article, for meaning-based search.
-    let abstracts_embedded =
-        embed_titles_abstracts_inner(&db, &app, &base_url, &embed_model, api_key.as_deref()).await?;
+    // A failure here must not discard the PDF work above, so it's reported
+    // alongside the result instead of failing the whole build. Articles
+    // embedded before the failure are kept; the next build resumes the rest.
+    let (abstracts_embedded, abstracts_error) =
+        match embed_titles_abstracts_inner(&db, &app, &base_url, &embed_model, api_key.as_deref()).await {
+            Ok(n) => (n, None),
+            Err(e) => (0, Some(e)),
+        };
 
     let _ = app.emit(
         "rag:progress",
@@ -5550,7 +5537,7 @@ async fn build_rag_index(
         },
     );
 
-    Ok(BuildRagResult { indexed, embedded_chunks, abstracts_embedded })
+    Ok(BuildRagResult { indexed, embedded_chunks, abstracts_embedded, abstracts_error })
 }
 
 #[tauri::command]

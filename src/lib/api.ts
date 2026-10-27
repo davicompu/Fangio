@@ -619,6 +619,8 @@ export interface BuildRagResult {
   indexed: number;
   embedded_chunks: number;
   abstracts_embedded: number;
+  /** Why embedding titles + abstracts failed, if it did (PDF results still stand). */
+  abstracts_error: string | null;
 }
 
 export interface ExportSummary {
