@@ -591,6 +591,35 @@ export interface AskResult {
   embed_model: string;
 }
 
+export interface MergeSide {
+  id: number;
+  term: string;
+  article_count: number;
+}
+
+export interface MergeSuggestion {
+  a: MergeSide;
+  b: MergeSide;
+  similarity: number;
+}
+
+export interface GlossaryMergeRecord {
+  id: number;
+  term_a: string;
+  term_b: string;
+  similarity: number | null;
+  embedding_model: string | null;
+  status: "accepted" | "dismissed" | "undone";
+  keep_term: string | null;
+  decided_at: string;
+}
+
+export interface GlossaryMergeOverview {
+  embedding_model: string;
+  suggestions: MergeSuggestion[];
+  decisions: GlossaryMergeRecord[];
+}
+
 export interface SemanticHit {
   article_id: number;
   /** Ranking score (abstract, or best passage adjusted for the passage gap). */
@@ -1046,6 +1075,21 @@ export const api = {
   },
   purgeEmbeddings() {
     return invoke<number>("purge_embeddings");
+  },
+  glossaryMergeSuggestions(threshold: number) {
+    return invoke<GlossaryMergeOverview>("glossary_merge_suggestions", { threshold });
+  },
+  acceptGlossaryMerge(keepId: number, otherId: number, similarity: number, embeddingModel: string) {
+    return invoke<number>("accept_glossary_merge", { keepId, otherId, similarity, embeddingModel });
+  },
+  dismissGlossaryMerge(aId: number, bId: number, similarity: number, embeddingModel: string) {
+    return invoke<number>("dismiss_glossary_merge", { aId, bId, similarity, embeddingModel });
+  },
+  undoGlossaryMerge(mergeId: number) {
+    return invoke<void>("undo_glossary_merge", { mergeId });
+  },
+  reconsiderGlossaryMerge(mergeId: number) {
+    return invoke<void>("reconsider_glossary_merge", { mergeId });
   },
   semanticSearchArticles(query: string) {
     return invoke<SemanticSearchResult>("semantic_search_articles", { query });

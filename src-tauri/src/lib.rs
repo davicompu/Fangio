@@ -4891,6 +4891,8 @@ async fn extract_glossary(
     // (e.g. one article wrote "CT" alone before another wrote "Critical
     // Thinking (CT)"). Failures here aren't fatal — log-and-continue.
     let _ = db.coalesce_glossary_aliases().await;
+    // Merges the researcher accepted earlier apply to the new extraction too.
+    let _ = db.reapply_glossary_merges().await;
 
     let _ = app.emit("glossary:progress", GlossaryProgress {
         done: total,
@@ -5351,6 +5353,136 @@ async fn get_rag_status(state: State<'_, AppState>) -> Result<db::RagStatusDetai
         .unwrap_or("text-embedding-embeddinggemma-300m-qat")
         .to_string();
     db.rag_status(&embed_model).await.map_err(err)
+}
+
+#[derive(Debug, Serialize)]
+struct MergeSide {
+    id: i64,
+    term: String,
+    article_count: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct MergeSuggestion {
+    a: MergeSide,
+    b: MergeSide,
+    similarity: f32,
+}
+
+#[derive(Debug, Serialize)]
+struct GlossaryMergeOverview {
+    embedding_model: String,
+    /// Undecided pairs at or above the threshold, most similar first.
+    suggestions: Vec<MergeSuggestion>,
+    /// Earlier decisions (accepted ones can be undone).
+    decisions: Vec<db::GlossaryMergeRecord>,
+}
+
+/// Suggest glossary terms that mean the same thing, by comparing embeddings of
+/// the term names. Nothing changes until the researcher accepts a suggestion.
+#[tauri::command]
+async fn glossary_merge_suggestions(
+    threshold: f32,
+    state: State<'_, AppState>,
+) -> Result<GlossaryMergeOverview, String> {
+    let db = state.current().await.ok_or("no project open")?;
+    let settings = db.all_settings().await.map_err(err)?;
+    let base_url = settings
+        .get("lmstudio.base_url")
+        .and_then(|v| v.as_str())
+        .unwrap_or("http://127.0.0.1:1234/v1")
+        .to_string();
+    let api_key = settings.get("lmstudio.api_key").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let embed_model = settings
+        .get("lmstudio.embed_model")
+        .and_then(|v| v.as_str())
+        .unwrap_or("text-embedding-embeddinggemma-300m-qat")
+        .to_string();
+    if embed_model.is_empty() {
+        return Err("Pick an embedding model in Settings first.".into());
+    }
+    let _ = db.set_setting("glossary.merge_threshold", &serde_json::json!(threshold)).await;
+
+    let terms = db.list_glossary_terms().await.map_err(err)?;
+    let mut cache = db.glossary_term_embeddings(&embed_model).await.map_err(err)?;
+    let missing: Vec<String> = terms
+        .iter()
+        .map(|t| semantic::term_key(&t.term))
+        .filter(|k| !cache.contains_key(k))
+        .collect();
+    for batch in missing.chunks(32) {
+        let texts: Vec<&str> = batch.iter().map(String::as_str).collect();
+        let vecs = lmstudio::embed(&base_url, &embed_model, &texts, api_key.as_deref())
+            .await
+            .map_err(err)?;
+        for (k, v) in batch.iter().zip(vecs) {
+            db.save_glossary_term_embedding(k, &embed_model, &vector::f32s_to_bytes(&v))
+                .await
+                .map_err(err)?;
+            cache.insert(k.clone(), v);
+        }
+    }
+
+    let vectors: Vec<Vec<f32>> = terms
+        .iter()
+        .map(|t| cache.get(&semantic::term_key(&t.term)).cloned().unwrap_or_default())
+        .collect();
+    let decided = db.glossary_merge_decided_keys().await.map_err(err)?;
+    let side = |t: &db::GlossaryTerm| MergeSide {
+        id: t.id,
+        term: t.term.clone(),
+        article_count: serde_json::from_str::<Vec<i64>>(&t.article_ids).map(|v| v.len()).unwrap_or(0),
+    };
+    let suggestions = semantic::merge_candidates(&vectors, threshold)
+        .into_iter()
+        .filter(|(i, j, _)| !decided.contains(&semantic::pair_keys(&terms[*i].term, &terms[*j].term)))
+        .map(|(i, j, s)| MergeSuggestion { a: side(&terms[i]), b: side(&terms[j]), similarity: s })
+        .collect();
+    Ok(GlossaryMergeOverview {
+        embedding_model: embed_model,
+        suggestions,
+        decisions: db.list_glossary_merges().await.map_err(err)?,
+    })
+}
+
+#[tauri::command]
+async fn accept_glossary_merge(
+    keep_id: i64,
+    other_id: i64,
+    similarity: Option<f64>,
+    embedding_model: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<i64, String> {
+    let db = state.current().await.ok_or("no project open")?;
+    db.accept_glossary_merge(keep_id, other_id, similarity, embedding_model.as_deref())
+        .await
+        .map_err(err)
+}
+
+#[tauri::command]
+async fn dismiss_glossary_merge(
+    a_id: i64,
+    b_id: i64,
+    similarity: Option<f64>,
+    embedding_model: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<i64, String> {
+    let db = state.current().await.ok_or("no project open")?;
+    db.dismiss_glossary_merge(a_id, b_id, similarity, embedding_model.as_deref())
+        .await
+        .map_err(err)
+}
+
+#[tauri::command]
+async fn undo_glossary_merge(merge_id: i64, state: State<'_, AppState>) -> Result<(), String> {
+    let db = state.current().await.ok_or("no project open")?;
+    db.undo_glossary_merge(merge_id).await.map_err(err)
+}
+
+#[tauri::command]
+async fn reconsider_glossary_merge(merge_id: i64, state: State<'_, AppState>) -> Result<(), String> {
+    let db = state.current().await.ok_or("no project open")?;
+    db.reconsider_glossary_merge(merge_id).await.map_err(err)
 }
 
 #[derive(Debug, Serialize)]
@@ -6145,6 +6277,11 @@ pub fn run() {
             suggest_step_questions,
             log_setup_assistant_outcome,
             semantic_search_articles,
+            glossary_merge_suggestions,
+            accept_glossary_merge,
+            dismiss_glossary_merge,
+            undo_glossary_merge,
+            reconsider_glossary_merge,
             suggest_boolean_query,
             add_pdf,
             list_pdfs,

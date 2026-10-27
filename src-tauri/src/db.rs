@@ -432,6 +432,20 @@ pub struct AttentionCounts {
     pub fulltext_pending: i64,
 }
 
+/// A researcher's decision on a suggested glossary merge.
+#[derive(Debug, Serialize, Clone)]
+pub struct GlossaryMergeRecord {
+    pub id: i64,
+    pub term_a: String,
+    pub term_b: String,
+    pub similarity: Option<f64>,
+    pub embedding_model: Option<String>,
+    /// accepted | dismissed | undone
+    pub status: String,
+    pub keep_term: Option<String>,
+    pub decided_at: String,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct GlossaryTerm {
     pub id: i64,
@@ -4167,6 +4181,248 @@ impl ProjectDb {
             .collect())
     }
 
+    pub async fn glossary_term_embeddings(&self, embed_model: &str) -> Result<std::collections::HashMap<String, Vec<f32>>> {
+        let rows = sqlx::query("SELECT term_key, embedding FROM glossary_term_embedding WHERE embedding_model = ?")
+            .bind(embed_model)
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows
+            .iter()
+            .map(|r| (r.get("term_key"), crate::vector::bytes_to_f32s(&r.get::<Vec<u8>, _>("embedding"))))
+            .collect())
+    }
+
+    pub async fn save_glossary_term_embedding(&self, term_key: &str, embed_model: &str, embedding: &[u8]) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO glossary_term_embedding (term_key, embedding_model, embedding) VALUES (?, ?, ?) \
+             ON CONFLICT(term_key, embedding_model) DO UPDATE SET embedding = excluded.embedding",
+        )
+        .bind(term_key)
+        .bind(embed_model)
+        .bind(embedding)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn list_glossary_merges(&self) -> Result<Vec<GlossaryMergeRecord>> {
+        let rows = sqlx::query(
+            "SELECT id, term_a, term_b, similarity, embedding_model, status, keep_term, decided_at \
+             FROM glossary_merge ORDER BY decided_at DESC, id DESC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .iter()
+            .map(|r| GlossaryMergeRecord {
+                id: r.get("id"),
+                term_a: r.get("term_a"),
+                term_b: r.get("term_b"),
+                similarity: r.get("similarity"),
+                embedding_model: r.get("embedding_model"),
+                status: r.get("status"),
+                keep_term: r.get("keep_term"),
+                decided_at: r.get("decided_at"),
+            })
+            .collect())
+    }
+
+    /// Pair keys that already have a decision, so they aren't suggested again.
+    pub async fn glossary_merge_decided_keys(&self) -> Result<std::collections::HashSet<(String, String)>> {
+        let rows = sqlx::query("SELECT key_a, key_b FROM glossary_merge").fetch_all(&self.pool).await?;
+        Ok(rows.iter().map(|r| (r.get("key_a"), r.get("key_b"))).collect())
+    }
+
+    async fn glossary_term_by_id(&self, id: i64) -> Result<Option<(String, String, Vec<i64>, Vec<String>)>> {
+        let row = sqlx::query("SELECT term, definition, article_ids, aliases FROM glossary_term WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.map(|r| {
+            let ids: Vec<i64> = serde_json::from_str(&r.get::<String, _>("article_ids")).unwrap_or_default();
+            let aliases: Vec<String> = serde_json::from_str(&r.get::<String, _>("aliases")).unwrap_or_default();
+            (r.get("term"), r.get("definition"), ids, aliases)
+        }))
+    }
+
+    /// Fold `other_id` into `keep_id` and return a snapshot of both rows as
+    /// they were, for undo.
+    async fn fold_glossary_terms(&self, keep_id: i64, other_id: i64) -> Result<serde_json::Value> {
+        let keep = self.glossary_term_by_id(keep_id).await?.ok_or_else(|| anyhow::anyhow!("term {keep_id} not found"))?;
+        let other = self.glossary_term_by_id(other_id).await?.ok_or_else(|| anyhow::anyhow!("term {other_id} not found"))?;
+        let snapshot = serde_json::json!({
+            "keep": { "term": keep.0, "definition": keep.1, "article_ids": keep.2, "aliases": keep.3 },
+            "other": { "term": other.0, "definition": other.1, "article_ids": other.2, "aliases": other.3 },
+        });
+        let (ids, aliases) = crate::semantic::merged_term(&keep.0, &keep.2, &keep.3, &other.0, &other.2, &other.3);
+        let now = chrono::Utc::now().to_rfc3339();
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("UPDATE glossary_term SET article_ids = ?, aliases = ?, updated_at = ? WHERE id = ?")
+            .bind(serde_json::to_string(&ids)?)
+            .bind(serde_json::to_string(&aliases)?)
+            .bind(&now)
+            .bind(keep_id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM glossary_term WHERE id = ?").bind(other_id).execute(&mut *tx).await?;
+        tx.commit().await?;
+        Ok(snapshot)
+    }
+
+    /// Accept a suggested merge: `other_id` is folded into `keep_id`.
+    pub async fn accept_glossary_merge(
+        &self,
+        keep_id: i64,
+        other_id: i64,
+        similarity: Option<f64>,
+        embed_model: Option<&str>,
+    ) -> Result<i64> {
+        let keep_term = self.glossary_term_by_id(keep_id).await?.ok_or_else(|| anyhow::anyhow!("term not found"))?.0;
+        let other_term = self.glossary_term_by_id(other_id).await?.ok_or_else(|| anyhow::anyhow!("term not found"))?.0;
+        let snapshot = self.fold_glossary_terms(keep_id, other_id).await?;
+        self.record_glossary_merge(&keep_term, &other_term, similarity, embed_model, "accepted", Some(&keep_term), Some(&snapshot))
+            .await
+    }
+
+    /// Record that two suggested terms are not the same.
+    pub async fn dismiss_glossary_merge(&self, a_id: i64, b_id: i64, similarity: Option<f64>, embed_model: Option<&str>) -> Result<i64> {
+        let a = self.glossary_term_by_id(a_id).await?.ok_or_else(|| anyhow::anyhow!("term not found"))?.0;
+        let b = self.glossary_term_by_id(b_id).await?.ok_or_else(|| anyhow::anyhow!("term not found"))?.0;
+        self.record_glossary_merge(&a, &b, similarity, embed_model, "dismissed", None, None).await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn record_glossary_merge(
+        &self,
+        term_x: &str,
+        term_y: &str,
+        similarity: Option<f64>,
+        embed_model: Option<&str>,
+        status: &str,
+        keep_term: Option<&str>,
+        snapshot: Option<&serde_json::Value>,
+    ) -> Result<i64> {
+        let (key_a, key_b) = crate::semantic::pair_keys(term_x, term_y);
+        let (term_a, term_b) = if crate::semantic::term_key(term_x) == key_a { (term_x, term_y) } else { (term_y, term_x) };
+        let now = chrono::Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT INTO glossary_merge (key_a, key_b, term_a, term_b, similarity, embedding_model, status, keep_term, snapshot, decided_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+             ON CONFLICT(key_a, key_b) DO UPDATE SET term_a = excluded.term_a, term_b = excluded.term_b, \
+             similarity = excluded.similarity, embedding_model = excluded.embedding_model, status = excluded.status, \
+             keep_term = excluded.keep_term, snapshot = excluded.snapshot, decided_at = excluded.decided_at",
+        )
+        .bind(&key_a)
+        .bind(&key_b)
+        .bind(term_a)
+        .bind(term_b)
+        .bind(similarity)
+        .bind(embed_model)
+        .bind(status)
+        .bind(keep_term)
+        .bind(snapshot.map(|v| v.to_string()))
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
+        Ok(sqlx::query_scalar("SELECT id FROM glossary_merge WHERE key_a = ? AND key_b = ?")
+            .bind(&key_a)
+            .bind(&key_b)
+            .fetch_one(&self.pool)
+            .await?)
+    }
+
+    /// Undo an accepted merge: the kept term gets back its own papers and
+    /// aliases, and the other term returns as it was.
+    pub async fn undo_glossary_merge(&self, merge_id: i64) -> Result<()> {
+        let row = sqlx::query("SELECT status, snapshot FROM glossary_merge WHERE id = ?")
+            .bind(merge_id)
+            .fetch_optional(&self.pool)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("merge {merge_id} not found"))?;
+        let status: String = row.get("status");
+        if status != "accepted" {
+            anyhow::bail!("only an accepted merge can be undone");
+        }
+        let snap: serde_json::Value = serde_json::from_str(&row.get::<Option<String>, _>("snapshot").unwrap_or_default())?;
+        let (keep, other) = (&snap["keep"], &snap["other"]);
+        let now = chrono::Utc::now().to_rfc3339();
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("UPDATE glossary_term SET article_ids = ?, aliases = ?, updated_at = ? WHERE lower(term) = lower(?)")
+            .bind(keep["article_ids"].to_string())
+            .bind(keep["aliases"].to_string())
+            .bind(&now)
+            .bind(keep["term"].as_str().unwrap_or(""))
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(
+            "INSERT INTO glossary_term (term, definition, article_ids, aliases, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
+        )
+        .bind(other["term"].as_str().unwrap_or(""))
+        .bind(other["definition"].as_str().unwrap_or(""))
+        .bind(other["article_ids"].to_string())
+        .bind(other["aliases"].to_string())
+        .bind(&now)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query("UPDATE glossary_merge SET status = 'undone', decided_at = ? WHERE id = ?")
+            .bind(&now)
+            .bind(merge_id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Forget a dismissed or undone decision so the pair can be suggested again.
+    pub async fn reconsider_glossary_merge(&self, merge_id: i64) -> Result<()> {
+        sqlx::query("DELETE FROM glossary_merge WHERE id = ? AND status != 'accepted'")
+            .bind(merge_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// After (re-)extracting the glossary, fold accepted merges in again.
+    /// Returns how many were reapplied.
+    pub async fn reapply_glossary_merges(&self) -> Result<usize> {
+        let merges = sqlx::query("SELECT id, key_a, key_b, keep_term FROM glossary_merge WHERE status = 'accepted'")
+            .fetch_all(&self.pool)
+            .await?;
+        let mut applied = 0;
+        for m in merges {
+            let terms = self.list_glossary_terms().await?;
+            // A term's own name wins over an alias when locating a key.
+            let find = |key: &str| {
+                terms.iter().find(|t| crate::semantic::term_key(&t.term) == key).or_else(|| {
+                    terms.iter().find(|t| {
+                        serde_json::from_str::<Vec<String>>(&t.aliases)
+                            .unwrap_or_default()
+                            .iter()
+                            .any(|a| crate::semantic::term_key(a) == key)
+                    })
+                })
+            };
+            let key_a: String = m.get("key_a");
+            let key_b: String = m.get("key_b");
+            let (Some(a), Some(b)) = (find(&key_a), find(&key_b)) else { continue };
+            if a.id == b.id {
+                continue;
+            }
+            let keep_key = crate::semantic::term_key(&m.get::<Option<String>, _>("keep_term").unwrap_or_default());
+            let (keep, other) = if crate::semantic::term_key(&b.term) == keep_key { (b.id, a.id) } else { (a.id, b.id) };
+            let snapshot = self.fold_glossary_terms(keep, other).await?;
+            sqlx::query("UPDATE glossary_merge SET snapshot = ? WHERE id = ?")
+                .bind(snapshot.to_string())
+                .bind(m.get::<i64, _>("id"))
+                .execute(&self.pool)
+                .await?;
+            applied += 1;
+        }
+        Ok(applied)
+    }
+
     /// Insert or merge a term, treating `(abbreviation)` parentheticals as
     /// aliases of one canonical entry. "Critical Thinking" and
     /// "Critical Thinking (CT)" become one row with aliases=["CT"].
@@ -5098,5 +5354,69 @@ mod abstract_embedding_tests {
         // A different embedding model makes every article stale.
         assert_eq!(db.abstract_embedding_targets("m2").await.unwrap().len(), 2);
         assert_eq!(db.rag_status("m2").await.unwrap().abstracts_embedded, 0);
+    }
+}
+
+#[cfg(test)]
+mod glossary_merge_tests {
+    use super::test_db;
+
+    async fn term_id(db: &super::ProjectDb, term: &str) -> i64 {
+        db.list_glossary_terms().await.unwrap().into_iter().find(|t| t.term == term).unwrap().id
+    }
+
+    #[tokio::test]
+    async fn accept_undo_dismiss_and_reapply_after_reextract() {
+        let (db, _d) = test_db().await;
+        db.upsert_glossary_term("Generative AI", "AI that generates content.", 1).await.unwrap();
+        db.upsert_glossary_term("Generative AI", "AI that generates content.", 2).await.unwrap();
+        db.upsert_glossary_term("Generative Artificial Intelligence", "Models producing text.", 3).await.unwrap();
+        db.upsert_glossary_term("AI literacy", "Understanding AI.", 4).await.unwrap();
+        let keep = term_id(&db, "Generative AI").await;
+        let other = term_id(&db, "Generative Artificial Intelligence").await;
+
+        // Accept: one row with both papers, the other name kept as an alias.
+        let merge_id = db.accept_glossary_merge(keep, other, Some(0.96), Some("m")).await.unwrap();
+        let terms = db.list_glossary_terms().await.unwrap();
+        assert_eq!(terms.len(), 2);
+        let g = terms.iter().find(|t| t.term == "Generative AI").unwrap();
+        assert_eq!(g.article_ids, "[1,2,3]");
+        assert!(g.aliases.contains("Generative Artificial Intelligence"));
+        assert!(db.glossary_merge_decided_keys().await.unwrap().contains(&(
+            "generative ai".to_string(),
+            "generative artificial intelligence".to_string()
+        )));
+
+        // Undo: both terms back exactly as they were.
+        db.undo_glossary_merge(merge_id).await.unwrap();
+        let terms = db.list_glossary_terms().await.unwrap();
+        assert_eq!(terms.len(), 3);
+        assert_eq!(terms.iter().find(|t| t.term == "Generative AI").unwrap().article_ids, "[1,2]");
+        assert_eq!(terms.iter().find(|t| t.term == "Generative Artificial Intelligence").unwrap().article_ids, "[3]");
+        assert_eq!(db.list_glossary_merges().await.unwrap()[0].status, "undone");
+        assert!(db.undo_glossary_merge(merge_id).await.is_err(), "an undone merge can't be undone again");
+
+        // Dismiss a different pair; reconsider forgets it.
+        let lit = term_id(&db, "AI literacy").await;
+        let gen = term_id(&db, "Generative AI").await;
+        let d = db.dismiss_glossary_merge(lit, gen, Some(0.7), Some("m")).await.unwrap();
+        assert_eq!(db.glossary_merge_decided_keys().await.unwrap().len(), 2);
+        db.reconsider_glossary_merge(d).await.unwrap();
+        assert_eq!(db.glossary_merge_decided_keys().await.unwrap().len(), 1);
+
+        // Accept again, then re-extract from scratch: the merge is reapplied.
+        let keep = term_id(&db, "Generative AI").await;
+        let other = term_id(&db, "Generative Artificial Intelligence").await;
+        db.accept_glossary_merge(keep, other, Some(0.96), Some("m")).await.unwrap();
+        db.clear_glossary().await.unwrap();
+        db.upsert_glossary_term("Generative Artificial Intelligence", "Models producing text.", 3).await.unwrap();
+        db.upsert_glossary_term("Generative AI", "AI that generates content.", 5).await.unwrap();
+        assert_eq!(db.reapply_glossary_merges().await.unwrap(), 1);
+        let terms = db.list_glossary_terms().await.unwrap();
+        assert_eq!(terms.len(), 1);
+        assert_eq!(terms[0].term, "Generative AI", "the name the researcher kept wins");
+        assert_eq!(terms[0].article_ids, "[3,5]");
+        // Reapplying again is a no-op.
+        assert_eq!(db.reapply_glossary_merges().await.unwrap(), 0);
     }
 }

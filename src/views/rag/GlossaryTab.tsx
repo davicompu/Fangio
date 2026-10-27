@@ -4,6 +4,7 @@ import { confirm as confirmDialog } from "@tauri-apps/plugin-dialog";
 import { api, type ArticleRow, type GlossaryTerm } from "../../lib/api";
 import { startGlossaryExtract, useGlossaryTask } from "../../lib/bgTasks";
 import { parseArticleIds, parseAliases } from "../../lib/articleMeta";
+import { GlossaryMerges } from "./GlossaryMerges";
 
 export function GlossaryTab() {
   const [terms, setTerms] = useState<GlossaryTerm[]>([]);
@@ -168,6 +169,8 @@ export function GlossaryTab() {
           </div>
         </div>
       )}
+
+      {!extracting && <GlossaryMerges termCount={terms.length} onChanged={load} />}
 
       {/* Error */}
       {error && (

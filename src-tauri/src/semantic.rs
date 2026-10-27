@@ -153,6 +153,62 @@ pub fn rank_papers(
     out
 }
 
+/// Normalised form of a glossary term for matching decisions across
+/// re-extractions: lowercase, straight apostrophes, single spaces.
+pub fn term_key(term: &str) -> String {
+    term.replace(['\u{2019}', '\u{2018}'], "'")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+/// The two keys of a term pair in a fixed order.
+pub fn pair_keys(a: &str, b: &str) -> (String, String) {
+    let (ka, kb) = (term_key(a), term_key(b));
+    if ka <= kb { (ka, kb) } else { (kb, ka) }
+}
+
+/// Pairs of items whose vectors are at least `threshold` similar, most
+/// similar first: `(i, j, score)` with `i < j`.
+pub fn merge_candidates(vectors: &[Vec<f32>], threshold: f32) -> Vec<(usize, usize, f32)> {
+    let mut out = Vec::new();
+    for i in 0..vectors.len() {
+        for j in (i + 1)..vectors.len() {
+            let s = crate::vector::cosine(&vectors[i], &vectors[j]);
+            if s >= threshold {
+                out.push((i, j, s));
+            }
+        }
+    }
+    out.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
+    out
+}
+
+/// Paper ids and aliases of `keep` after absorbing `other`: the union of both
+/// paper lists (sorted), and keep's aliases plus other's name and aliases
+/// (no duplicates, never keep's own name).
+pub fn merged_term(
+    keep_term: &str,
+    keep_ids: &[i64],
+    keep_aliases: &[String],
+    other_term: &str,
+    other_ids: &[i64],
+    other_aliases: &[String],
+) -> (Vec<i64>, Vec<String>) {
+    let mut ids: Vec<i64> = keep_ids.iter().chain(other_ids).copied().collect();
+    ids.sort_unstable();
+    ids.dedup();
+    let mut aliases: Vec<String> = Vec::new();
+    for a in keep_aliases.iter().map(String::as_str).chain(std::iter::once(other_term)).chain(other_aliases.iter().map(String::as_str)) {
+        let k = term_key(a);
+        if k != term_key(keep_term) && !aliases.iter().any(|x| term_key(x) == k) {
+            aliases.push(a.to_string());
+        }
+    }
+    (ids, aliases)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -240,5 +296,28 @@ mod tests {
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].article_id, 9);
         assert_eq!(r[0].abstract_score, None);
+    }
+
+    #[test]
+    fn term_keys_ignore_case_spacing_and_curly_quotes() {
+        assert_eq!(term_key("Bloom\u{2019}s  Taxonomy"), "bloom's taxonomy");
+        assert_eq!(pair_keys("Zeta", "alpha"), ("alpha".to_string(), "zeta".to_string()));
+    }
+
+    #[test]
+    fn candidates_above_threshold_most_similar_first() {
+        let v = vec![vec![1.0, 0.0], vec![0.99, 0.141], vec![0.0, 1.0], vec![0.95, 0.312]];
+        let c = merge_candidates(&v, 0.9);
+        assert_eq!(c.iter().map(|x| (x.0, x.1)).collect::<Vec<_>>(), vec![(0, 1), (1, 3), (0, 3)]);
+    }
+
+    #[test]
+    fn merged_term_unites_papers_and_keeps_other_name_as_alias() {
+        let (ids, aliases) = merged_term(
+            "Generative AI", &[3, 1], &["GenAI".into()],
+            "Generative Artificial Intelligence", &[2, 3], &["GAI".into(), "genai".into(), "Generative AI".into()],
+        );
+        assert_eq!(ids, vec![1, 2, 3]);
+        assert_eq!(aliases, vec!["GenAI", "Generative Artificial Intelligence", "GAI"]);
     }
 }
