@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Check, Loader2, Save, Sparkles, Wand2 } from "lucide-react";
 import { api, type ProjectRow } from "../../lib/api";
 import { TextField, TextArea } from "../../components/ui/TextField";
@@ -16,6 +16,8 @@ const CLARIFIERS = [
 export function AgendaPanel({ project, onSaved }: { project: ProjectRow; onSaved?: () => void | Promise<void> }) {
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [agenda, setAgenda] = useState(project.research_agenda ?? "");
+  // The latest AI draft (as saved or being edited) is on screen.
+  useEffect(() => { if ((project.research_agenda ?? "").trim()) void api.recordAiOutputOpen("agenda"); }, []);
   const [instruction, setInstruction] = useState("");
   const [generating, setGenerating] = useState(false);
   const [revising, setRevising] = useState(false);
@@ -48,6 +50,7 @@ export function AgendaPanel({ project, onSaved }: { project: ProjectRow; onSaved
       const guidance = buildGuidance();
       const out = await api.generateAgenda(guidance ? { guidance } : undefined);
       setAgenda(out.text);
+      void api.recordAiOutputOpen("agenda");
     } catch (e: any) {
       setError(modelError(e));
     } finally {
@@ -62,6 +65,7 @@ export function AgendaPanel({ project, onSaved }: { project: ProjectRow; onSaved
     try {
       const out = await api.generateAgenda({ current: agenda, instruction: instruction.trim() });
       setAgenda(out.text);
+      void api.recordAiOutputOpen("agenda");
       setInstruction("");
     } catch (e: any) {
       setError(modelError(e));

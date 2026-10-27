@@ -1035,6 +1035,14 @@ export const api = {
       args: { step_id: stepId, current_value: currentValue },
     });
   },
+  /** Record that AI outputs were opened. "coding" takes the suggestions shown;
+   *  "codebook" / "synthesis" / "agenda" mean that agent's latest output. Never throws. */
+  recordAiOutputOpen(
+    kind: "coding" | "codebook" | "synthesis" | "agenda",
+    targets?: { article_id: number; dimension: string; code: string }[],
+  ) {
+    return invoke<void>("record_ai_output_open", { kind, targets: targets ?? null }).catch(() => {});
+  },
   /** Log what the researcher did with an agent's output. Never throws. */
   logAgentAction(agent: LoggedAgent, outputId: number | null | undefined, action: AgentAction, details?: unknown) {
     if (outputId == null) return Promise.resolve();

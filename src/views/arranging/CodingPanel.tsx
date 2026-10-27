@@ -1430,6 +1430,18 @@ function DimensionRow({
 }) {
   const [adding, setAdding] = useState(false);
   const [proposalReviewOpen, setProposalReviewOpen] = useState(false);
+  // Opening the review shows every suggestion for this article and dimension:
+  // record each as opened (merged ones by their kept code).
+  useEffect(() => {
+    if (!proposalReviewOpen) return;
+    const targets = [
+      ...proposals.map((p) => ({ article_id: p.article_id, dimension: p.dimension, code: p.code })),
+      ...adjudications.map((a) => ({ article_id: a.article_id, dimension: a.dimension, code: a.canonical_code })),
+    ];
+    if (targets.length > 0) void api.recordAiOutputOpen("coding", targets);
+    // Only when the review is opened, not on every proposal refresh.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [proposalReviewOpen]);
   const [acceptingId, setAcceptingId] = useState<number | null>(null);
   const [rejectingId, setRejectingId] = useState<number | null>(null);
   const [undoingId, setUndoingId] = useState<number | null>(null);

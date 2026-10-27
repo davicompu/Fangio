@@ -107,6 +107,8 @@ export function AiCodingModal({
   };
   // Detect whether a codebook already exists for the selected dimensions (Step 1 done).
   useEffect(() => { if (open) void loadCodebook(); }, [open]);
+  // The built codebook is on screen when the modal opens with it ready.
+  useEffect(() => { if (open && codebookReady) void api.recordAiOutputOpen("codebook"); }, [open, codebookReady]);
 
   const addCodeToBook = async (dim: string) => {
     const code = (newCode[dim] ?? "").trim();

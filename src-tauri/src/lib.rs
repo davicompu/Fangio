@@ -4511,6 +4511,53 @@ fn agent_stage(agent: &str) -> &'static str {
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct OpenTarget {
+    /// Coding suggestion: the article, dimension and code.
+    #[serde(default)]
+    article_id: Option<i64>,
+    #[serde(default)]
+    dimension: Option<String>,
+    #[serde(default)]
+    code: Option<String>,
+}
+
+/// Record that the researcher opened AI outputs. `kind` is "coding" (with
+/// `targets` naming each suggestion shown) or "codebook" / "synthesis" /
+/// "agenda" (the latest output of that agent; `targets` is ignored).
+#[tauri::command]
+async fn record_ai_output_open(
+    kind: String,
+    targets: Option<Vec<OpenTarget>>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let db = state.current().await.ok_or("no project open")?;
+    let by = transparency::researcher_name();
+    match kind.as_str() {
+        "coding" => {
+            for t in targets.unwrap_or_default() {
+                if let (Some(a), Some(d), Some(c)) = (t.article_id, t.dimension.as_deref(), t.code.as_deref()) {
+                    db.record_ai_output_open("coding", &agent_log::coding_target(a, d, c), &by)
+                        .await
+                        .map_err(err)?;
+                }
+            }
+        }
+        "codebook" | "synthesis" | "agenda" => {
+            let latest = db
+                .get_setting(&format!("agent.{kind}.last_output_id"))
+                .await
+                .map_err(err)?
+                .and_then(|v| v.as_i64());
+            if let Some(id) = latest {
+                db.record_ai_output_open(&kind, &id.to_string(), &by).await.map_err(err)?;
+            }
+        }
+        other => return Err(format!("unknown output kind: {other}")),
+    }
+    Ok(())
+}
+
 /// Record what the researcher did with an agent's logged output.
 #[tauri::command]
 async fn log_agent_action(
@@ -6525,6 +6572,7 @@ pub fn run() {
             log_setup_assistant_outcome,
             semantic_search_articles,
             log_agent_action,
+            record_ai_output_open,
             log_draft_saved,
             glossary_merge_suggestions,
             accept_glossary_merge,

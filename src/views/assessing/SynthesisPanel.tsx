@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Check, Loader2, MessagesSquare, Save, Sparkles } from "lucide-react";
 import { api, type ProjectRow } from "../../lib/api";
 import { TextArea } from "../../components/ui/TextField";
@@ -15,6 +15,8 @@ export function SynthesisPanel({ project, onOpenChat, onSaved }: { project: Proj
   const [saved, setSaved] = useState(false);
   const [editing, setEditing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The latest AI draft (as saved or being edited) is on screen.
+  useEffect(() => { if ((project.synthesis ?? "").trim()) void api.recordAiOutputOpen("synthesis"); }, []);
 
   const generate = async () => {
     setGenerating(true);
@@ -22,6 +24,7 @@ export function SynthesisPanel({ project, onOpenChat, onSaved }: { project: Proj
     try {
       const out = await api.generateSynthesis();
       setText(out.text);
+      void api.recordAiOutputOpen("synthesis");
     } catch (e: any) {
       const msg: string = e?.message ?? String(e);
       setError(

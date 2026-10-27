@@ -4186,6 +4186,37 @@ impl ProjectDb {
             .collect())
     }
 
+    pub async fn record_ai_output_open(&self, kind: &str, target: &str, opened_by: &str) -> Result<()> {
+        sqlx::query("INSERT INTO ai_output_open (kind, target, opened_by, opened_at) VALUES (?, ?, ?, ?)")
+            .bind(kind)
+            .bind(target)
+            .bind(opened_by)
+            .bind(chrono::Utc::now().to_rfc3339())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Per target: (times opened, first, last, last opened by).
+    pub async fn ai_output_open_stats(
+        &self,
+        kind: &str,
+    ) -> Result<std::collections::HashMap<String, (i64, String, String, String)>> {
+        let rows = sqlx::query(
+            "SELECT target, COUNT(*) AS n, MIN(opened_at) AS first, MAX(opened_at) AS last, \
+             (SELECT o2.opened_by FROM ai_output_open o2 WHERE o2.kind = o.kind AND o2.target = o.target \
+              ORDER BY o2.opened_at DESC, o2.id DESC LIMIT 1) AS last_by \
+             FROM ai_output_open o WHERE kind = ? GROUP BY target",
+        )
+        .bind(kind)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .iter()
+            .map(|r| (r.get("target"), (r.get("n"), r.get("first"), r.get("last"), r.get("last_by"))))
+            .collect())
+    }
+
     /// Glossary terms with `mention_ids` filled in: papers that use the term
     /// or any of its aliases, limited to papers still in the review.
     pub async fn list_glossary_terms_with_mentions(&self) -> Result<Vec<GlossaryTerm>> {

@@ -118,6 +118,12 @@ pub async fn log_app_result(db: &ProjectDb, stage: &str, agent: &str, value: Val
         .await
 }
 
+/// Open-event target for a coding suggestion: stable across accepting it, so
+/// the saved code keeps the suggestion's open history.
+pub fn coding_target(article_id: i64, dimension: &str, code: &str) -> String {
+    format!("{article_id}|{dimension}|{}", crate::semantic::term_key(code))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
