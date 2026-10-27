@@ -91,8 +91,10 @@ pub fn open_panel(
         "browser-panel",
         tauri::WebviewUrl::External(parsed_url),
     )
-    // Safari-compatible UA so institutional databases don't reject the request
-    .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15")
+    // A mainstream browser UA matching the platform's web engine (WebKit on
+    // macOS, Edge/Chromium WebView2 on Windows) so institutional databases
+    // don't reject the request.
+    .user_agent(BROWSER_USER_AGENT)
     .decorations(false)
     .shadow(false)
     .resizable(false)
@@ -165,3 +167,10 @@ pub fn open_panel(
     tracing::info!("open_panel: window created successfully");
     Ok(BrowserPanelData { window: panel_window, temp_dir })
 }
+
+#[cfg(target_os = "macos")]
+const BROWSER_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15";
+#[cfg(target_os = "windows")]
+const BROWSER_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0";
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+const BROWSER_USER_AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";

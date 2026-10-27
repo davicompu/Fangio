@@ -7,7 +7,7 @@ import { Button } from "../../components/ui/Button";
 import { TextField, TextArea } from "../../components/ui/TextField";
 import { OptionCard } from "../../components/ui/OptionCard";
 import { STEPS, type OnboardingStep } from "./steps";
-import { cn } from "../../lib/utils";
+import { cn, shortcut } from "../../lib/utils";
 
 interface OnboardingWizardProps {
   project: ProjectRow;
@@ -258,7 +258,7 @@ export function OnboardingWizard({ project, onComplete }: OnboardingWizardProps)
   return (
     <div className="min-h-screen flex flex-col">
       {/* Drag region + progress bar */}
-      <div className="drag-region h-10" />
+      <div className="drag-region titlebar-spacer h-10" />
       <div className="px-6 xl:px-12 pb-6">
         <ProgressTrail current={stepIndex} total={totalSteps} progress={progress} />
       </div>
@@ -456,7 +456,7 @@ export function OnboardingWizard({ project, onComplete }: OnboardingWizardProps)
                     <>Continue <ArrowRight size={15} strokeWidth={2.25} /></>
                   )}
                 </Button>
-                <span className="ml-2 text-[11px] text-[var(--color-paper-500)] font-mono">⌘ ↵</span>
+                <span className="ml-2 text-[11px] text-[var(--color-paper-500)] font-mono">{shortcut("↵")}</span>
               </div>
             </motion.div>
           </AnimatePresence>

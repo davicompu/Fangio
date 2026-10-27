@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { IS_MAC } from "./lib/utils";
 import { AnimatePresence, motion } from "framer-motion";
 import { useAppState } from "./lib/useAppState";
 import cartaMark from "./assets/carta_mark.png";
@@ -86,8 +87,9 @@ function App() {
 
   return (
     <div className="min-h-screen flex flex-col bg-[var(--color-paper-50)]">
-      {/* Global macOS title bar — only shown when a project is open */}
-      {project && project.onboarding_complete && (
+      {/* Global macOS title bar — only shown when a project is open. Windows and
+          Linux use the native title bar instead. */}
+      {IS_MAC && project && project.onboarding_complete && (
         <div className="drag-region fixed top-0 inset-x-0 h-10 flex items-center z-50 bg-[var(--color-paper-900)] border-b border-[var(--color-paper-800)]">
           <div className="flex items-center gap-2 select-none pl-20">
             <img

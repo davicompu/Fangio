@@ -17,7 +17,7 @@ import {
 import { api, type ArticleFields, type ArticleRow, type BuildRagProgress, type SemanticHit } from "../../lib/api";
 import { Card } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
-import { cn } from "../../lib/utils";
+import { cn, fileName } from "../../lib/utils";
 import { parseSources } from "../../lib/articleMeta";
 
 function blankFields(): ArticleFields {
@@ -566,7 +566,7 @@ function ArticleForm({
             <div>
               <span className={label}>PDF (optional)</span>
               <button onClick={pickPdf} className="inline-flex items-center gap-2 px-3 py-1.5 text-[12px] rounded-[var(--radius-sm)] border border-dashed border-[var(--color-paper-300)] text-[var(--color-paper-600)] hover:border-[var(--color-ink-400)] transition-paper">
-                <Upload size={13} strokeWidth={1.75} /> {pdfPath ? (pdfPath.split("/").pop() ?? "PDF selected") : "Choose PDF…"}
+                <Upload size={13} strokeWidth={1.75} /> {pdfPath ? fileName(pdfPath) : "Choose PDF…"}
               </button>
             </div>
           )}

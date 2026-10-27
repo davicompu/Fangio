@@ -34,3 +34,17 @@ export function selfPreferenceWarning(model: string, rater1: string, rater2?: st
   if (!m) return false;
   return m === rater1.trim().toLowerCase() || (!!rater2 && m === rater2.trim().toLowerCase());
 }
+
+/** True on macOS. The Mac build uses an overlay title bar (Reeves draws its
+ *  own bar beside the traffic lights); Windows and Linux use the native one. */
+export const IS_MAC = typeof navigator !== "undefined" && /Mac/i.test(navigator.userAgent);
+
+/** Label for a shortcut with the platform's modifier: "⌘S" on Mac, "Ctrl+S" elsewhere. */
+export function shortcut(key: string): string {
+  return IS_MAC ? `⌘${key}` : `Ctrl+${key}`;
+}
+
+/** The last part of a file path, for either "/" or "\\" separators. */
+export function fileName(path: string): string {
+  return path.split(/[\\/]/).pop() || path;
+}

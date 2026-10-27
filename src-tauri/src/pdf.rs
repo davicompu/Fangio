@@ -33,7 +33,7 @@ pub fn extract(path: &Path) -> Result<ExtractedPdf> {
 /// Try pdftotext (poppler). Returns Err if the binary is not found or fails.
 fn extract_via_pdftotext(path: &Path) -> Result<String> {
     let binary = find_pdftotext().ok_or_else(|| anyhow!("pdftotext not found"))?;
-    let output = std::process::Command::new(&binary)
+    let output = crate::platform::quiet_command(&binary)
         .args(["-enc", "UTF-8", "-nopgbrk"])
         .arg(path)
         .arg("-") // output to stdout
@@ -67,7 +67,7 @@ fn find_pdftotext() -> Option<PathBuf> {
             }
         } else {
             // Try spawning with just the name — if it fails the binary isn't in PATH.
-            if std::process::Command::new(candidate)
+            if crate::platform::quiet_command(candidate)
                 .arg("-v")
                 .output()
                 .is_ok()

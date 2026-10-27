@@ -207,6 +207,12 @@ textarea {
   background-size: 14px 14px;
 }
 
+/* Space for the macOS overlay title bar. On Windows/Linux the native title bar
+   sits above the page, so these offsets shrink. */
+html.platform-other .titlebar-spacer { display: none; }
+html.platform-other .titlebar-offset { padding-top: 1.25rem !important; }
+html.platform-other .titlebar-offset-full { padding-top: 0 !important; }
+
 /* Window dragging on macOS overlay title bar */
 .drag-region {
   -webkit-app-region: drag;

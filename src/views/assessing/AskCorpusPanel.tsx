@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { shortcut } from "../../lib/utils";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   ArrowRight,
@@ -81,7 +82,7 @@ export function AskCorpusPanel() {
                 </>
               )}
             </Button>
-            <span className="text-[11px] text-[var(--color-paper-500)] font-mono">⌘ ↵</span>
+            <span className="text-[11px] text-[var(--color-paper-500)] font-mono">{shortcut("↵")}</span>
           </div>
         </Card>
 

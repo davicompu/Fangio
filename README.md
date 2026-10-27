@@ -5,7 +5,9 @@ protocol (Paul et al. 2021) and PRISMA 2020 (Page et al. 2021). Your project
 lives in a folder on your computer. Some features go online; see
 [What goes over the network](#what-goes-over-the-network).
 
-Tested on macOS with LM Studio. Ollama should work but is untested. Other platforms are untested.
+Tested on macOS with LM Studio. A Windows version builds from the same code
+(see [Building on Windows](docs/building-on-windows.md)) but hasn't been tested
+yet. Ollama should work but is untested. Linux is untested.
 
 ## Prerequisites
 
@@ -22,6 +24,8 @@ Tested on macOS with LM Studio. Ollama should work but is untested. Other platfo
 
 ## Running the app
 
+On Windows, follow [Building on Windows](docs/building-on-windows.md) instead.
+
 From the repository root:
 
 ```sh
@@ -37,7 +41,8 @@ reqwest with rustls, etc.). Subsequent runs are fast.
 - **Projects.** Pick a folder; Reeves creates `project.sqlite`, `data/`,
   `agent_reports/`, `imports/`, `pdfs/`, `drafts/` and `backups/` in it. Recent
   projects are listed from `recent.json` in the `carta` folder of your OS config
-  directory (on macOS, `~/Library/Application Support/carta/recent.json`).
+  directory (on macOS, `~/Library/Application Support/carta/recent.json`; on
+  Windows, `%APPDATA%\carta\recent.json`).
 - **Assembling.** Identification, acquisition, importing, journals, library,
   deduplication and a checkpoint.
 - **Arranging.** Organisation by your framework, purification criteria,
@@ -52,5 +57,5 @@ reqwest with rustls, etc.). Subsequent runs are fast.
 - **Crossref** (`api.crossref.org`): the DOI, when you look up or enrich a reference.
 - **Unpaywall** (`api.unpaywall.org`) and the publisher sites it points to: the DOI and Reeves' contact address, when you search for open-access PDFs.
 - **Database browser and "Find online"**: the pages you open, as in any browser.
-- **Your AI model server**: titles, abstracts, full-text excerpts, codes and prompts. With LM Studio on this Mac nothing leaves the computer. A remote server address sends this content to that server.
+- **Your AI model server**: titles, abstracts, full-text excerpts, codes and prompts. With LM Studio on your own computer nothing leaves it. A remote server address sends this content to that server.
 - **Stays local**: the project database, PDFs, drafts, backups, and usage statistics (telemetry). Reeves sends no usage data anywhere.

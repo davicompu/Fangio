@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { fileName } from "../../lib/utils";
 import { BookOpen, Loader2, Plus, RefreshCw, Search, Trash2, X } from "lucide-react";
 import { confirm as confirmDialog } from "@tauri-apps/plugin-dialog";
 import { api, type ArticleRow, type GlossaryTerm } from "../../lib/api";
@@ -280,7 +281,7 @@ export function GlossaryTab() {
                                       type="button"
                                       onClick={() => api.openPdfPath(pdfPath).catch(() => {})}
                                       className="font-medium text-[var(--color-accent-700)] hover:text-[var(--color-accent-800)] hover:underline leading-snug text-left"
-                                      title={`Open ${pdfPath.split("/").pop() ?? "PDF"}`}
+                                      title={`Open ${fileName(pdfPath)}`}
                                     >
                                       {a.title}
                                     </button>

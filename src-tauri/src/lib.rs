@@ -18,6 +18,7 @@ mod recent;
 mod stats;
 mod suggest;
 mod agent_log;
+mod platform;
 mod semantic;
 mod setup_assistant;
 mod transparency;
@@ -1001,7 +1002,7 @@ async fn pdf_paths_for_articles(
     db.get_pdf_paths_for_articles(&ids).await.map_err(err)
 }
 
-/// Open a PDF with the system default application (macOS `open`). This command
+/// Open a PDF with the system default application. This command
 /// is reachable from the webview, so it must NOT become an "open anything"
 /// primitive: only real, existing `.pdf` files are accepted (no arbitrary apps,
 /// URL schemes, or flag-like arguments).
@@ -1018,23 +1019,19 @@ async fn open_pdf_path(path: String) -> Result<(), String> {
     }
     // canonicalize confirms the file exists and yields an absolute path, so the
     // argument can never be parsed by `open` as a flag.
-    let canonical = std::fs::canonicalize(p).map_err(|e| format!("File not found: {e}"))?;
+    let canonical = platform::canonicalize(p).map_err(|e| format!("File not found: {e}"))?;
     if !canonical.is_file() {
         return Err("Not a file.".into());
     }
-    std::process::Command::new("open")
-        .arg(&canonical)
-        .spawn()
-        .map_err(|e| format!("Failed to open file: {e}"))?;
-    Ok(())
+    platform::open_path(&canonical)
 }
 
 /// Resolve a path and confirm it lives inside the current project's workspace —
 /// the guard for the "open exported file" commands, which the webview can call.
 async fn workspace_confined(path: &str, state: &State<'_, AppState>) -> Result<std::path::PathBuf, String> {
     let db = state.current().await.ok_or("no project open")?;
-    let canonical = std::fs::canonicalize(path).map_err(|e| format!("Not found: {e}"))?;
-    let ws = std::fs::canonicalize(&db.workspace).map_err(err)?;
+    let canonical = platform::canonicalize(std::path::Path::new(path)).map_err(|e| format!("Not found: {e}"))?;
+    let ws = platform::canonicalize(&db.workspace).map_err(err)?;
     if !canonical.starts_with(&ws) {
         return Err("Refusing to open a path outside the project workspace.".into());
     }
@@ -1046,23 +1043,14 @@ async fn workspace_confined(path: &str, state: &State<'_, AppState>) -> Result<s
 #[tauri::command]
 async fn open_workspace_path(path: String, state: State<'_, AppState>) -> Result<(), String> {
     let target = workspace_confined(&path, &state).await?;
-    std::process::Command::new("open")
-        .arg(&target)
-        .spawn()
-        .map_err(|e| format!("Failed to open: {e}"))?;
-    Ok(())
+    platform::open_path(&target)
 }
 
-/// Reveal an exported file in Finder (selects it in its containing folder).
+/// Reveal an exported file in Finder / File Explorer (selects it in its folder).
 #[tauri::command]
 async fn reveal_in_finder(path: String, state: State<'_, AppState>) -> Result<(), String> {
     let target = workspace_confined(&path, &state).await?;
-    std::process::Command::new("open")
-        .arg("-R")
-        .arg(&target)
-        .spawn()
-        .map_err(|e| format!("Failed to reveal: {e}"))?;
-    Ok(())
+    platform::reveal_in_file_manager(&target)
 }
 
 /// SHA-256 (hex) of a file's bytes.

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { shortcut } from "../../lib/utils";
 import { motion } from "framer-motion";
 import {
   CheckCircle2,
@@ -235,7 +236,7 @@ export function DraftPanel({ project, onSaved }: Props) {
                   Saved
                 </span>
               ) : null}
-              <span className="font-mono">⌘S</span> to save
+              <span className="font-mono">{shortcut("S")}</span> to save
             </div>
           </motion.div>
         )}

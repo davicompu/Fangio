@@ -90,10 +90,7 @@ pub fn format_temperature(t: f64) -> String {
 
 /// Name recorded against open events: env `USER`, else "researcher".
 pub fn researcher_name() -> String {
-    std::env::var("USER")
-        .ok()
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| "researcher".to_string())
+    crate::platform::user_name().unwrap_or_else(|| "researcher".to_string())
 }
 
 /// Article change to apply for a returned screening decision, and whether it

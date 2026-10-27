@@ -147,7 +147,7 @@ export function AssessingStage({ project, onLeaveStage, onProjectChanged, onOpen
 
   return (
     <div className="min-h-screen flex flex-col">
-      <header className="drag-region px-6 xl:px-12 pt-14 pb-6 flex items-start justify-between">
+      <header className="drag-region titlebar-offset px-6 xl:px-12 pt-14 pb-6 flex items-start justify-between">
         <div className="flex items-start gap-4">
           <button
             onClick={onLeaveStage}

@@ -85,7 +85,7 @@ export function ProjectPicker({ onProjectOpened }: ProjectPickerProps) {
   return (
     <div className="min-h-screen flex flex-col">
       {/* Drag region for window movement */}
-      <div className="drag-region h-10" />
+      <div className="drag-region titlebar-spacer h-10" />
 
       <div className="flex-1 flex items-start justify-center px-8 pt-12 pb-24">
         <div className="w-full max-w-3xl">

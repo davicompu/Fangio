@@ -235,7 +235,7 @@ export function Settings({ open: openSetting, onClose, settings, onUpdate, lm, o
             transition={{ duration: 0.35, ease: [0.2, 0.7, 0.2, 1] }}
             className="fixed top-0 right-0 bottom-0 w-[520px] bg-[var(--color-paper-50)] border-l border-[var(--color-paper-300)] shadow-[var(--shadow-paper-lg)] z-50 flex flex-col"
           >
-            <header className="px-7 pt-12 pb-5 border-b border-[var(--color-paper-200)] flex items-start justify-between">
+            <header className="titlebar-offset px-7 pt-12 pb-5 border-b border-[var(--color-paper-200)] flex items-start justify-between">
               <div>
                 <span className="eyebrow">Workshop</span>
                 <h2 className="font-serif text-[26px] tracking-tight text-[var(--color-ink-900)] mt-1">
@@ -603,7 +603,7 @@ export function Settings({ open: openSetting, onClose, settings, onUpdate, lm, o
                   <li><strong>Crossref</strong> (<code className="font-mono">api.crossref.org</code>): the DOI, when you look up or enrich a reference.</li>
                   <li><strong>Unpaywall</strong> (<code className="font-mono">api.unpaywall.org</code>) and the publisher sites it points to: the DOI and Reeves' contact address, when you search for open-access PDFs.</li>
                   <li><strong>Database browser and "Find online"</strong>: the pages you open, as in any browser.</li>
-                  <li><strong>Your AI model server</strong>: titles, abstracts, full-text excerpts, codes and prompts. With LM Studio on this Mac nothing leaves the computer. A remote server address sends this content to that server.</li>
+                  <li><strong>Your AI model server</strong>: titles, abstracts, full-text excerpts, codes and prompts. With LM Studio on your own computer nothing leaves it. A remote server address sends this content to that server.</li>
                   <li><strong>Stays local</strong>: the project database, PDFs, drafts, backups, and usage statistics (telemetry). Reeves sends no usage data anywhere.</li>
                 </ul>
                 <SectionHeader

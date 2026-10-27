@@ -17,7 +17,7 @@ import {
 import { api } from "../../lib/api";
 import { Card } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
-import { cn } from "../../lib/utils";
+import { cn, IS_MAC } from "../../lib/utils";
 
 type Job =
   | "docx"
@@ -149,7 +149,7 @@ export function ExportPanel({ onOpenArranging }: { onOpenArranging: (tab: "scree
                   <button
                     type="button"
                     onClick={() => api.revealInFinder(f).catch((e) => setError(e?.toString() ?? String(e)))}
-                    title="Reveal in Finder"
+                    title={IS_MAC ? "Reveal in Finder" : "Show in File Explorer"}
                     className="shrink-0 p-1 rounded-[var(--radius-xs)] text-[var(--color-paper-500)] hover:bg-[var(--color-paper-200)] hover:text-[var(--color-ink-800)] transition-paper"
                   >
                     <FolderOpen size={12} strokeWidth={1.75} />
