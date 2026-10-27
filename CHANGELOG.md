@@ -2,6 +2,35 @@
 
 All notable user-facing changes to Reeves.
 
+## 0.4.0 — October 2026
+
+### Added
+
+- **AI-enhanced Library search** — choose *Traditional search* (exact words, as
+  before) or *AI-enhanced search*, which ranks every paper by meaning across its
+  title, abstract and indexed PDF text. Titles and abstracts not yet indexed are
+  indexed first (you'll see progress); a slider sets how many results to show.
+- **Glossary merges by meaning** — suggested pairs of terms that mean the same
+  thing, with a similarity slider. Merge, undo, or mark "not the same"; nothing
+  changes the concept map or overlap counts until you merge, and your decisions
+  are kept when you re-extract.
+- **Terms linked to every paper that mentions them** — each glossary term now
+  counts every PDF paper in the review that uses the term or one of its
+  aliases, not only the papers it was extracted from.
+- **AI agent log** — the query agent (suggestion, reason, accept/undo/dismiss),
+  codebook builder (proposals, how codes were grouped, your edits), synthesis
+  and research agenda (each draft, and your save with how much you changed) are
+  recorded with model, temperature, prompt fingerprint and seed. When you open
+  coding suggestions, the codebook or a draft is recorded too. The decision
+  report has a new "AI agents" section.
+- **Setup assistant** entries now record temperature, prompt fingerprint and seed.
+
+### Fixed
+
+- Build index no longer reports a failure for the whole build when embedding
+  titles and abstracts fails after the PDFs were indexed.
+- Ask the Literature tools no longer write to the decision log.
+
 ## 0.3.3 — October 2026
 
 ### Added
