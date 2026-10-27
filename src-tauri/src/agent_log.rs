@@ -124,6 +124,15 @@ pub fn coding_target(article_id: i64, dimension: &str, code: &str) -> String {
     format!("{article_id}|{dimension}|{}", crate::semantic::term_key(code))
 }
 
+/// Largest share of words (%) a researcher can change while the saved text
+/// still counts as built on the AI draft. Beyond this, little of the draft is
+/// left and the text is treated as the researcher's own.
+pub const MAX_CHANGE_STILL_FROM_DRAFT: u8 = 80;
+
+pub fn builds_on_draft(percent_changed: u8) -> bool {
+    percent_changed <= MAX_CHANGE_STILL_FROM_DRAFT
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

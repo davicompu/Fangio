@@ -6110,6 +6110,14 @@ async fn log_draft_saved(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let db = state.current().await.ok_or("no project open")?;
+    log_draft_saved_inner(&db, &agent, &saved_text).await
+}
+
+/// Link a save to the agent's latest AI draft when it still builds on it (see
+/// `agent_log::builds_on_draft`); text that kept little or nothing of the draft
+/// is the researcher's own and isn't linked. Re-saving identical text isn't
+/// logged twice.
+async fn log_draft_saved_inner(db: &db::ProjectDb, agent: &str, saved_text: &str) -> Result<(), String> {
     // No AI draft has been made for this agent: the text is the researcher's own.
     let Some(output_id) = db
         .get_setting(&format!("agent.{agent}.last_output_id"))
@@ -6119,20 +6127,32 @@ async fn log_draft_saved(
     else {
         return Ok(());
     };
-    let draft = db
-        .list_decision_log()
-        .await
-        .map_err(err)?
-        .into_iter()
+    let log = db.list_decision_log().await.map_err(err)?;
+    let draft = log
+        .iter()
         .find(|d| d.id == output_id)
         .and_then(|d| serde_json::from_str::<serde_json::Value>(&d.value_json).ok())
         .and_then(|v| v["draft"].as_str().map(str::to_string))
         .ok_or("the AI draft for this save was not found")?;
-    let pct = agent_log::percent_changed(&draft, &saved_text);
+    let pct = agent_log::percent_changed(&draft, saved_text);
+    if !agent_log::builds_on_draft(pct) {
+        return Ok(());
+    }
+    let already_saved = log.iter().rev().any(|d| {
+        d.decision_key == agent_log::action_key(agent)
+            && serde_json::from_str::<serde_json::Value>(&d.value_json).is_ok_and(|v| {
+                v["output_id"].as_i64() == Some(output_id)
+                    && v["action"] == "saved"
+                    && v["details"]["saved_text"].as_str() == Some(saved_text)
+            })
+    });
+    if already_saved {
+        return Ok(());
+    }
     agent_log::log_action(
-        &db,
-        agent_stage(&agent),
-        &agent,
+        db,
+        agent_stage(agent),
+        agent,
         output_id,
         "saved",
         serde_json::json!({ "percent_changed": pct, "unchanged": pct == 0, "saved_text": saved_text }),
@@ -6918,5 +6938,48 @@ mod codebook_log_tests {
         assert_eq!(v["output_id"], result);
         assert_eq!(v["action"], "edited");
         assert_eq!(v["details"]["code"], "Survey");
+    }
+}
+
+#[cfg(test)]
+mod draft_save_tests {
+    use super::*;
+    use crate::db::test_db;
+    use crate::suggest::CallMeta;
+
+    async fn saves(db: &db::ProjectDb) -> Vec<serde_json::Value> {
+        db.list_decision_log()
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|d| d.decision_key == "agent.synthesis.action")
+            .map(|d| serde_json::from_str(&d.value_json).unwrap())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn saves_link_only_when_they_build_on_the_draft_and_only_once() {
+        let (db, _d) = test_db().await;
+        let meta = CallMeta { model_requested: "m".into(), model_used: "m".into(), prompt_hash: "h".into(), temperature: 0.2, seed: None };
+        let draft = "students rely on chatbots for quick answers and skip reflection in class";
+        let id = agent_log::log_output(&db, "assessing", "synthesis", "synthesis", &meta, serde_json::json!({ "draft": draft }), None)
+            .await
+            .unwrap();
+        remember_draft(&db, "synthesis", Some(id)).await;
+
+        // Lightly edited: linked, with the share changed.
+        let edited = "students rely on chatbots for quick answers and often skip reflection in class";
+        log_draft_saved_inner(&db, "synthesis", edited).await.unwrap();
+        // Same text again: not logged twice.
+        log_draft_saved_inner(&db, "synthesis", edited).await.unwrap();
+        let s = saves(&db).await;
+        assert_eq!(s.len(), 1);
+        assert!(s[0]["details"]["percent_changed"].as_u64().unwrap() <= 10);
+
+        // Rewritten from scratch: the researcher's own text, not linked.
+        log_draft_saved_inner(&db, "synthesis", "A completely different narrative about assessment design and integrity policy.")
+            .await
+            .unwrap();
+        assert_eq!(saves(&db).await.len(), 1);
     }
 }
