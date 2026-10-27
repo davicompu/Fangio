@@ -20,7 +20,7 @@ import {
   api,
   type BuildRagProgress,
   type BuildRagResult,
-  type ClusterNode,
+  type ClusterResult,
   type ClusterProgress,
   type GlossaryProgress,
 } from "./api";
@@ -40,7 +40,7 @@ interface TaskBase {
 
 export interface ClusterTaskState extends TaskBase {
   progress: ClusterProgress | null;
-  result: ClusterNode[] | null;
+  result: ClusterResult | null;
 }
 
 export interface GlossaryTaskState extends TaskBase {
@@ -140,7 +140,8 @@ export async function bootstrapBgTaskListeners(): Promise<UnlistenFn[]> {
 // resolves. Callers (UI components) call them and then watch the store via
 // the hooks above. They never throw; errors land in `state.<kind>.error`.
 
-export function startClusterBuild(): void {
+/** k: number of clusters, or null for automatic. */
+export function startClusterBuild(k: number | null): void {
   if (state.cluster.running) return;
   update("cluster", {
     running: true,
@@ -150,7 +151,7 @@ export function startClusterBuild(): void {
     startedAt: Date.now(),
     finishedAt: null,
   });
-  api.clusterCorpus()
+  api.clusterCorpus(k)
     .then((clusters) => update("cluster", { running: false, result: clusters, finishedAt: Date.now() }))
     .catch((e) => update("cluster", { running: false, error: e instanceof Error ? e.message : String(e), finishedAt: Date.now() }));
 }

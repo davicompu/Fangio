@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import {
   ReactFlow,
   Background,
@@ -13,7 +13,7 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { Loader2, Network, RefreshCw } from "lucide-react";
-import { type ClusterArticle, type ClusterNode } from "../../lib/api";
+import { api, type ClusterArticle, type ClusterNode } from "../../lib/api";
 import { startClusterBuild, useClusterTask } from "../../lib/bgTasks";
 
 // ── Custom node types ─────────────────────────────────────────────────────────
@@ -144,15 +144,27 @@ export function ClustersTab() {
   // off from this tab or the run completed while they were elsewhere),
   // rebuild the graph. The dependency on `task.finishedAt` makes sure we
   // only react to actual completions, not every store update.
+  // Number of clusters: null = automatic. Remembered per project.
+  const [k, setK] = useState<number | null>(null);
+  useEffect(() => {
+    api.getSettings()
+      .then((s) => {
+        const v = s["clusters.k"];
+        setK(typeof v === "number" ? v : null);
+      })
+      .catch(() => {});
+  }, []);
+
   useEffect(() => {
     if (task.result) {
-      const { nodes: n, edges: e } = buildGraph(task.result);
+      const { nodes: n, edges: e } = buildGraph(task.result.clusters);
       setNodes(n);
       setEdges(e);
     }
   }, [task.finishedAt, task.result, setNodes, setEdges]);
 
-  const run = () => startClusterBuild();
+  const run = () => startClusterBuild(k);
+  const result = task.result;
 
   if (!hasData && !loading) {
     return (
@@ -165,6 +177,7 @@ export function ClustersTab() {
             Requires indexed and embedded PDFs.
           </p>
         </div>
+        <ClusterCountInput value={k} onChange={setK} />
         {error && <p className="text-[12px] text-[var(--color-error-600)]">{error}</p>}
         <button
           onClick={run}
@@ -210,17 +223,72 @@ export function ClustersTab() {
         <Background color="var(--color-paper-200)" gap={20} />
         <Controls />
       </ReactFlow>
-      <button
-        onClick={run}
-        className="absolute top-3 right-3 z-10 flex items-center gap-1.5 px-3 py-1.5 rounded-[var(--radius-sm)] bg-white border border-[var(--color-paper-300)] text-[11px] font-medium text-[var(--color-paper-600)] hover:text-[var(--color-ink-800)] shadow-sm transition-paper"
-      >
-        <RefreshCw size={11} strokeWidth={2} /> Rebuild
-      </button>
+      <div className="absolute top-3 right-3 z-10 flex items-center gap-2 px-3 py-1.5 rounded-[var(--radius-sm)] bg-white border border-[var(--color-paper-300)] shadow-sm">
+        {result && (
+          <span className="text-[11px] text-[var(--color-paper-500)]">
+            {result.k_used} clusters from {result.articles} papers
+            {result.k_requested === null
+              ? " (automatic)"
+              : result.k_requested !== result.k_used
+              ? ` (you asked for ${result.k_requested})`
+              : ""}
+          </span>
+        )}
+        <ClusterCountInput value={k} onChange={setK} compact />
+        <button
+          onClick={run}
+          className="flex items-center gap-1.5 px-2 py-1 rounded-[var(--radius-xs)] text-[11px] font-medium text-[var(--color-paper-600)] hover:text-[var(--color-ink-800)] hover:bg-[var(--color-paper-100)] transition-paper"
+          title="Re-run clustering with this number. Cluster labels are regenerated."
+        >
+          <RefreshCw size={11} strokeWidth={2} /> Rebuild
+        </button>
+      </div>
       {error && (
         <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-10 px-4 py-2 rounded-[var(--radius-sm)] bg-white border border-[var(--color-error-200)] text-[12px] text-[var(--color-error-600)] shadow-sm">
           {error}
         </div>
       )}
     </div>
+  );
+}
+
+/** "Automatic" or a chosen number of clusters (2–50; the build keeps it at or
+ *  below the number of papers). */
+function ClusterCountInput({
+  value,
+  onChange,
+  compact = false,
+}: {
+  value: number | null;
+  onChange: (v: number | null) => void;
+  compact?: boolean;
+}) {
+  const auto = value === null;
+  return (
+    <label className="flex items-center gap-1.5 text-[11px] text-[var(--color-paper-600)]">
+      {compact ? "Clusters" : "Number of clusters"}
+      <select
+        value={auto ? "auto" : "set"}
+        onChange={(e) => onChange(e.target.value === "auto" ? null : 8)}
+        className="px-1.5 py-0.5 rounded-[var(--radius-xs)] border border-[var(--color-paper-300)] bg-white text-[11px]"
+      >
+        <option value="auto">Automatic</option>
+        <option value="set">Choose…</option>
+      </select>
+      {!auto && (
+        <input
+          type="number"
+          min={2}
+          max={50}
+          value={value}
+          onChange={(e) => {
+            const n = Number.parseInt(e.target.value, 10);
+            if (Number.isFinite(n)) onChange(Math.min(50, Math.max(2, n)));
+          }}
+          className="w-14 px-1.5 py-0.5 rounded-[var(--radius-xs)] border border-[var(--color-paper-300)] bg-white text-[11px] tabular-nums"
+          aria-label="Number of clusters"
+        />
+      )}
+    </label>
   );
 }

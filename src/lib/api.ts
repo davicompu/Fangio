@@ -516,6 +516,16 @@ export interface ClusterNode {
   articles: ClusterArticle[];
 }
 
+export interface ClusterResult {
+  /** The number the researcher asked for (null = automatic). */
+  k_requested: number | null;
+  /** The number actually built (kept between 2 and the paper count). */
+  k_used: number;
+  /** Papers with embedded PDF text that were clustered. */
+  articles: number;
+  clusters: ClusterNode[];
+}
+
 export interface ClusterProgress {
   phase: "embedding" | "clustering" | "labelling" | "done";
   done: number;
@@ -897,7 +907,8 @@ export const api = {
   pauseAiCoding() { return invoke<void>("pause_ai_coding"); },
   resumeAiCoding() { return invoke<void>("resume_ai_coding"); },
   cancelAiCoding() { return invoke<void>("cancel_ai_coding"); },
-  clusterCorpus() { return invoke<ClusterNode[]>("cluster_corpus"); },
+  /** k: number of clusters, or null for automatic. */
+  clusterCorpus(k: number | null) { return invoke<ClusterResult>("cluster_corpus", { k }); },
   /** mode "rebuild" (default) clears and re-extracts everything; "update" only adds terms from articles not yet covered. */
   extractGlossary(mode: "rebuild" | "update" = "rebuild") {
     return invoke<number>("extract_glossary", { mode });

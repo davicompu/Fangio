@@ -4735,6 +4735,17 @@ struct ClusterNode {
 }
 
 #[derive(serde::Serialize, Clone)]
+struct ClusterResult {
+    /// The number the researcher asked for (None = automatic).
+    k_requested: Option<usize>,
+    /// The number actually built, after keeping it between 2 and `articles`.
+    k_used: usize,
+    /// Papers with embedded PDF text that were clustered.
+    articles: usize,
+    clusters: Vec<ClusterNode>,
+}
+
+#[derive(serde::Serialize, Clone)]
 struct GlossaryProgress {
     done: usize,
     total: usize,
@@ -4892,7 +4903,13 @@ async fn extract_glossary(
 }
 
 #[tauri::command]
-async fn cluster_corpus(app: tauri::AppHandle<tauri::Wry>, state: State<'_, AppState>) -> Result<Vec<ClusterNode>, String> {
+async fn cluster_corpus(
+    app: tauri::AppHandle<tauri::Wry>,
+    state: State<'_, AppState>,
+    k: Option<usize>,
+) -> Result<ClusterResult, String> {
+    // The researcher's chosen number of clusters (None = automatic).
+    let requested_k = k;
     let db = state.current().await.ok_or("no project open")?;
     let settings = db.all_settings().await.map_err(err)?;
     let base_url = settings.get("lmstudio.base_url").and_then(|v| v.as_str()).unwrap_or("http://127.0.0.1:1234/v1").to_string();
@@ -4933,48 +4950,9 @@ async fn cluster_corpus(app: tauri::AppHandle<tauri::Wry>, state: State<'_, AppS
         return Err("Need at least 2 articles with embeddings to cluster.".into());
     }
 
-    // K-means: k = min(8, n/2), max 20 iterations
-    let k = (n / 2).min(8).max(2);
-    let dim = articles[0].2.len();
-
-    // Initialize centroids by picking k evenly-spaced articles
-    let mut centroids: Vec<Vec<f32>> = (0..k)
-        .map(|i| articles[i * n / k].2.clone())
-        .collect();
-
-    let mut assignments = vec![0usize; n];
-
-    for _iter in 0..20 {
-        // Assign
-        let mut changed = false;
-        for (i, (_, _, emb)) in articles.iter().enumerate() {
-            let best = (0..k)
-                .max_by(|&a, &b| {
-                    vector::cosine(emb, &centroids[a])
-                        .partial_cmp(&vector::cosine(emb, &centroids[b]))
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                })
-                .unwrap_or(0);
-            if assignments[i] != best { changed = true; }
-            assignments[i] = best;
-        }
-        if !changed { break; }
-
-        // Update centroids
-        let mut sums = vec![vec![0.0f32; dim]; k];
-        let mut counts = vec![0usize; k];
-        for (i, (_, _, emb)) in articles.iter().enumerate() {
-            let c = assignments[i];
-            for j in 0..dim { sums[c][j] += emb[j]; }
-            counts[c] += 1;
-        }
-        for c in 0..k {
-            if counts[c] > 0 {
-                let n_c = counts[c] as f32;
-                centroids[c] = sums[c].iter().map(|v| v / n_c).collect();
-            }
-        }
-    }
+    let k = semantic::cluster_k(k, n);
+    let vectors: Vec<Vec<f32>> = articles.iter().map(|(_, _, v)| v.clone()).collect();
+    let assignments = semantic::kmeans(&vectors, k);
 
     let _ = app.emit("clusters:progress", ClusterProgress { phase: "clustering".into(), done: n, total: n });
 
@@ -5021,7 +4999,34 @@ async fn cluster_corpus(app: tauri::AppHandle<tauri::Wry>, state: State<'_, AppS
     }
 
     let _ = app.emit("clusters:progress", ClusterProgress { phase: "done".into(), done: total_groups, total: total_groups });
-    Ok(nodes)
+
+    // Remember the choice, and record the setting used for this build. A number
+    // the researcher picked is theirs; the automatic one is the app's.
+    let _ = db.set_setting("clusters.k", &serde_json::json!(requested_k)).await;
+    let embed_model = settings
+        .get("lmstudio.embed_model")
+        .and_then(|v| v.as_str())
+        .unwrap_or("text-embedding-embeddinggemma-300m-qat")
+        .to_string();
+    let _ = db
+        .append_decision_log_entry(
+            "assessing",
+            Some("clusters"),
+            "rag.clusters.k",
+            &serde_json::json!({
+                "requested": requested_k,
+                "clusters_built": k,
+                "non_empty_clusters": total_groups,
+                "articles": n,
+                "embedding_model": embed_model,
+                "label_model": chat_model,
+            }),
+            None,
+            if requested_k.is_some() { "human" } else { "app" },
+        )
+        .await;
+
+    Ok(ClusterResult { k_requested: requested_k, k_used: k, articles: n, clusters: nodes })
 }
 
 #[tauri::command]
