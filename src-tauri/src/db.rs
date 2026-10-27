@@ -201,6 +201,9 @@ pub struct CodingRow {
     pub temperature: Option<f64>,
     pub prompt_hash2: Option<String>,
     pub temperature2: Option<f64>,
+    /// The wording this code had before corpus consolidation renamed it.
+    #[serde(default)]
+    pub consolidated_from: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -444,6 +447,11 @@ pub struct GlossaryMergeRecord {
     pub status: String,
     pub keep_term: Option<String>,
     pub decided_at: String,
+    /// For an accepted merge: whether it's reflected in the glossary now (the
+    /// kept term exists and the other isn't a separate term). False when a
+    /// re-extraction no longer finds the kept term; the merge is reapplied
+    /// automatically if a later extraction does.
+    pub in_effect: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -1347,6 +1355,20 @@ impl ProjectDb {
             .bind(id)
             .execute(&mut *tx)
             .await?;
+        // Opens of suggestions for the old code carry over to the new name
+        // (targets end in "|dimension|code key").
+        let old_suffix = format!("|{dimension}|{}", crate::semantic::term_key(&old_code));
+        let new_suffix = format!("|{dimension}|{}", crate::semantic::term_key(new_code));
+        sqlx::query(
+            "UPDATE ai_output_open SET target = substr(target, 1, length(target) - length(?)) || ? \
+             WHERE kind = 'coding' AND substr(target, -length(?)) = ?",
+        )
+        .bind(&old_suffix)
+        .bind(&new_suffix)
+        .bind(&old_suffix)
+        .bind(&old_suffix)
+        .execute(&mut *tx)
+        .await?;
         tx.commit().await?;
         Ok(())
     }
@@ -1521,7 +1543,7 @@ impl ProjectDb {
         }
         let placeholders: String = std::iter::repeat("?").take(ids.len()).collect::<Vec<_>>().join(",");
         let sql = format!(
-            "SELECT c.id, c.article_id, c.dimension, c.code, c.rationale, c.source, c.model_name, c.created_at, \
+            "SELECT c.id, c.article_id, c.dimension, c.code, c.rationale, c.source, c.model_name, c.created_at, c.consolidated_from, \
              c.rationale2, c.model_name2, c.confidence, c.confidence2, \
              a1.model_used AS model_used, a2.model_used AS model_used2, a1.prompt_hash AS prompt_hash, \
              a1.temperature AS temperature, a2.prompt_hash AS prompt_hash2, a2.temperature AS temperature2 \
@@ -1557,6 +1579,7 @@ impl ProjectDb {
                 temperature: r.get("temperature"),
                 prompt_hash2: r.get("prompt_hash2"),
                 temperature2: r.get("temperature2"),
+                consolidated_from: r.get("consolidated_from"),
             })
             .collect())
     }
@@ -4367,6 +4390,12 @@ impl ProjectDb {
     }
 
     pub async fn list_glossary_merges(&self) -> Result<Vec<GlossaryMergeRecord>> {
+        let term_keys: std::collections::HashSet<String> = self
+            .list_glossary_terms()
+            .await?
+            .iter()
+            .map(|t| crate::semantic::term_key(&t.term))
+            .collect();
         let rows = sqlx::query(
             "SELECT id, term_a, term_b, similarity, embedding_model, status, keep_term, decided_at \
              FROM glossary_merge ORDER BY decided_at DESC, id DESC",
@@ -4384,6 +4413,19 @@ impl ProjectDb {
                 status: r.get("status"),
                 keep_term: r.get("keep_term"),
                 decided_at: r.get("decided_at"),
+                in_effect: {
+                    let status: String = r.get("status");
+                    let keep: Option<String> = r.get("keep_term");
+                    let (a, b): (String, String) = (r.get("term_a"), r.get("term_b"));
+                    match keep.filter(|_| status == "accepted") {
+                        Some(k) => {
+                            let other = if crate::semantic::term_key(&a) == crate::semantic::term_key(&k) { b } else { a };
+                            term_keys.contains(&crate::semantic::term_key(&k))
+                                && !term_keys.contains(&crate::semantic::term_key(&other))
+                        }
+                        None => false,
+                    }
+                },
             })
             .collect())
     }
@@ -5767,5 +5809,47 @@ mod embedding_model_filter_tests {
         assert_eq!(all[0].4, "two");
         assert_eq!(db.embedded_chunks_for_article(a, "old-model").await.unwrap().len(), 1);
         assert!(db.all_embedded_chunks("unused").await.unwrap().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod rename_and_stale_merge_tests {
+    use super::test_db;
+
+    #[tokio::test]
+    async fn renaming_a_code_keeps_its_open_history() {
+        let (db, _d) = test_db().await;
+        let id = db.add_framework_code_def("Method", "Survey study", None).await.unwrap();
+        let t_old = crate::agent_log::coding_target(7, "Method", "Survey study");
+        db.record_ai_output_open("coding", &t_old, "tester").await.unwrap();
+        db.record_ai_output_open("coding", &t_old, "tester").await.unwrap();
+        // Same code in another dimension must not move.
+        let other = crate::agent_log::coding_target(7, "Context", "Survey study");
+        db.record_ai_output_open("coding", &other, "tester").await.unwrap();
+
+        db.rename_framework_code_def(id, "Questionnaire survey").await.unwrap();
+        let stats = db.ai_output_open_stats("coding").await.unwrap();
+        assert_eq!(stats.get(&crate::agent_log::coding_target(7, "Method", "Questionnaire survey")).unwrap().0, 2);
+        assert!(stats.get(&t_old).is_none());
+        assert_eq!(stats.get(&other).unwrap().0, 1);
+    }
+
+    #[tokio::test]
+    async fn merge_is_flagged_not_in_effect_when_the_kept_term_is_gone() {
+        let (db, _d) = test_db().await;
+        db.upsert_glossary_term("Generative AI", "d", 1).await.unwrap();
+        db.upsert_glossary_term("GenAI", "d", 2).await.unwrap();
+        let ids: Vec<(String, i64)> = db.list_glossary_terms().await.unwrap().into_iter().map(|t| (t.term, t.id)).collect();
+        let id = |n: &str| ids.iter().find(|(t, _)| t == n).unwrap().1;
+        db.accept_glossary_merge(id("Generative AI"), id("GenAI"), Some(0.9), Some("m")).await.unwrap();
+        assert!(db.list_glossary_merges().await.unwrap()[0].in_effect);
+
+        // Re-extraction no longer finds the kept term, only the other one.
+        db.clear_glossary().await.unwrap();
+        db.upsert_glossary_term("GenAI", "d", 2).await.unwrap();
+        db.reapply_glossary_merges().await.unwrap();
+        let m = &db.list_glossary_merges().await.unwrap()[0];
+        assert_eq!(m.status, "accepted");
+        assert!(!m.in_effect);
     }
 }

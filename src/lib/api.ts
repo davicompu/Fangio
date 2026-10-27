@@ -631,6 +631,8 @@ export interface GlossaryMergeRecord {
   status: "accepted" | "dismissed" | "undone";
   keep_term: string | null;
   decided_at: string;
+  /** Accepted merge currently reflected in the glossary. */
+  in_effect: boolean;
 }
 
 export interface GlossaryMergeOverview {

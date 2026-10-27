@@ -1013,11 +1013,16 @@ pub async fn generate_decision_report(db: &ProjectDb) -> Result<String> {
                 c.temperature2.map(crate::transparency::format_temperature),
             );
             // Opens of the suggestion behind an AI code (researcher codes have none).
+            // A consolidated code also counts opens under the wording it had.
             let opened = if c.source.starts_with("model-") {
-                match coding_opens.get(&crate::agent_log::coding_target(c.article_id, &c.dimension, &c.code)) {
-                    Some((n, f, l, by)) => crate::transparency::opens_cell(*n, Some(f), Some(l), Some(by)),
-                    None => crate::transparency::opens_cell(0, None, None, None),
-                }
+                let keys = std::iter::once(c.code.as_str()).chain(c.consolidated_from.as_deref());
+                let stats: Vec<&(i64, String, String, String)> = keys
+                    .filter_map(|k| coding_opens.get(&crate::agent_log::coding_target(c.article_id, &c.dimension, k)))
+                    .collect();
+                let n: i64 = stats.iter().map(|s| s.0).sum();
+                let first = stats.iter().map(|s| s.1.as_str()).min();
+                let last = stats.iter().max_by(|a, b| a.2.cmp(&b.2));
+                crate::transparency::opens_cell(n, first, last.map(|s| s.2.as_str()), last.map(|s| s.3.as_str()))
             } else {
                 "—".into()
             };

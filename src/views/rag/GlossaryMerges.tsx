@@ -177,17 +177,22 @@ export function GlossaryMerges({ termCount, onChanged }: { termCount: number; on
                   <div key={d.id} className="flex items-center gap-2 text-[12px] py-1">
                     <span className="flex-1 min-w-0 text-[var(--color-ink-800)]">
                       <span className="font-semibold">{d.keep_term}</span>
-                      <span className="text-[var(--color-paper-500)]"> now includes </span>
+                      <span className="text-[var(--color-paper-500)]">{d.in_effect ? " now includes " : " + "}</span>
                       {other}
+                      {!d.in_effect && (
+                        <span className="block text-[11px] text-[var(--color-paper-500)]">
+                          Not in effect now: “{d.keep_term}” isn't in the glossary after the last extraction. It's applied again automatically if a later extraction finds it.
+                        </span>
+                      )}
                     </span>
-                    <button
+                    {d.in_effect && <button
                       type="button"
                       disabled={busy !== null}
                       onClick={() => act(`u${d.id}`, () => api.undoGlossaryMerge(d.id))}
                       className="inline-flex items-center gap-1 text-[11px] text-[var(--color-accent-700)] hover:underline disabled:opacity-50"
                     >
                       <RotateCcw size={11} /> Undo
-                    </button>
+                    </button>}
                   </div>
                 );
               })}
