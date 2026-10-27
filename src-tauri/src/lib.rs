@@ -844,15 +844,35 @@ async fn add_framework_code_def(
     state: State<'_, AppState>,
 ) -> Result<i64, String> {
     let db = state.current().await.ok_or("no project open")?;
-    db.add_framework_code_def(&args.dimension, &args.code, args.description.as_deref())
+    let id = db
+        .add_framework_code_def(&args.dimension, &args.code, args.description.as_deref())
         .await
-        .map_err(err)
+        .map_err(err)?;
+    log_codebook_edit(&db, serde_json::json!({ "change": "added", "dimension": args.dimension, "code": args.code })).await;
+    Ok(id)
+}
+
+/// Log the researcher's edit to a codebook the builder produced (nothing is
+/// logged if no codebook was ever built by the AI raters).
+async fn log_codebook_edit(db: &db::ProjectDb, details: serde_json::Value) {
+    if let Ok(Some(id)) = db.get_setting("agent.codebook.last_output_id").await.map(|v| v.and_then(|v| v.as_i64())) {
+        let _ = agent_log::log_action(db, agent_stage("codebook"), "codebook", id, "edited", details).await;
+    }
+}
+
+async fn code_def_by_id(db: &db::ProjectDb, id: i64) -> Option<(String, String)> {
+    db.list_framework_code_defs().await.ok()?.into_iter().find(|d| d.id == id).map(|d| (d.dimension, d.code))
 }
 
 #[tauri::command]
 async fn delete_framework_code_def(id: i64, state: State<'_, AppState>) -> Result<(), String> {
     let db = state.current().await.ok_or("no project open")?;
-    db.delete_framework_code_def(id).await.map_err(err)
+    let before = code_def_by_id(&db, id).await;
+    db.delete_framework_code_def(id).await.map_err(err)?;
+    if let Some((dimension, code)) = before {
+        log_codebook_edit(&db, serde_json::json!({ "change": "removed", "dimension": dimension, "code": code })).await;
+    }
+    Ok(())
 }
 
 /// Sentence-case every code in the codebook (and applied codings) so the whole
@@ -868,7 +888,13 @@ async fn normalize_codebook_casing(state: State<'_, AppState>) -> Result<u64, St
 #[tauri::command]
 async fn rename_framework_code_def(id: i64, code: String, state: State<'_, AppState>) -> Result<(), String> {
     let db = state.current().await.ok_or("no project open")?;
-    db.rename_framework_code_def(id, &canonical_code_case(&code)).await.map_err(err)
+    let before = code_def_by_id(&db, id).await;
+    let new_code = canonical_code_case(&code);
+    db.rename_framework_code_def(id, &new_code).await.map_err(err)?;
+    if let Some((dimension, old)) = before {
+        log_codebook_edit(&db, serde_json::json!({ "change": "renamed", "dimension": dimension, "from": old, "code": new_code })).await;
+    }
+    Ok(())
 }
 
 /// Discard all AI-applied coding (and its proposals/merges/consolidations),
@@ -2555,7 +2581,21 @@ async fn build_codebook(
                 &prompt_existing, &a.title, a.authors.as_deref(), &context,
                 &base_prompt, profile, false /* open generation — building the codebook */, temperature, seed, api_key.as_deref(),
             ).await;
-            if let Ok((codings, _meta)) = codings {
+            if let Ok((codings, meta)) = codings {
+                let proposals: serde_json::Map<String, serde_json::Value> = codings
+                    .iter()
+                    .map(|dc| (dc.dimension.clone(), serde_json::json!(dc.suggestions.iter().map(|s| &s.code).collect::<Vec<_>>())))
+                    .collect();
+                let _ = agent_log::log_output(
+                    &db,
+                    agent_stage("codebook"),
+                    "codebook",
+                    "codebook",
+                    &meta,
+                    serde_json::json!({ "article_id": a.id, "article_title": a.title, "proposals": proposals }),
+                    None,
+                )
+                .await;
                 for dc in codings {
                     let entry = proposed.entry(dc.dimension.clone()).or_default();
                     for s in dc.suggestions {
@@ -2571,6 +2611,9 @@ async fn build_codebook(
 
     // Consolidate per dimension into canonical codes, anchored on existing codes.
     let mut codes_added = 0usize;
+    // What the grouping kept, for the log: dimension, code, and the proposed
+    // wordings folded into it with how often each was proposed.
+    let mut added_log: Vec<serde_json::Value> = Vec::new();
     for (di, (dim, _)) in dims_to_code.iter().enumerate() {
         let _ = app.emit("codebook:progress", CodebookProgress { done: di, total: dims_to_code.len(), phase: "consolidating".into(), detail: dim.clone() });
 
@@ -2585,18 +2628,28 @@ async fn build_codebook(
         candidates.sort_by(|a, b| b.2.cmp(&a.2).then(b.1.cmp(&a.1)));
 
         // Greedy cluster by themes_match; first-seen in each cluster is canonical.
-        let mut reps: Vec<(String, bool)> = Vec::new();
-        for (orig, _cnt, anchor) in candidates {
-            let matched = reps.iter().any(|(rep, _)| rep.eq_ignore_ascii_case(&orig) || themes_match(&orig, rep));
-            if !matched { reps.push((orig, anchor)); }
+        let mut reps: Vec<(String, bool, Vec<(String, i64)>)> = Vec::new();
+        for (orig, cnt, anchor) in candidates {
+            match reps.iter_mut().find(|(rep, _, _)| rep.eq_ignore_ascii_case(&orig) || themes_match(&orig, rep)) {
+                Some((_, _, folded)) => folded.push((orig, cnt)),
+                None => reps.push((orig.clone(), anchor, vec![(orig, cnt)])),
+            }
         }
 
         // Write new canonical codes (non-anchors not already in the codebook).
-        for (rep, anchor) in reps {
+        for (rep, anchor, folded) in reps {
             if anchor || rep.is_empty() { continue; }
             let exists = existing_defs.iter().any(|d| &d.dimension == dim && d.code.eq_ignore_ascii_case(&rep));
             if exists { continue; }
-            if db.add_framework_code_def(dim, &canonical_code_case(&rep), None).await.is_ok() { codes_added += 1; }
+            let code = canonical_code_case(&rep);
+            if db.add_framework_code_def(dim, &code, None).await.is_ok() {
+                codes_added += 1;
+                added_log.push(serde_json::json!({
+                    "dimension": dim,
+                    "code": code,
+                    "from_proposals": folded.iter().map(|(w, n)| serde_json::json!({ "wording": w, "times_proposed": n })).collect::<Vec<_>>(),
+                }));
+            }
         }
     }
 
@@ -2618,6 +2671,21 @@ async fn build_codebook(
 
     let _ = app.emit("codebook:progress", CodebookProgress { done: dims_to_code.len(), total: dims_to_code.len(), phase: "consolidating".into(), detail: String::new() });
     db.record_telemetry("coding.build_codebook", &serde_json::json!({ "sampled": sampled, "codes_added": codes_added, "only_missing": args.only_missing })).await.ok();
+    let result_id = agent_log::log_app_result(
+        &db,
+        agent_stage("codebook"),
+        "codebook",
+        serde_json::json!({
+            "extend_only": args.only_missing,
+            "articles": processed_ids,
+            "rater_models": raters.iter().map(|(m, _)| *m).collect::<Vec<_>>(),
+            "codes_added": added_log,
+        }),
+        Some("Codes the raters proposed were grouped by wording (existing codes first, then by how often proposed); the first wording in each new group was added."),
+    )
+    .await
+    .ok();
+    remember_draft(&db, "codebook", result_id).await;
 
     Ok(BuildCodebookResult { sampled, codes_added, dimensions: dims_to_code.len() })
 }
@@ -6744,5 +6812,33 @@ mod coding_accept_tests {
         let ev = db.list_review_events().await.unwrap();
         assert_eq!(ev[0].action, "reject_code");
         assert_eq!(ev[0].detail.as_deref(), Some("Rejected code “SEM” in Method (merged by the merging agent)"));
+    }
+}
+
+#[cfg(test)]
+mod codebook_log_tests {
+    use super::*;
+    use crate::db::test_db;
+
+    #[tokio::test]
+    async fn edits_are_logged_only_after_an_ai_built_codebook() {
+        let (db, _d) = test_db().await;
+        log_codebook_edit(&db, serde_json::json!({ "change": "added" })).await;
+        assert!(db.list_decision_log().await.unwrap().is_empty(), "no AI codebook yet: nothing to link to");
+
+        let result = agent_log::log_app_result(&db, "arranging", "codebook", serde_json::json!({ "codes_added": [] }), None)
+            .await
+            .unwrap();
+        remember_draft(&db, "codebook", Some(result)).await;
+        log_codebook_edit(&db, serde_json::json!({ "change": "removed", "dimension": "Method", "code": "Survey" })).await;
+
+        let log = db.list_decision_log().await.unwrap();
+        let r = log.iter().find(|d| d.decision_key == "agent.codebook.result").unwrap();
+        let a = log.iter().find(|d| d.decision_key == "agent.codebook.action").unwrap();
+        assert_eq!((r.actor.as_str(), a.actor.as_str()), ("app", "human"));
+        let v: serde_json::Value = serde_json::from_str(&a.value_json).unwrap();
+        assert_eq!(v["output_id"], result);
+        assert_eq!(v["action"], "edited");
+        assert_eq!(v["details"]["code"], "Survey");
     }
 }

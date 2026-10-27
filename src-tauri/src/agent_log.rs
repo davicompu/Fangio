@@ -111,6 +111,13 @@ pub fn percent_changed(draft: &str, saved: &str) -> u8 {
     ((1.0 - kept) * 100.0).round().clamp(0.0, 100.0) as u8
 }
 
+/// Log a result the app computed without an AI model (for example grouping
+/// proposed codes by wording). Marked `app`.
+pub async fn log_app_result(db: &ProjectDb, stage: &str, agent: &str, value: Value, rationale: Option<&str>) -> Result<i64> {
+    db.append_decision_log_entry(stage, Some(agent), &format!("agent.{agent}.result"), &value, rationale, "app")
+        .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
