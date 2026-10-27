@@ -1,6 +1,6 @@
 [package]
 name = "reeves"
-version = "0.3.2"
+version = "0.3.3"
 description = "Reeves — systematic literature reviews on your own machine"
 authors = ["Reeves contributors"]
 edition = "2021"

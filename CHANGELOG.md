@@ -2,6 +2,16 @@
 
 All notable user-facing changes to Reeves.
 
+## 0.3.3 — October 2026
+
+### Added
+
+- **Number of clusters** — choose how many clusters to build in Ask the
+  Literature → Clusters, before the first build or afterwards next to Rebuild.
+  "Automatic" keeps the previous behaviour. Each build is recorded in the
+  decision log.
+- **Glossary A–Z index** — jump between letters from the index on the right.
+
 ## 0.3.2 — October 2026
 
 ### Added
