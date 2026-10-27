@@ -329,7 +329,13 @@ export interface SuggestQueryResult {
   rationale: string;
   model: string | null;
   latency_ms: number;
+  /** Decision-log id of the logged suggestion (null if logging failed). */
+  output_id: number | null;
 }
+
+/** Agents whose outputs and the researcher's actions on them are logged. */
+export type LoggedAgent = "query" | "codebook" | "synthesis" | "agenda";
+export type AgentAction = "accepted" | "undone" | "dismissed" | "saved" | "opened" | "edited";
 
 export interface StepQuestion {
   q: string;
@@ -1022,6 +1028,11 @@ export const api = {
     return invoke<StepQuestionsResult>("suggest_step_questions", {
       args: { step_id: stepId, current_value: currentValue },
     });
+  },
+  /** Log what the researcher did with an agent's output. Never throws. */
+  logAgentAction(agent: LoggedAgent, outputId: number | null | undefined, action: AgentAction, details?: unknown) {
+    if (outputId == null) return Promise.resolve();
+    return invoke<void>("log_agent_action", { agent, outputId, action, details: details ?? null }).catch(() => {});
   },
   suggestBooleanQuery(
     databases: string[],

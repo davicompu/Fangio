@@ -592,8 +592,9 @@ pub async fn suggest_query(
     inclusion_criteria: &[String],
     exclusion_criteria: &[String],
     temperature: f32,
+    seed: Option<i64>,
     api_key: Option<&str>,
-) -> Result<SuggestQueryResult> {
+) -> Result<(SuggestQueryResult, CallMeta)> {
     let db_list = if selected_databases.is_empty() {
         "(no databases selected yet)".to_string()
     } else {
@@ -699,17 +700,21 @@ No prose outside the JSON object."
         ChatMessage { role: "user".into(), content: user },
     ];
 
-    let result = lmstudio::chat(base_url, model, &messages, Some(temperature), api_key).await?;
+    let result = lmstudio::chat_seeded(base_url, model, &messages, Some(temperature), seed, api_key).await?;
+    let meta = call_meta(model, &messages, temperature, seed, &result);
 
     let (query, rationale) = parse_query_result(&result.content)
         .ok_or_else(|| anyhow!("could not parse JSON query result from model output"))?;
 
-    Ok(SuggestQueryResult {
-        query,
-        rationale,
-        model: result.model,
-        latency_ms: result.latency_ms,
-    })
+    Ok((
+        SuggestQueryResult {
+            query,
+            rationale,
+            model: result.model,
+            latency_ms: result.latency_ms,
+        },
+        meta,
+    ))
 }
 
 /// Extract `query` and `rationale` from a JSON object in the model's response.

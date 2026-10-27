@@ -17,6 +17,7 @@ mod pdf;
 mod recent;
 mod stats;
 mod suggest;
+mod agent_log;
 mod semantic;
 mod setup_assistant;
 mod transparency;
@@ -4338,7 +4339,7 @@ struct SuggestQueryArgs {
 async fn suggest_boolean_query(
     args: SuggestQueryArgs,
     state: State<'_, AppState>,
-) -> Result<suggest::SuggestQueryResult, String> {
+) -> Result<QuerySuggestionResponse, String> {
     let db = state.current().await.ok_or("no project open")?;
     let project = db.get_project().await.map_err(err)?;
     let settings = db.all_settings().await.map_err(err)?;
@@ -4373,10 +4374,30 @@ async fn suggest_boolean_query(
         &args.inclusion_criteria,
         &args.exclusion_criteria,
         temperature,
+        load_seed(&settings),
         api_key.as_deref(),
     )
     .await
     .map_err(err)?;
+    let (result, meta) = result;
+    let output_id = agent_log::log_output(
+        &db,
+        agent_stage("query"),
+        "query",
+        "query",
+        &meta,
+        serde_json::json!({
+            "mode": if args.existing_query.as_deref().map_or(true, |q| q.trim().is_empty()) { "suggest" } else { "advise" },
+            "existing_query": args.existing_query,
+            "databases": args.databases,
+            "inclusion_criteria": args.inclusion_criteria,
+            "exclusion_criteria": args.exclusion_criteria,
+            "suggestion": result.query,
+        }),
+        Some(&result.rationale),
+    )
+    .await
+    .ok();
     db.record_telemetry(
         "suggest.boolean_query",
         &serde_json::json!({
@@ -4388,7 +4409,47 @@ async fn suggest_boolean_query(
     )
     .await
     .ok();
-    Ok(result)
+    Ok(QuerySuggestionResponse { result, output_id })
+}
+
+#[derive(Debug, Serialize)]
+struct QuerySuggestionResponse {
+    #[serde(flatten)]
+    result: suggest::SuggestQueryResult,
+    /// Decision-log id of the logged suggestion, for the researcher's actions.
+    output_id: Option<i64>,
+}
+
+/// The review stage each logged agent belongs to.
+fn agent_stage(agent: &str) -> &'static str {
+    match agent {
+        "query" => "assembling",
+        "codebook" => "arranging",
+        _ => "assessing",
+    }
+}
+
+/// Record what the researcher did with an agent's logged output.
+#[tauri::command]
+async fn log_agent_action(
+    agent: String,
+    output_id: i64,
+    action: String,
+    details: Option<serde_json::Value>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let db = state.current().await.ok_or("no project open")?;
+    agent_log::log_action(
+        &db,
+        agent_stage(&agent),
+        &agent,
+        output_id,
+        &action,
+        details.unwrap_or(serde_json::Value::Null),
+    )
+    .await
+    .map_err(err)?;
+    Ok(())
 }
 
 // ── Journal scope commands ────────────────────────────────────────────────
@@ -6290,6 +6351,7 @@ pub fn run() {
             suggest_step_questions,
             log_setup_assistant_outcome,
             semantic_search_articles,
+            log_agent_action,
             glossary_merge_suggestions,
             accept_glossary_merge,
             dismiss_glossary_merge,

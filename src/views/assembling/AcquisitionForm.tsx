@@ -169,7 +169,12 @@ export function AcquisitionForm({ project, settings, onSaved, onSavedAdvance, on
     }
   };
 
+  // The logged suggestion behind the last accepted query, for logging an undo.
+  const acceptedOutputId = useRef<number | null>(null);
+
   const handleAccept = (suggested: string) => {
+    api.logAgentAction("query", suggestResult?.output_id, "accepted", { query: suggested, previous_query: query });
+    acceptedOutputId.current = suggestResult?.output_id ?? null;
     previousQuery.current = query;
     setQuery(suggested);
     setModalOpen(false);
@@ -179,6 +184,8 @@ export function AcquisitionForm({ project, settings, onSaved, onSavedAdvance, on
   const handleQueryKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if ((e.ctrlKey || e.metaKey) && e.key === "z" && previousQuery.current !== null) {
       e.preventDefault();
+      api.logAgentAction("query", acceptedOutputId.current, "undone", { restored_query: previousQuery.current });
+      acceptedOutputId.current = null;
       setQuery(previousQuery.current);
       previousQuery.current = null;
     }
@@ -499,7 +506,10 @@ export function AcquisitionForm({ project, settings, onSaved, onSavedAdvance, on
         result={suggestResult}
         error={suggestError}
         onAccept={handleAccept}
-        onDismiss={() => { setModalOpen(false); setSuggestResult(null); setSuggestError(null); }}
+        onDismiss={() => {
+          if (suggestResult) api.logAgentAction("query", suggestResult.output_id, "dismissed");
+          setModalOpen(false); setSuggestResult(null); setSuggestError(null);
+        }}
       />
     </div>
   );
