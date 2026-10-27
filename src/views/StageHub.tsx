@@ -77,7 +77,7 @@ export function StageHub({ project, onOpenSettings, onProjectChanged, onEnterSta
 
   // Per-field AI assistant state
   const [suggestingField, setSuggestingField] = useState<string | null>(null);
-  const [fieldSuggestions, setFieldSuggestions] = useState<Record<string, { suggestion: string; rationale: string } | null>>({});
+  const [fieldSuggestions, setFieldSuggestions] = useState<Record<string, { suggestion: string; rationale: string; call_id: string } | null>>({});
   const [fieldErrors, setFieldErrors] = useState<Record<string, string | null>>({});
 
   const handleFieldSuggest = async (fieldId: string, currentValue: string) => {
@@ -85,7 +85,7 @@ export function StageHub({ project, onOpenSettings, onProjectChanged, onEnterSta
     setFieldSuggestions((prev) => ({ ...prev, [fieldId]: null }));
     setFieldErrors((prev) => ({ ...prev, [fieldId]: null }));
     try {
-      const result = await api.suggestStep(fieldId, currentValue);
+      const result = await api.suggestStep(fieldId, currentValue, [], null, false);
       setFieldSuggestions((prev) => ({ ...prev, [fieldId]: result }));
     } catch (e: unknown) {
       const msg: string = e instanceof Error ? e.message : String(e);
@@ -105,11 +105,14 @@ export function StageHub({ project, onOpenSettings, onProjectChanged, onEnterSta
   const applyFieldSuggestion = (fieldId: string, setter: (v: string) => void) => {
     const s = fieldSuggestions[fieldId];
     if (!s) return;
+    api.logSetupAssistantOutcome(s.call_id, fieldId, "used", s.suggestion).catch(() => {});
     setter(s.suggestion);
     setFieldSuggestions((prev) => ({ ...prev, [fieldId]: null }));
   };
 
-  const dismissFieldSuggestion = (fieldId: string) => {
+  const dismissFieldSuggestion = (fieldId: string, currentValue: string) => {
+    const s = fieldSuggestions[fieldId];
+    if (s) api.logSetupAssistantOutcome(s.call_id, fieldId, "ignored", currentValue).catch(() => {});
     setFieldSuggestions((prev) => ({ ...prev, [fieldId]: null }));
     setFieldErrors((prev) => ({ ...prev, [fieldId]: null }));
   };
@@ -124,6 +127,12 @@ export function StageHub({ project, onOpenSettings, onProjectChanged, onEnterSta
   };
 
   const handleSave = async () => {
+    // Suggestions still on screen when saving were neither applied nor dismissed.
+    const drafts: Record<string, string> = { rq_what: draftWhat, rq_how: draftHow, rq_where: draftWhere, domain: draftDomain };
+    for (const [fieldId, sg] of Object.entries(fieldSuggestions)) {
+      if (sg) api.logSetupAssistantOutcome(sg.call_id, fieldId, "ignored", drafts[fieldId]).catch(() => {});
+    }
+    setFieldSuggestions({});
     setSaving(true);
     setSaveError(null);
     try {
@@ -292,7 +301,7 @@ export function StageHub({ project, onOpenSettings, onProjectChanged, onEnterSta
                   suggestions={fieldSuggestions}
                   errors={fieldErrors}
                   onApply={(id) => applyFieldSuggestion(id, setDraftWhat)}
-                  onDismiss={dismissFieldSuggestion}
+                  onDismiss={(id) => dismissFieldSuggestion(id, draftWhat)}
                 />
                 <TextArea
                   value={draftWhat}
@@ -318,7 +327,7 @@ export function StageHub({ project, onOpenSettings, onProjectChanged, onEnterSta
                   suggestions={fieldSuggestions}
                   errors={fieldErrors}
                   onApply={(id) => applyFieldSuggestion(id, setDraftHow)}
-                  onDismiss={dismissFieldSuggestion}
+                  onDismiss={(id) => dismissFieldSuggestion(id, draftHow)}
                 />
                 <TextArea
                   value={draftHow}
@@ -344,7 +353,7 @@ export function StageHub({ project, onOpenSettings, onProjectChanged, onEnterSta
                   suggestions={fieldSuggestions}
                   errors={fieldErrors}
                   onApply={(id) => applyFieldSuggestion(id, setDraftWhere)}
-                  onDismiss={dismissFieldSuggestion}
+                  onDismiss={(id) => dismissFieldSuggestion(id, draftWhere)}
                 />
                 <TextArea
                   value={draftWhere}
@@ -370,7 +379,7 @@ export function StageHub({ project, onOpenSettings, onProjectChanged, onEnterSta
                   suggestions={fieldSuggestions}
                   errors={fieldErrors}
                   onApply={(id) => applyFieldSuggestion(id, setDraftDomain)}
-                  onDismiss={dismissFieldSuggestion}
+                  onDismiss={(id) => dismissFieldSuggestion(id, draftDomain)}
                 />
                 <TextArea
                   value={draftDomain}

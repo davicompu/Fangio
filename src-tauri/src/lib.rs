@@ -17,6 +17,7 @@ mod pdf;
 mod recent;
 mod stats;
 mod suggest;
+mod setup_assistant;
 mod transparency;
 mod svg;
 mod vector;
@@ -4076,12 +4077,46 @@ struct SuggestStepArgs {
     current_value: String,
     #[serde(default)]
     answers: Option<Vec<suggest::QAndA>>,
+    /// Links this suggestion to the clarifying-questions call it follows.
+    #[serde(default)]
+    call_id: Option<String>,
+    /// The researcher chose "Skip — just suggest" instead of answering.
+    #[serde(default)]
+    skipped: bool,
 }
 
 #[derive(Debug, Serialize)]
 struct SuggestStepResult {
     suggestion: String,
     rationale: String,
+    model: Option<String>,
+    call_id: String,
+}
+
+/// Endpoint, key, model and temperature the setup assistant uses.
+async fn setup_assistant_config(
+    db: &db::ProjectDb,
+) -> Result<(String, Option<String>, String, f32), String> {
+    let settings = db.all_settings().await.map_err(err)?;
+    let base_url = settings
+        .get("lmstudio.base_url")
+        .and_then(|v| v.as_str())
+        .unwrap_or("http://127.0.0.1:1234/v1")
+        .to_string();
+    let api_key = settings
+        .get("lmstudio.api_key")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let model = settings
+        .get("lmstudio.chat_model")
+        .and_then(|v| v.as_str())
+        .unwrap_or("google/gemma-4-e2b")
+        .to_string();
+    if model.is_empty() {
+        return Err("Pick a reasoning model in Settings first.".into());
+    }
+    let temperature = load_temperature(&settings, "temperature.suggestions", 0.4);
+    Ok((base_url, api_key, model, temperature))
 }
 
 #[tauri::command]
@@ -4091,41 +4126,84 @@ async fn suggest_step(
 ) -> Result<SuggestStepResult, String> {
     let db = state.current().await.ok_or("no project open")?;
     let project = db.get_project().await.map_err(err)?;
-    let settings = db.all_settings().await.map_err(err)?;
-    let base_url = settings
-        .get("lmstudio.base_url")
-        .and_then(|v| v.as_str())
-        .unwrap_or("http://127.0.0.1:1234/v1")
-        .to_string();
-    let api_key = settings
-        .get("lmstudio.api_key")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-    let model = settings
-        .get("lmstudio.chat_model")
-        .and_then(|v| v.as_str())
-        .unwrap_or("google/gemma-4-e2b")
-        .to_string();
-    if model.is_empty() {
-        return Err("Pick a reasoning model in Settings first.".into());
-    }
-    let temperature = load_temperature(&settings, "temperature.suggestions", 0.4);
-    let (suggestion, rationale) = suggest::suggest_step(
+    let (base_url, api_key, model, temperature) = setup_assistant_config(&db).await?;
+    let call_id = args.call_id.clone().unwrap_or_else(|| setup_assistant::new_call_id(&args.step_id));
+    let answers = args.answers.clone().unwrap_or_default();
+    let (slr_type, framework, domain) = (
+        project.slr_type.clone().unwrap_or_default(),
+        project.framework.clone().unwrap_or_default(),
+        project.domain.clone().unwrap_or_default(),
+    );
+    let result = suggest::suggest_step(
         &base_url,
         &model,
         &args.step_id,
         &args.current_value,
         &project.name,
-        project.slr_type.as_deref().unwrap_or(""),
-        project.framework.as_deref().unwrap_or(""),
-        project.domain.as_deref().unwrap_or(""),
-        args.answers.as_deref(),
+        &slr_type,
+        &framework,
+        &domain,
+        Some(&answers),
         temperature,
         api_key.as_deref(),
     )
-    .await
-    .map_err(err)?;
-    Ok(SuggestStepResult { suggestion, rationale })
+    .await;
+
+    // Log the call whether it succeeded or not. A failure is logged with the
+    // context the prompt would have carried, so the record is still complete.
+    let (entry, rationale) = match &result {
+        Ok(r) => (
+            setup_assistant::suggestion_entry(
+                &call_id,
+                &args.step_id,
+                &args.current_value,
+                &r.context,
+                &answers,
+                args.skipped,
+                Ok(&r.suggestion),
+                r.model.as_deref().filter(|m| !m.is_empty()).unwrap_or(&model),
+            ),
+            Some(r.rationale.clone()),
+        ),
+        Err(e) => {
+            let context = suggest::step_suggest_prompt(
+                &args.step_id, &args.current_value, &project.name, &slr_type, &framework, &domain,
+            )
+            .map(|p| p.context)
+            .unwrap_or_default();
+            (
+                setup_assistant::suggestion_entry(
+                    &call_id,
+                    &args.step_id,
+                    &args.current_value,
+                    &context,
+                    &answers,
+                    args.skipped,
+                    Err(&e.to_string()),
+                    &model,
+                ),
+                None,
+            )
+        }
+    };
+    let _ = db
+        .append_decision_log_entry(
+            "onboarding",
+            Some(&args.step_id),
+            setup_assistant::KEY_SUGGESTION,
+            &entry,
+            rationale.as_deref(),
+            "ai",
+        )
+        .await;
+
+    let r = result.map_err(err)?;
+    Ok(SuggestStepResult {
+        suggestion: r.suggestion,
+        rationale: r.rationale,
+        model: r.model,
+        call_id,
+    })
 }
 
 #[derive(Debug, Deserialize)]
@@ -4134,47 +4212,114 @@ struct SuggestStepQuestionsArgs {
     current_value: String,
 }
 
+#[derive(Debug, Serialize)]
+struct StepQuestionsResponse {
+    #[serde(flatten)]
+    result: suggest::StepQuestionsResult,
+    /// Identifies this use of the assistant across its log entries.
+    call_id: String,
+}
+
 #[tauri::command]
 async fn suggest_step_questions(
     args: SuggestStepQuestionsArgs,
     state: State<'_, AppState>,
-) -> Result<suggest::StepQuestionsResult, String> {
+) -> Result<StepQuestionsResponse, String> {
     let db = state.current().await.ok_or("no project open")?;
     let project = db.get_project().await.map_err(err)?;
-    let settings = db.all_settings().await.map_err(err)?;
-    let base_url = settings
-        .get("lmstudio.base_url")
-        .and_then(|v| v.as_str())
-        .unwrap_or("http://127.0.0.1:1234/v1")
-        .to_string();
-    let api_key = settings
-        .get("lmstudio.api_key")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-    let model = settings
-        .get("lmstudio.chat_model")
-        .and_then(|v| v.as_str())
-        .unwrap_or("google/gemma-4-e2b")
-        .to_string();
-    if model.is_empty() {
-        return Err("Pick a reasoning model in Settings first.".into());
-    }
-    let temperature = load_temperature(&settings, "temperature.suggestions", 0.4);
+    let (base_url, api_key, model, temperature) = setup_assistant_config(&db).await?;
+    let call_id = setup_assistant::new_call_id(&args.step_id);
+    let (slr_type, framework, domain) = (
+        project.slr_type.clone().unwrap_or_default(),
+        project.framework.clone().unwrap_or_default(),
+        project.domain.clone().unwrap_or_default(),
+    );
     let result = suggest::suggest_step_questions(
         &base_url,
         &model,
         &args.step_id,
         &args.current_value,
         &project.name,
-        project.slr_type.as_deref().unwrap_or(""),
-        project.framework.as_deref().unwrap_or(""),
-        project.domain.as_deref().unwrap_or(""),
+        &slr_type,
+        &framework,
+        &domain,
         temperature,
         api_key.as_deref(),
     )
+    .await;
+
+    let entry = match &result {
+        Ok(r) => setup_assistant::questions_entry(
+            &call_id,
+            &args.step_id,
+            &args.current_value,
+            &r.context,
+            Ok(&r.questions),
+            r.model.as_deref().filter(|m| !m.is_empty()).unwrap_or(&model),
+        ),
+        Err(e) => {
+            let context = suggest::step_questions_prompt(
+                &args.step_id, &args.current_value, &project.name, &slr_type, &framework, &domain,
+            )
+            .map(|p| p.context)
+            .unwrap_or_default();
+            setup_assistant::questions_entry(
+                &call_id,
+                &args.step_id,
+                &args.current_value,
+                &context,
+                Err(&e.to_string()),
+                &model,
+            )
+        }
+    };
+    let _ = db
+        .append_decision_log_entry(
+            "onboarding",
+            Some(&args.step_id),
+            setup_assistant::KEY_QUESTIONS,
+            &entry,
+            None,
+            "ai",
+        )
+        .await;
+
+    Ok(StepQuestionsResponse { result: result.map_err(err)?, call_id })
+}
+
+#[derive(Debug, Deserialize)]
+struct SetupAssistantOutcomeArgs {
+    call_id: String,
+    step_id: String,
+    outcome: String,
+    #[serde(default)]
+    final_value: Option<String>,
+}
+
+/// Record what the researcher did after asking the setup assistant.
+#[tauri::command]
+async fn log_setup_assistant_outcome(
+    args: SetupAssistantOutcomeArgs,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let db = state.current().await.ok_or("no project open")?;
+    let entry = setup_assistant::outcome_entry(
+        &args.call_id,
+        &args.step_id,
+        &args.outcome,
+        args.final_value.as_deref(),
+    )?;
+    db.append_decision_log_entry(
+        "onboarding",
+        Some(&args.step_id),
+        setup_assistant::KEY_OUTCOME,
+        &entry,
+        None,
+        "human",
+    )
     .await
     .map_err(err)?;
-    Ok(result)
+    Ok(())
 }
 
 #[derive(Debug, Deserialize)]
@@ -5876,6 +6021,7 @@ pub fn run() {
             suggest_codes,
             suggest_step,
             suggest_step_questions,
+            log_setup_assistant_outcome,
             suggest_boolean_query,
             add_pdf,
             list_pdfs,

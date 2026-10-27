@@ -286,6 +286,8 @@ pub struct DecisionLogRow {
     pub rationale: Option<String>,
     pub created_at: String,
     pub superseded_by: Option<i64>,
+    /// "human" (the researcher) or "ai" (an AI assistant's output).
+    pub actor: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -3629,7 +3631,7 @@ impl ProjectDb {
     /// decision report — the human-authored audit trail of the review.
     pub async fn list_decision_log(&self) -> Result<Vec<DecisionLogRow>> {
         let rows = sqlx::query(
-            "SELECT id, stage, sub_stage, decision_key, value_json, rationale, created_at, superseded_by \
+            "SELECT id, stage, sub_stage, decision_key, value_json, rationale, created_at, superseded_by, actor \
              FROM decision_log ORDER BY created_at, id",
         )
         .fetch_all(&self.pool)
@@ -3645,8 +3647,38 @@ impl ProjectDb {
                 rationale: r.get("rationale"),
                 created_at: r.get("created_at"),
                 superseded_by: r.get("superseded_by"),
+                actor: r.get("actor"),
             })
             .collect())
+    }
+
+    /// Append an entry to the decision log without superseding earlier entries
+    /// or touching the project row. Used for events that accumulate — every use
+    /// of the setup assistant — rather than settings that replace each other.
+    pub async fn append_decision_log_entry(
+        &self,
+        stage: &str,
+        sub_stage: Option<&str>,
+        decision_key: &str,
+        value: &serde_json::Value,
+        rationale: Option<&str>,
+        actor: &str,
+    ) -> Result<i64> {
+        let now = chrono::Utc::now().to_rfc3339();
+        let result = sqlx::query(
+            "INSERT INTO decision_log (stage, sub_stage, decision_key, value_json, rationale, actor, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(stage)
+        .bind(sub_stage)
+        .bind(decision_key)
+        .bind(serde_json::to_string(value)?)
+        .bind(rationale)
+        .bind(actor)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.last_insert_rowid())
     }
 
     // ── AI Screening proposals ────────────────────────────────────────────

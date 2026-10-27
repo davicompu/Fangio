@@ -526,6 +526,167 @@ fn key_label(key: &str) -> String {
     key.strip_prefix("project.").unwrap_or(key).replace('_', " ")
 }
 
+fn setup_step_label(step: &str) -> &str {
+    match step {
+        "name" => "Title",
+        "slr_type" => "Review type",
+        "framework" => "Framework",
+        "domain" => "Domain",
+        "rq_what" => "Research question: What do we know?",
+        "rq_how" => "Research question: How do we know?",
+        "rq_where" => "Research question: Where should the field head?",
+        other => other,
+    }
+}
+
+fn setup_outcome_label(outcome: &str) -> &str {
+    match outcome {
+        "used" => "Used the suggestion",
+        "undone" => "Undid the suggestion",
+        "ignored" => "Ignored the suggestion and kept their own answer",
+        "kept_choice" => "Kept their own choice",
+        "changed_choice" => "Changed their choice after the advice",
+        "closed_before_suggestion" => "Closed the assistant before a suggestion was made",
+        other => other,
+    }
+}
+
+/// One line of text for a report bullet: no newlines, quoted.
+fn quoted(s: &str) -> String {
+    format!("\u{201c}{}\u{201d}", s.split_whitespace().collect::<Vec<_>>().join(" "))
+}
+
+/// §1a: every use of the setup assistant, grouped by call, in the order asked.
+fn setup_assistant_section(log: &[crate::db::DecisionLogRow]) -> String {
+    use crate::setup_assistant::{KEY_OUTCOME, KEY_PREFIX, KEY_QUESTIONS, KEY_SUGGESTION};
+    let mut s = String::from("## 1a. Setup assistant\n\n");
+
+    // call_id → (first timestamp, entries in order)
+    let mut order: Vec<String> = Vec::new();
+    let mut calls: std::collections::HashMap<String, Vec<(&crate::db::DecisionLogRow, serde_json::Value)>> =
+        std::collections::HashMap::new();
+    for d in log.iter().filter(|d| d.decision_key.starts_with(KEY_PREFIX)) {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&d.value_json) else { continue };
+        let Some(id) = v["call_id"].as_str().map(str::to_string) else { continue };
+        if !calls.contains_key(&id) {
+            order.push(id.clone());
+        }
+        calls.entry(id).or_default().push((d, v));
+    }
+    if order.is_empty() {
+        s.push_str("_The setup assistant was not used._\n\n");
+        return s;
+    }
+    s.push_str("Each use of \u{201c}Ask assistant\u{201d} on the setup answers, during setup or when editing them later from the stage overview. Lines marked **AI** are the assistant's output; lines marked **Researcher** are the researcher's input or actions. The researcher's final answers are the decisions in section 1.\n\n");
+
+    for id in &order {
+        let entries = &calls[id];
+        let (first, first_v) = &entries[0];
+        let step = first_v["step"].as_str().unwrap_or("");
+        s.push_str(&format!(
+            "**{} \u{2014} {}**\n\n",
+            setup_step_label(step),
+            crate::transparency::utc_time(&first.created_at)
+        ));
+        let questions = entries.iter().find(|(d, _)| d.decision_key == KEY_QUESTIONS);
+        let suggestion = entries.iter().find(|(d, _)| d.decision_key == KEY_SUGGESTION);
+
+        let field_text = first_v["field_text"].as_str().unwrap_or("");
+        s.push_str(&format!(
+            "- Researcher \u{2014} text in the field when asking: {}\n",
+            if field_text.trim().is_empty() { "(empty)".to_string() } else { quoted(field_text) }
+        ));
+        let context: Vec<String> = first_v["context"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .map(|c| format!("{}: {}", c["label"].as_str().unwrap_or(""), quoted(c["value"].as_str().unwrap_or(""))))
+                    .collect()
+            })
+            .unwrap_or_default();
+        s.push_str(&format!(
+            "- Earlier setup answers sent as context: {}\n",
+            if context.is_empty() { "none".to_string() } else { context.join("; ") }
+        ));
+
+        if let Some((_, q)) = questions {
+            let model = q["model"].as_str().unwrap_or("\u{2014}");
+            if let Some(err) = q["error"].as_str() {
+                s.push_str(&format!("- AI \u{2014} clarifying questions failed ({model}): {}\n", quoted(err)));
+            } else {
+                let qs: Vec<String> = q["questions"]
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .map(|x| {
+                                let opts: Vec<&str> = x["options"]
+                                    .as_array()
+                                    .map(|o| o.iter().filter_map(|v| v.as_str()).collect())
+                                    .unwrap_or_default();
+                                if opts.is_empty() {
+                                    quoted(x["q"].as_str().unwrap_or(""))
+                                } else {
+                                    format!("{} (options: {})", quoted(x["q"].as_str().unwrap_or("")), opts.join(" / "))
+                                }
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                s.push_str(&format!("- AI \u{2014} clarifying questions ({model}): {}\n", qs.join("; ")));
+            }
+        }
+
+        if let Some((d, v)) = suggestion {
+            if v["skipped"].as_bool().unwrap_or(false) {
+                s.push_str("- Researcher \u{2014} skipped the questions (\u{201c}Skip \u{2014} just suggest\u{201d})\n");
+            } else {
+                let answers: Vec<String> = v["answers"]
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .map(|x| format!("{} \u{2192} {}", quoted(x["q"].as_str().unwrap_or("")), quoted(x["a"].as_str().unwrap_or(""))))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if !answers.is_empty() {
+                    s.push_str(&format!("- Researcher \u{2014} answers: {}\n", answers.join("; ")));
+                }
+            }
+            let model = v["model"].as_str().unwrap_or("\u{2014}");
+            if let Some(err) = v["error"].as_str() {
+                s.push_str(&format!("- AI \u{2014} suggestion failed ({model}): {}\n", quoted(err)));
+            } else {
+                s.push_str(&format!(
+                    "- AI \u{2014} suggestion ({model}): {}\n",
+                    quoted(v["suggestion"].as_str().unwrap_or(""))
+                ));
+                if let Some(r) = d.rationale.as_deref().filter(|r| !r.trim().is_empty()) {
+                    s.push_str(&format!("- AI \u{2014} reason: {}\n", quoted(r)));
+                }
+            }
+        }
+
+        let outcomes: Vec<&serde_json::Value> = entries
+            .iter()
+            .filter(|(d, _)| d.decision_key == KEY_OUTCOME)
+            .map(|(_, v)| v)
+            .collect();
+        if outcomes.is_empty() {
+            s.push_str("- Researcher \u{2014} next action: not recorded\n");
+        } else {
+            let steps: Vec<&str> = outcomes.iter().map(|v| setup_outcome_label(v["outcome"].as_str().unwrap_or(""))).collect();
+            let final_value = outcomes.iter().rev().find_map(|v| v["final_value"].as_str());
+            s.push_str(&format!(
+                "- Researcher \u{2014} next action: {}{}\n",
+                steps.join(" \u{2192} "),
+                final_value.map(|f| format!(" (answer at that point: {})", quoted(f))).unwrap_or_default()
+            ));
+        }
+        s.push('\n');
+    }
+    s
+}
+
 pub async fn generate_decision_report(db: &ProjectDb) -> Result<String> {
     let project = db.get_project().await?;
     let log = db.list_decision_log().await?;
@@ -582,7 +743,12 @@ pub async fn generate_decision_report(db: &ProjectDb) -> Result<String> {
 
     // 1. Configuration decisions (human, via the decision log)
     s.push_str("## 1. Configuration decisions\n\n");
-    let effective: Vec<&crate::db::DecisionLogRow> = log.iter().filter(|d| d.superseded_by.is_none()).collect();
+    // Setup-assistant entries are reported in §1a, not as protocol decisions.
+    let protocol: Vec<&crate::db::DecisionLogRow> = log
+        .iter()
+        .filter(|d| !d.decision_key.starts_with(crate::setup_assistant::KEY_PREFIX))
+        .collect();
+    let effective: Vec<&&crate::db::DecisionLogRow> = protocol.iter().filter(|d| d.superseded_by.is_none()).collect();
     if effective.is_empty() {
         s.push_str("_No configuration decisions recorded._\n\n");
     } else {
@@ -597,12 +763,14 @@ pub async fn generate_decision_report(db: &ProjectDb) -> Result<String> {
                 cell(&short(&decode_value(&d.value_json), 100)),
             ));
         }
-        let revised = log.len() - effective.len();
+        let revised = protocol.len() - effective.len();
         if revised > 0 {
             s.push_str(&format!("\n_{revised} earlier decision(s) were later revised and are superseded above._\n"));
         }
         s.push_str("\n");
     }
+
+    s.push_str(&setup_assistant_section(&log));
 
     // 2. Screening decisions (human or AI)
     s.push_str("## 2. Screening decisions\n\n");
@@ -1147,5 +1315,106 @@ mod report_tests {
         db.apply_ai_outcome(a, "include", None, "old", 0.95).await.unwrap();
         let md = generate_decision_report(&db).await.unwrap();
         assert!(md.contains("1 earlier AI screening decision was recorded before this log existed, or was decided outside it; its review status can't be determined."), "{md}");
+    }
+}
+
+#[cfg(test)]
+mod setup_assistant_report_tests {
+    use super::generate_decision_report;
+    use crate::db::{test_db, DecisionInput};
+    use crate::setup_assistant::{
+        outcome_entry, questions_entry, suggestion_entry, KEY_OUTCOME, KEY_QUESTIONS, KEY_SUGGESTION,
+    };
+    use crate::suggest::{QAndA, StepContextField, StepQuestion};
+
+    #[tokio::test]
+    async fn report_lists_each_assistant_use_with_answers_suggestion_model_and_outcome() {
+        let (db, _d) = test_db().await;
+        let ctx = vec![StepContextField { label: "Title".into(), value: "Biases in AI".into() }];
+        let qs = vec![StepQuestion { q: "Which level?".into(), options: vec!["UG".into(), "PG".into()] }];
+        let ans = vec![QAndA { q: "Which level?".into(), a: "PG".into() }];
+
+        // Use 1 (domain): questions answered, suggestion used then undone.
+        let q = questions_entry("c1", "domain", "AI tools in class", &ctx, Ok(&qs), "qwen3-8b");
+        db.append_decision_log_entry("onboarding", Some("domain"), KEY_QUESTIONS, &q, None, "ai").await.unwrap();
+        let sgg = suggestion_entry("c1", "domain", "AI tools in class", &ctx, &ans, false, Ok("Generative AI in postgraduate teaching."), "qwen3-8b");
+        db.append_decision_log_entry("onboarding", Some("domain"), KEY_SUGGESTION, &sgg, Some("Narrows the level to postgraduate."), "ai").await.unwrap();
+        for (o, f) in [("used", None), ("undone", Some("AI tools in class"))] {
+            let e = outcome_entry("c1", "domain", o, f).unwrap();
+            db.append_decision_log_entry("onboarding", Some("domain"), KEY_OUTCOME, &e, None, "human").await.unwrap();
+        }
+        // Use 2 (title): skipped the questions, ignored the suggestion.
+        let q = questions_entry("c2", "name", "My review", &[], Ok(&qs), "qwen3-8b");
+        db.append_decision_log_entry("onboarding", Some("name"), KEY_QUESTIONS, &q, None, "ai").await.unwrap();
+        let sgg = suggestion_entry("c2", "name", "My review", &[], &[], true, Ok("Biases in AI-assisted learning"), "qwen3-8b");
+        db.append_decision_log_entry("onboarding", Some("name"), KEY_SUGGESTION, &sgg, Some("More specific."), "ai").await.unwrap();
+        let e = outcome_entry("c2", "name", "ignored", Some("My own title")).unwrap();
+        db.append_decision_log_entry("onboarding", Some("name"), KEY_OUTCOME, &e, None, "human").await.unwrap();
+        // Use 3: the questions call failed.
+        let q = questions_entry("c3", "rq_what", "What?", &ctx, Err("connection refused"), "qwen3-8b");
+        db.append_decision_log_entry("onboarding", Some("rq_what"), KEY_QUESTIONS, &q, None, "ai").await.unwrap();
+        // The researcher's final answer stays a separate entry.
+        db.apply_decision(DecisionInput {
+            stage: "onboarding".into(),
+            sub_stage: None,
+            decision_key: "project.name".into(),
+            value_json: "\"My own title\"".into(),
+            rationale: None,
+        })
+        .await
+        .unwrap();
+
+        let md = generate_decision_report(&db).await.unwrap();
+        let s1 = &md[md.find("## 1. Configuration decisions").unwrap()..md.find("## 1a. Setup assistant").unwrap()];
+        let s1a = &md[md.find("## 1a. Setup assistant").unwrap()..md.find("## 2. Screening decisions").unwrap()];
+
+        // §1 keeps only the researcher's decisions.
+        assert!(s1.contains("My own title"));
+        assert!(!s1.contains("assistant"));
+        assert!(!s1.contains("superseded"), "assistant entries must not count as revisions");
+
+        // §1a: one block per use, in order, with every recorded part.
+        assert!(s1a.find("**Domain").unwrap() < s1a.find("**Title").unwrap());
+        assert!(s1a.contains("text in the field when asking: \u{201c}AI tools in class\u{201d}"));
+        assert!(s1a.contains("context: Title: \u{201c}Biases in AI\u{201d}"));
+        assert!(s1a.contains("AI \u{2014} clarifying questions (qwen3-8b): \u{201c}Which level?\u{201d} (options: UG / PG)"));
+        assert!(s1a.contains("Researcher \u{2014} answers: \u{201c}Which level?\u{201d} \u{2192} \u{201c}PG\u{201d}"));
+        assert!(s1a.contains("AI \u{2014} suggestion (qwen3-8b): \u{201c}Generative AI in postgraduate teaching.\u{201d}"));
+        assert!(s1a.contains("AI \u{2014} reason: \u{201c}Narrows the level to postgraduate.\u{201d}"));
+        assert!(s1a.contains("Used the suggestion \u{2192} Undid the suggestion"));
+        assert!(s1a.contains("skipped the questions (\u{201c}Skip \u{2014} just suggest\u{201d})"));
+        assert!(s1a.contains("Ignored the suggestion and kept their own answer (answer at that point: \u{201c}My own title\u{201d})"));
+        assert!(s1a.contains("Earlier setup answers sent as context: none"));
+        assert!(s1a.contains("clarifying questions failed (qwen3-8b): \u{201c}connection refused\u{201d}"));
+        assert!(s1a.contains("next action: not recorded"));
+    }
+
+    #[tokio::test]
+    async fn assistant_entries_are_marked_ai_and_final_answer_human() {
+        let (db, _d) = test_db().await;
+        let q = questions_entry("c1", "name", "x", &[], Ok(&[]), "m");
+        db.append_decision_log_entry("onboarding", Some("name"), KEY_QUESTIONS, &q, None, "ai").await.unwrap();
+        db.apply_decision(DecisionInput {
+            stage: "onboarding".into(),
+            sub_stage: None,
+            decision_key: "project.name".into(),
+            value_json: "\"x\"".into(),
+            rationale: None,
+        })
+        .await
+        .unwrap();
+        let log = db.list_decision_log().await.unwrap();
+        let actor = |k: &str| log.iter().find(|d| d.decision_key == k).unwrap().actor.clone();
+        assert_eq!(actor(KEY_QUESTIONS), "ai");
+        assert_eq!(actor("project.name"), "human");
+        // Appending never supersedes: both entries stay effective.
+        assert!(log.iter().all(|d| d.superseded_by.is_none()));
+    }
+
+    #[tokio::test]
+    async fn unused_assistant_says_so() {
+        let (db, _d) = test_db().await;
+        let md = generate_decision_report(&db).await.unwrap();
+        assert!(md.contains("## 1a. Setup assistant\n\n_The setup assistant was not used._"));
     }
 }

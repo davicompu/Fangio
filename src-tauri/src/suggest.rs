@@ -119,6 +119,8 @@ pub struct StepQuestionsResult {
     pub questions: Vec<StepQuestion>,
     pub model: Option<String>,
     pub latency_ms: u64,
+    /// Earlier setup answers the prompt included.
+    pub context: Vec<StepContextField>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -157,6 +159,146 @@ pub async fn suggest_step_questions(
     temperature: f32,
     api_key: Option<&str>,
 ) -> Result<StepQuestionsResult> {
+    let prompt = step_questions_prompt(step_id, current_value, project_name, slr_type, framework, domain)?;
+    let (system, user, context) = (prompt.system, prompt.user, prompt.context);
+
+    let messages = vec![
+        ChatMessage { role: "system".into(), content: system },
+        ChatMessage { role: "user".into(), content: user },
+    ];
+
+    let result = lmstudio::chat(base_url, model, &messages, Some(temperature), api_key).await?;
+
+    let questions = parse_step_questions(&result.content)
+        .ok_or_else(|| anyhow!("could not parse clarifying questions from model output"))?;
+
+    if questions.is_empty() {
+        return Err(anyhow!("model returned no clarifying questions"));
+    }
+
+    Ok(StepQuestionsResult {
+        questions,
+        model: result.model,
+        latency_ms: result.latency_ms,
+        context,
+    })
+}
+
+/// Generic step assistant for all 7 onboarding steps.
+/// Returns the suggestion, its rationale, the model that answered and the
+/// earlier setup answers sent as context. For text steps the suggestion is a refined
+/// replacement; for choice steps it is advisory/validation text.
+#[allow(clippy::too_many_arguments)]
+pub async fn suggest_step(
+    base_url: &str,
+    model: &str,
+    step_id: &str,
+    current_value: &str,
+    project_name: &str,
+    slr_type: &str,
+    framework: &str,
+    domain: &str,
+    answers: Option<&[QAndA]>,
+    temperature: f32,
+    api_key: Option<&str>,
+) -> Result<StepSuggestion> {
+    let prompt = step_suggest_prompt(step_id, current_value, project_name, slr_type, framework, domain)?;
+    let (system, user, context) = (prompt.system, prompt.user, prompt.context);
+
+    let user = if let Some(qa) = answers.filter(|a| !a.is_empty()) {
+        let block = qa
+            .iter()
+            .map(|p| format!("Q: {}\nA: {}", p.q, p.a))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        format!(
+            "Researcher's clarifications:\n{block}\n\nUse these clarifications to inform the rewrite below.\n\n{user}"
+        )
+    } else {
+        user
+    };
+
+    let messages = vec![
+        ChatMessage { role: "system".into(), content: system },
+        ChatMessage { role: "user".into(), content: user },
+    ];
+
+    let result = lmstudio::chat(base_url, model, &messages, Some(temperature), api_key).await?;
+
+    // Extract the first JSON object from the response
+    let bytes = result.content.as_bytes();
+    let start = bytes.iter().position(|&b| b == b'{')
+        .ok_or_else(|| anyhow!("no JSON object in model response"))?;
+    let mut depth = 0i32;
+    let mut in_str = false;
+    let mut esc = false;
+    let mut end = None;
+    for i in start..bytes.len() {
+        let c = bytes[i];
+        if esc { esc = false; continue; }
+        if c == b'\\' { esc = true; continue; }
+        if c == b'"' { in_str = !in_str; continue; }
+        if in_str { continue; }
+        if c == b'{' { depth += 1; }
+        else if c == b'}' { depth -= 1; if depth == 0 { end = Some(i + 1); break; } }
+    }
+    let end = end.ok_or_else(|| anyhow!("unterminated JSON object"))?;
+    let v: serde_json::Value = serde_json::from_str(&result.content[start..end])?;
+    let suggestion = pick_str(
+        &v,
+        &["suggestion", "suggestions", "improved", "revised", "result", "output", "text"],
+    )
+    .unwrap_or("")
+    .to_string();
+    let rationale = pick_str(
+        &v,
+        &["rationale", "rationales", "reason", "reasoning", "explanation", "notes"],
+    )
+    .unwrap_or("")
+    .to_string();
+    Ok(StepSuggestion { suggestion, rationale, model: result.model, context })
+}
+
+/// An earlier setup answer included in a setup-assistant prompt, recorded in the
+/// decision log so the researcher can see exactly what the model was given.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct StepContextField {
+    pub label: String,
+    pub value: String,
+}
+
+/// A setup-assistant prompt plus the context fields it contains.
+pub struct StepPrompt {
+    pub system: String,
+    pub user: String,
+    pub context: Vec<StepContextField>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct StepSuggestion {
+    pub suggestion: String,
+    pub rationale: String,
+    pub model: Option<String>,
+    pub context: Vec<StepContextField>,
+}
+
+fn context_fields(pairs: &[(&str, &str)]) -> Vec<StepContextField> {
+    pairs
+        .iter()
+        .map(|(label, value)| StepContextField { label: label.to_string(), value: value.to_string() })
+        .collect()
+}
+
+/// Prompt for the clarifying questions the assistant asks before suggesting.
+/// The returned context lists exactly the earlier answers the prompt embeds.
+pub fn step_questions_prompt(
+    step_id: &str,
+    current_value: &str,
+    project_name: &str,
+    slr_type: &str,
+    framework: &str,
+    domain: &str,
+) -> Result<StepPrompt> {
     let system = "You are a systematic literature review expert assisting a researcher \
 through the SPAR-4-SLR onboarding process. \
 Before suggesting any rewrite, you ask 1–3 sharp clarifying questions that help \
@@ -229,45 +371,26 @@ unexplored contexts, contradictions to resolve, methodological extensions, or th
     };
 
     let user = format!("{context}\n\nReturn the JSON object now.");
-
-    let messages = vec![
-        ChatMessage { role: "system".into(), content: system },
-        ChatMessage { role: "user".into(), content: user },
-    ];
-
-    let result = lmstudio::chat(base_url, model, &messages, Some(temperature), api_key).await?;
-
-    let questions = parse_step_questions(&result.content)
-        .ok_or_else(|| anyhow!("could not parse clarifying questions from model output"))?;
-
-    if questions.is_empty() {
-        return Err(anyhow!("model returned no clarifying questions"));
-    }
-
-    Ok(StepQuestionsResult {
-        questions,
-        model: result.model,
-        latency_ms: result.latency_ms,
-    })
+    let context = match step_id {
+        "name" => vec![],
+        "slr_type" => context_fields(&[("Title", project_name)]),
+        "framework" => context_fields(&[("Title", project_name), ("Review type", slr_type), ("Domain", domain)]),
+        "domain" => context_fields(&[("Title", project_name), ("Review type", slr_type), ("Framework", framework)]),
+        _ => context_fields(&[("Title", project_name), ("Domain", domain), ("Framework", framework)]),
+    };
+    Ok(StepPrompt { system, user, context })
 }
 
-/// Generic step assistant for all 7 onboarding steps.
-/// Returns (suggestion, rationale). For text steps the suggestion is a refined
-/// replacement; for choice steps it is advisory/validation text.
-#[allow(clippy::too_many_arguments)]
-pub async fn suggest_step(
-    base_url: &str,
-    model: &str,
+/// Prompt for the assistant's suggestion. The returned context lists exactly
+/// the earlier answers the prompt embeds.
+pub fn step_suggest_prompt(
     step_id: &str,
     current_value: &str,
     project_name: &str,
     slr_type: &str,
     framework: &str,
     domain: &str,
-    answers: Option<&[QAndA]>,
-    temperature: f32,
-    api_key: Option<&str>,
-) -> Result<(String, String)> {
+) -> Result<StepPrompt> {
     let system = "You are a systematic literature review expert assisting a researcher \
 through the SPAR-4-SLR onboarding process. \
 Respond ONLY with a JSON object containing exactly two keys: \
@@ -359,59 +482,19 @@ Return the JSON (suggestion = the refined question)."
 
         other => return Err(anyhow!("unknown step_id: {other}")),
     };
-
-    let user = if let Some(qa) = answers.filter(|a| !a.is_empty()) {
-        let block = qa
-            .iter()
-            .map(|p| format!("Q: {}\nA: {}", p.q, p.a))
-            .collect::<Vec<_>>()
-            .join("\n\n");
-        format!(
-            "Researcher's clarifications:\n{block}\n\nUse these clarifications to inform the rewrite below.\n\n{user}"
-        )
-    } else {
-        user
+    let context = match step_id {
+        "name" => vec![],
+        "slr_type" => context_fields(&[("Title", project_name)]),
+        "framework" => context_fields(&[("Title", project_name), ("Review type", slr_type), ("Domain", domain)]),
+        "domain" => context_fields(&[("Title", project_name), ("Review type", slr_type), ("Framework", framework)]),
+        _ => context_fields(&[
+            ("Title", project_name),
+            ("Review type", slr_type),
+            ("Framework", framework),
+            ("Domain", domain),
+        ]),
     };
-
-    let messages = vec![
-        ChatMessage { role: "system".into(), content: system },
-        ChatMessage { role: "user".into(), content: user },
-    ];
-
-    let result = lmstudio::chat(base_url, model, &messages, Some(temperature), api_key).await?;
-
-    // Extract the first JSON object from the response
-    let bytes = result.content.as_bytes();
-    let start = bytes.iter().position(|&b| b == b'{')
-        .ok_or_else(|| anyhow!("no JSON object in model response"))?;
-    let mut depth = 0i32;
-    let mut in_str = false;
-    let mut esc = false;
-    let mut end = None;
-    for i in start..bytes.len() {
-        let c = bytes[i];
-        if esc { esc = false; continue; }
-        if c == b'\\' { esc = true; continue; }
-        if c == b'"' { in_str = !in_str; continue; }
-        if in_str { continue; }
-        if c == b'{' { depth += 1; }
-        else if c == b'}' { depth -= 1; if depth == 0 { end = Some(i + 1); break; } }
-    }
-    let end = end.ok_or_else(|| anyhow!("unterminated JSON object"))?;
-    let v: serde_json::Value = serde_json::from_str(&result.content[start..end])?;
-    let suggestion = pick_str(
-        &v,
-        &["suggestion", "suggestions", "improved", "revised", "result", "output", "text"],
-    )
-    .unwrap_or("")
-    .to_string();
-    let rationale = pick_str(
-        &v,
-        &["rationale", "rationales", "reason", "reasoning", "explanation", "notes"],
-    )
-    .unwrap_or("")
-    .to_string();
-    Ok((suggestion, rationale))
+    Ok(StepPrompt { system, user, context })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1845,4 +1928,52 @@ fn parse_adjudications(s: &str) -> Option<Vec<AdjudicationResolution>> {
     }
     let end = end?;
     serde_json::from_str::<Vec<AdjudicationResolution>>(&s[start..end]).ok()
+}
+
+#[cfg(test)]
+mod step_prompt_tests {
+    use super::{step_questions_prompt, step_suggest_prompt};
+
+    const STEPS: [&str; 7] = ["name", "slr_type", "framework", "domain", "rq_what", "rq_how", "rq_where"];
+    const TITLE: &str = "ZZTITLE";
+    const TYPE: &str = "ZZTYPE";
+    const FRAMEWORK: &str = "ZZFRAMEWORK";
+    const DOMAIN: &str = "ZZDOMAIN";
+
+    /// The logged context must list exactly the earlier answers the prompt sends:
+    /// every listed value appears in the prompt, and no unlisted one does.
+    fn assert_context_matches(user: &str, context: &[super::StepContextField], step: &str) {
+        let listed: Vec<&str> = context.iter().map(|c| c.value.as_str()).collect();
+        for v in [TITLE, TYPE, FRAMEWORK, DOMAIN] {
+            assert_eq!(
+                user.contains(v),
+                listed.contains(&v),
+                "step {step}: value {v} in prompt = {}, in logged context = {}",
+                user.contains(v),
+                listed.contains(&v)
+            );
+        }
+    }
+
+    #[test]
+    fn questions_context_matches_prompt_for_every_step() {
+        for step in STEPS {
+            let p = step_questions_prompt(step, "draft", TITLE, TYPE, FRAMEWORK, DOMAIN).unwrap();
+            assert_context_matches(&p.user, &p.context, step);
+        }
+    }
+
+    #[test]
+    fn suggestion_context_matches_prompt_for_every_step() {
+        for step in STEPS {
+            let p = step_suggest_prompt(step, "draft", TITLE, TYPE, FRAMEWORK, DOMAIN).unwrap();
+            assert_context_matches(&p.user, &p.context, step);
+        }
+    }
+
+    #[test]
+    fn unknown_step_is_rejected() {
+        assert!(step_questions_prompt("nope", "", "", "", "", "").is_err());
+        assert!(step_suggest_prompt("nope", "", "", "", "", "").is_err());
+    }
 }

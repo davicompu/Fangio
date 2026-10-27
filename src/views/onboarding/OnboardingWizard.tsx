@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { ArrowLeft, ArrowRight, Check, Lightbulb, Sparkles, X } from "lucide-react";
 import { Markdown } from "../../components/Markdown";
-import { api, type ProjectRow, type StepQuestion } from "../../lib/api";
+import { api, type ProjectRow, type SetupAssistantOutcome, type StepQuestion } from "../../lib/api";
 import { Button } from "../../components/ui/Button";
 import { TextField, TextArea } from "../../components/ui/TextField";
 import { OptionCard } from "../../components/ui/OptionCard";
@@ -19,9 +19,9 @@ type Answers = Record<string, string>;
 type Phase =
   | { kind: "idle" }
   | { kind: "asking" }
-  | { kind: "answering"; questions: StepQuestion[]; answers: Record<number, string> }
-  | { kind: "rewriting"; questions: StepQuestion[]; answers: Record<number, string> }
-  | { kind: "result"; suggestion: string; rationale: string }
+  | { kind: "answering"; callId: string; questions: StepQuestion[]; answers: Record<number, string> }
+  | { kind: "rewriting"; callId: string; questions: StepQuestion[]; answers: Record<number, string> }
+  | { kind: "result"; callId: string; suggestion: string; rationale: string }
   | { kind: "error"; message: string; recoverable: "asking" | "rewriting" };
 
 function initialAnswersFromProject(p: ProjectRow): Answers {
@@ -39,6 +39,15 @@ function initialAnswersFromProject(p: ProjectRow): Answers {
 // Steps where the suggestion replaces the field value vs. advisory only
 const REPLACEABLE_STEPS = new Set(["name", "domain", "rq_what", "rq_how", "rq_where"]);
 
+/** A use of the assistant on the current step whose outcome isn't logged yet. */
+interface OpenCall {
+  stepId: string;
+  /** "questions" until a suggestion arrives. */
+  stage: "questions" | "suggested";
+  /** Field value when the researcher asked (advisory steps compare against it). */
+  askedWith: string;
+}
+
 export function OnboardingWizard({ project, onComplete }: OnboardingWizardProps) {
   const [answers, setAnswers] = useState<Answers>(() => initialAnswersFromProject(project));
   const [stepIndex, setStepIndex] = useState(0);
@@ -49,6 +58,9 @@ export function OnboardingWizard({ project, onComplete }: OnboardingWizardProps)
   // AI assistant phase machine
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
   const previousValue = useRef<string | null>(null);
+  // Every use of "Ask assistant" is logged; these track what's still open.
+  const openCalls = useRef<Map<string, OpenCall>>(new Map());
+  const acceptedCallId = useRef<string | null>(null);
 
   const step = STEPS[stepIndex];
   const value = answers[step.decisionKey] ?? "";
@@ -64,6 +76,26 @@ export function OnboardingWizard({ project, onComplete }: OnboardingWizardProps)
   const clearAssistant = () => {
     setPhase({ kind: "idle" });
     previousValue.current = null;
+    acceptedCallId.current = null;
+  };
+
+  // Logging must never get in the researcher's way.
+  const logOutcome = (callId: string, stepId: string, outcome: SetupAssistantOutcome, finalValue?: string) => {
+    api.logSetupAssistantOutcome(callId, stepId, outcome, finalValue).catch(() => {});
+  };
+
+  /** Log what happened to every open assistant call, given the field's value now. */
+  const settleOpenCalls = (finalValue: string) => {
+    for (const [callId, c] of openCalls.current) {
+      if (c.stage === "questions") {
+        logOutcome(callId, c.stepId, "closed_before_suggestion", finalValue);
+      } else if (REPLACEABLE_STEPS.has(c.stepId)) {
+        logOutcome(callId, c.stepId, "ignored", finalValue);
+      } else {
+        logOutcome(callId, c.stepId, finalValue === c.askedWith ? "kept_choice" : "changed_choice", finalValue);
+      }
+    }
+    openCalls.current.clear();
   };
 
   const persistCurrent = async () => {
@@ -84,6 +116,7 @@ export function OnboardingWizard({ project, onComplete }: OnboardingWizardProps)
     if (!value.trim()) { setValidationError("Please answer to continue."); return; }
     setBusy(true);
     try {
+      settleOpenCalls(value);
       await persistCurrent();
       if (isLast) {
         await api.saveDecision({
@@ -107,6 +140,7 @@ export function OnboardingWizard({ project, onComplete }: OnboardingWizardProps)
 
   const back = () => {
     if (stepIndex === 0) return;
+    settleOpenCalls(value);
     setDirection(-1);
     setStepIndex((i) => i - 1);
     clearAssistant();
@@ -122,10 +156,13 @@ export function OnboardingWizard({ project, onComplete }: OnboardingWizardProps)
   };
 
   const handleSuggest = async () => {
+    // A new request closes any earlier one on this step.
+    settleOpenCalls(value);
     setPhase({ kind: "asking" });
     try {
       const result = await api.suggestStepQuestions(step.id, value);
-      setPhase({ kind: "answering", questions: result.questions, answers: {} });
+      openCalls.current.set(result.call_id, { stepId: step.id, stage: "questions", askedWith: value });
+      setPhase({ kind: "answering", callId: result.call_id, questions: result.questions, answers: {} });
     } catch (e) {
       setPhase({ kind: "error", message: errorMessage(e), recoverable: "asking" });
     }
@@ -143,10 +180,12 @@ export function OnboardingWizard({ project, onComplete }: OnboardingWizardProps)
     const qaPairs = phase.questions
       .map((q, i) => ({ q: q.q, a: phase.answers[i] ?? "" }))
       .filter((p) => p.a.trim().length > 0);
-    setPhase({ kind: "rewriting", questions: phase.questions, answers: phase.answers });
+    const callId = phase.callId;
+    setPhase({ kind: "rewriting", callId, questions: phase.questions, answers: phase.answers });
     try {
-      const result = await api.suggestStep(step.id, value, qaPairs);
-      setPhase({ kind: "result", suggestion: result.suggestion, rationale: result.rationale });
+      const result = await api.suggestStep(step.id, value, qaPairs, callId, false);
+      markSuggested(callId);
+      setPhase({ kind: "result", callId, suggestion: result.suggestion, rationale: result.rationale });
     } catch (e) {
       setPhase({
         kind: "error",
@@ -156,11 +195,19 @@ export function OnboardingWizard({ project, onComplete }: OnboardingWizardProps)
     }
   };
 
+  const markSuggested = (callId: string) => {
+    const c = openCalls.current.get(callId);
+    if (c) c.stage = "suggested";
+  };
+
   const skipQuestions = async () => {
-    setPhase({ kind: "rewriting", questions: [], answers: {} });
+    if (phase.kind !== "answering") return;
+    const callId = phase.callId;
+    setPhase({ kind: "rewriting", callId, questions: [], answers: {} });
     try {
-      const result = await api.suggestStep(step.id, value);
-      setPhase({ kind: "result", suggestion: result.suggestion, rationale: result.rationale });
+      const result = await api.suggestStep(step.id, value, [], callId, true);
+      markSuggested(callId);
+      setPhase({ kind: "result", callId, suggestion: result.suggestion, rationale: result.rationale });
     } catch (e) {
       setPhase({ kind: "error", message: errorMessage(e), recoverable: "rewriting" });
     }
@@ -180,6 +227,9 @@ export function OnboardingWizard({ project, onComplete }: OnboardingWizardProps)
 
   const acceptSuggestion = () => {
     if (phase.kind !== "result") return;
+    openCalls.current.delete(phase.callId);
+    logOutcome(phase.callId, step.id, "used", phase.suggestion);
+    acceptedCallId.current = phase.callId;
     previousValue.current = value;
     setValue(phase.suggestion);
     setPhase({ kind: "idle" });
@@ -187,6 +237,8 @@ export function OnboardingWizard({ project, onComplete }: OnboardingWizardProps)
 
   const undoAccept = () => {
     if (previousValue.current === null) return;
+    if (acceptedCallId.current) logOutcome(acceptedCallId.current, step.id, "undone", previousValue.current);
+    acceptedCallId.current = null;
     setValue(previousValue.current);
     previousValue.current = null;
   };
