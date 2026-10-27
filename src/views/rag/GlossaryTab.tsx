@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { BookOpen, Loader2, Plus, RefreshCw, Search, Trash2, X } from "lucide-react";
 import { confirm as confirmDialog } from "@tauri-apps/plugin-dialog";
 import { api, type ArticleRow, type GlossaryTerm } from "../../lib/api";
@@ -90,6 +90,21 @@ export function GlossaryTab() {
     return parseAliases(t.aliases).some((a) => a.toLowerCase().includes(q));
   });
 
+  // A–Z index: the first term under each letter is the jump target.
+  const listRef = useRef<HTMLDivElement>(null);
+  const firstIdByLetter = new Map<string, number>();
+  for (const t of filtered) {
+    const l = indexLetter(t.term);
+    if (!firstIdByLetter.has(l)) firstIdByLetter.set(l, t.id);
+  }
+  const jumpTo = (letter: string) => {
+    const id = firstIdByLetter.get(letter);
+    if (id === undefined) return;
+    listRef.current
+      ?.querySelector(`[data-term-id="${id}"]`)
+      ?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
   return (
     <div className="h-full flex flex-col">
       {/* Toolbar */}
@@ -161,8 +176,9 @@ export function GlossaryTab() {
         </p>
       )}
 
-      {/* Term list */}
-      <div className="flex-1 overflow-y-auto pb-12">
+      {/* Term list + A–Z index */}
+      <div className="flex-1 flex min-h-0">
+      <div ref={listRef} className="flex-1 overflow-y-auto pb-12">
         {loading && (
           <div className="flex items-center justify-center py-16">
             <Loader2 size={20} className="animate-spin text-[var(--color-paper-400)]" />
@@ -197,7 +213,7 @@ export function GlossaryTab() {
                 .filter((a): a is ArticleRow => !!a);
               const isShowingSources = openArticlesFor === term.id;
               return (
-                <div key={term.id} className="group px-5 py-3 hover:bg-[var(--color-paper-50)] transition-paper">
+                <div key={term.id} data-term-id={term.id} className="group px-5 py-3 hover:bg-[var(--color-paper-50)] transition-paper scroll-mt-1">
                   <div className="flex items-start gap-2">
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 mb-0.5 flex-wrap">
@@ -288,6 +304,41 @@ export function GlossaryTab() {
           </div>
         )}
       </div>
+      {!loading && filtered.length > 0 && (
+        <nav
+          aria-label="Jump to letter"
+          className="shrink-0 w-7 flex flex-col items-center justify-center gap-px py-2 border-l border-[var(--color-paper-200)] bg-white overflow-y-auto"
+        >
+          {INDEX_LETTERS.map((l) => {
+            const has = firstIdByLetter.has(l);
+            return (
+              <button
+                key={l}
+                type="button"
+                onClick={() => jumpTo(l)}
+                disabled={!has}
+                className={
+                  has
+                    ? "w-5 text-[10px] leading-[15px] font-semibold text-[var(--color-accent-600)] rounded-[var(--radius-xs)] hover:bg-[var(--color-accent-50)]"
+                    : "w-5 text-[10px] leading-[15px] text-[var(--color-paper-300)] cursor-default"
+                }
+                title={has ? `Jump to ${l}` : `No terms under ${l}`}
+              >
+                {l}
+              </button>
+            );
+          })}
+        </nav>
+      )}
+      </div>
     </div>
   );
+}
+
+const INDEX_LETTERS = [..."ABCDEFGHIJKLMNOPQRSTUVWXYZ", "#"];
+
+/** Index letter for a term: its first letter (accents ignored), or "#". */
+function indexLetter(term: string): string {
+  const c = term.trim().normalize("NFD").replace(/[\u0300-\u036f]/g, "").charAt(0).toUpperCase();
+  return c >= "A" && c <= "Z" ? c : "#";
 }
