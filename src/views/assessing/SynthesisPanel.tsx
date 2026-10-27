@@ -21,7 +21,7 @@ export function SynthesisPanel({ project, onOpenChat, onSaved }: { project: Proj
     setError(null);
     try {
       const out = await api.generateSynthesis();
-      setText(out);
+      setText(out.text);
     } catch (e: any) {
       const msg: string = e?.message ?? String(e);
       setError(
@@ -47,6 +47,7 @@ export function SynthesisPanel({ project, onOpenChat, onSaved }: { project: Proj
         value_json: JSON.stringify(text),
         rationale: null,
       });
+      await api.logDraftSaved("synthesis", text);
       await onSaved?.();
       setSaved(true);
       setTimeout(() => setSaved(false), 1500);

@@ -46,8 +46,8 @@ export function AgendaPanel({ project, onSaved }: { project: ProjectRow; onSaved
     setError(null);
     try {
       const guidance = buildGuidance();
-      const text = await api.generateAgenda(guidance ? { guidance } : undefined);
-      setAgenda(text);
+      const out = await api.generateAgenda(guidance ? { guidance } : undefined);
+      setAgenda(out.text);
     } catch (e: any) {
       setError(modelError(e));
     } finally {
@@ -60,8 +60,8 @@ export function AgendaPanel({ project, onSaved }: { project: ProjectRow; onSaved
     setRevising(true);
     setError(null);
     try {
-      const text = await api.generateAgenda({ current: agenda, instruction: instruction.trim() });
-      setAgenda(text);
+      const out = await api.generateAgenda({ current: agenda, instruction: instruction.trim() });
+      setAgenda(out.text);
       setInstruction("");
     } catch (e: any) {
       setError(modelError(e));
@@ -81,6 +81,7 @@ export function AgendaPanel({ project, onSaved }: { project: ProjectRow; onSaved
         value_json: JSON.stringify(agenda),
         rationale: null,
       });
+      await api.logDraftSaved("agenda", agenda);
       await onSaved?.();
       setSaved(true);
       setTimeout(() => setSaved(false), 1500);

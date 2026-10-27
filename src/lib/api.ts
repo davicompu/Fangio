@@ -333,6 +333,12 @@ export interface SuggestQueryResult {
   output_id: number | null;
 }
 
+/** An AI-generated draft and the decision-log id of its AI entry. */
+export interface AiDraft {
+  text: string;
+  output_id: number | null;
+}
+
 /** Agents whose outputs and the researcher's actions on them are logged. */
 export type LoggedAgent = "query" | "codebook" | "synthesis" | "agenda";
 export type AgentAction = "accepted" | "undone" | "dismissed" | "saved" | "opened" | "edited";
@@ -1121,13 +1127,18 @@ export const api = {
     return invoke<string>("read_draft");
   },
   generateAgenda(args?: { guidance?: string; current?: string; instruction?: string }) {
-    return invoke<string>("generate_agenda", { args: args ?? {} });
+    return invoke<AiDraft>("generate_agenda", { args: args ?? {} });
   },
   getDefaultAgentPrompts() {
     return invoke<DefaultAgentPrompts>("get_default_agent_prompts");
   },
   generateSynthesis() {
-    return invoke<string>("generate_synthesis");
+    return invoke<AiDraft>("generate_synthesis");
+  },
+  /** Log that text saved for `agent` started as its latest AI draft (and how
+   *  much was changed). Does nothing if no AI draft was ever made. Never throws. */
+  logDraftSaved(agent: "synthesis" | "agenda", savedText: string) {
+    return invoke<void>("log_draft_saved", { agent, savedText }).catch(() => {});
   },
   exportDocx() {
     return invoke<string>("export_docx");

@@ -1702,8 +1702,9 @@ pub async fn generate_research_agenda(
     revise_current: Option<&str>,
     revise_instruction: Option<&str>,
     temperature: f32,
+    seed: Option<i64>,
     api_key: Option<&str>,
-) -> Result<String> {
+) -> Result<(String, CallMeta)> {
     let rqs_block = if research_questions.is_empty() {
         "(not specified)".to_string()
     } else {
@@ -1775,8 +1776,9 @@ no preamble."
         ChatMessage { role: "user".into(), content: user },
     ];
 
-    let result = lmstudio::chat(base_url, model, &messages, Some(temperature), api_key).await?;
-    Ok(result.content.trim().to_string())
+    let result = lmstudio::chat_seeded(base_url, model, &messages, Some(temperature), seed, api_key).await?;
+    let meta = call_meta(model, &messages, temperature, seed, &result);
+    Ok((result.content.trim().to_string(), meta))
 }
 
 /// Write a structured, cited synthesis narrative organised by framework

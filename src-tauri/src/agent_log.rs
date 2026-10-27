@@ -89,6 +89,28 @@ pub async fn log_action(
         .await
 }
 
+/// Roughly how much of an AI draft the researcher changed before saving, as a
+/// whole percentage of words (0 = saved unchanged, 100 = nothing kept).
+/// Uses the longest common subsequence of words, ignoring spacing.
+pub fn percent_changed(draft: &str, saved: &str) -> u8 {
+    let a: Vec<&str> = draft.split_whitespace().collect();
+    let b: Vec<&str> = saved.split_whitespace().collect();
+    if a.is_empty() && b.is_empty() {
+        return 0;
+    }
+    let mut prev = vec![0u32; b.len() + 1];
+    let mut cur = vec![0u32; b.len() + 1];
+    for x in &a {
+        for (j, y) in b.iter().enumerate() {
+            cur[j + 1] = if x == y { prev[j] + 1 } else { cur[j].max(prev[j + 1]) };
+        }
+        std::mem::swap(&mut prev, &mut cur);
+    }
+    let lcs = prev[b.len()] as f64;
+    let kept = 2.0 * lcs / (a.len() + b.len()) as f64;
+    ((1.0 - kept) * 100.0).round().clamp(0.0, 100.0) as u8
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -112,6 +134,15 @@ mod tests {
         assert_eq!(v["model_used"], "qwen3-8b-q4");
         assert_eq!(v["prompt_hash"], "abc123abc123");
         assert_eq!(v["seed"], 7);
+    }
+
+    #[test]
+    fn percent_changed_measures_word_edits() {
+        assert_eq!(percent_changed("a b c d", "a b c d"), 0);
+        assert_eq!(percent_changed("a  b\nc d", "a b c d"), 0, "spacing doesn't count");
+        assert_eq!(percent_changed("a b c d", "w x y z"), 100);
+        assert_eq!(percent_changed("a b c d", "a b x d"), 25);
+        assert_eq!(percent_changed("", ""), 0);
     }
 
     #[test]

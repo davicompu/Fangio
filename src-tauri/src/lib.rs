@@ -5866,7 +5866,7 @@ struct AgendaArgs {
 /// review's RQs, framework, dimension findings, and optional researcher guidance.
 /// Returns markdown; the frontend persists it via project.research_agenda.
 #[tauri::command]
-async fn generate_agenda(args: AgendaArgs, state: State<'_, AppState>) -> Result<String, String> {
+async fn generate_agenda(args: AgendaArgs, state: State<'_, AppState>) -> Result<DraftResponse, String> {
     let db = state.current().await.ok_or("no project open")?;
     let settings = db.all_settings().await.map_err(err)?;
     let base_url = settings.get("lmstudio.base_url").and_then(|v| v.as_str()).unwrap_or("http://127.0.0.1:1234/v1").to_string();
@@ -5902,7 +5902,7 @@ async fn generate_agenda(args: AgendaArgs, state: State<'_, AppState>) -> Result
         dims_with_codes.push((dim.clone(), codes.into_iter().map(|(c, n, _)| (c, n)).collect()));
     }
 
-    suggest::generate_research_agenda(
+    let result = suggest::generate_research_agenda(
         &base_url,
         &model,
         &domain,
@@ -5913,10 +5913,88 @@ async fn generate_agenda(args: AgendaArgs, state: State<'_, AppState>) -> Result
         args.current.as_deref(),
         args.instruction.as_deref(),
         temperature,
+        load_seed(&settings),
         api_key.as_deref(),
     )
     .await
-    .map_err(err)
+    .map_err(err)?;
+    let (text, meta) = result;
+    let revising = args.current.as_deref().is_some_and(|c| !c.trim().is_empty());
+    let output_id = agent_log::log_output(
+        &db,
+        agent_stage("agenda"),
+        "agenda",
+        "agenda",
+        &meta,
+        serde_json::json!({
+            "mode": if revising { "revise" } else { "new" },
+            "guidance": args.guidance,
+            "instruction": args.instruction,
+            "revised_text": if revising { args.current.clone() } else { None },
+            "draft": text,
+        }),
+        None,
+    )
+    .await
+    .ok();
+    remember_draft(&db, "agenda", output_id).await;
+    Ok(DraftResponse { text, output_id })
+}
+
+/// Remember the latest logged AI draft per agent, so a later save (even after
+/// a restart) is linked to the draft it started from.
+async fn remember_draft(db: &db::ProjectDb, agent: &str, output_id: Option<i64>) {
+    if let Some(id) = output_id {
+        let _ = db.set_setting(&format!("agent.{agent}.last_output_id"), &serde_json::json!(id)).await;
+    }
+}
+
+/// An AI draft (synthesis or research agenda) and its decision-log id.
+#[derive(Debug, Serialize)]
+struct DraftResponse {
+    text: String,
+    output_id: Option<i64>,
+}
+
+/// Record that the researcher saved text that started as an AI draft, with
+/// how much of the draft they changed.
+#[tauri::command]
+async fn log_draft_saved(
+    agent: String,
+    saved_text: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let db = state.current().await.ok_or("no project open")?;
+    // No AI draft has been made for this agent: the text is the researcher's own.
+    let Some(output_id) = db
+        .get_setting(&format!("agent.{agent}.last_output_id"))
+        .await
+        .map_err(err)?
+        .and_then(|v| v.as_i64())
+    else {
+        return Ok(());
+    };
+    let draft = db
+        .list_decision_log()
+        .await
+        .map_err(err)?
+        .into_iter()
+        .find(|d| d.id == output_id)
+        .and_then(|d| serde_json::from_str::<serde_json::Value>(&d.value_json).ok())
+        .and_then(|v| v["draft"].as_str().map(str::to_string))
+        .ok_or("the AI draft for this save was not found")?;
+    let pct = agent_log::percent_changed(&draft, &saved_text);
+    agent_log::log_action(
+        &db,
+        agent_stage(&agent),
+        &agent,
+        output_id,
+        "saved",
+        serde_json::json!({ "percent_changed": pct, "unchanged": pct == 0, "saved_text": saved_text }),
+    )
+    .await
+    .map_err(err)?;
+    Ok(())
 }
 
 /// Generate a structured, cited synthesis narrative organised by framework
@@ -5924,7 +6002,7 @@ async fn generate_agenda(args: AgendaArgs, state: State<'_, AppState>) -> Result
 /// codes") and asks the chat model to synthesise. Returns markdown; the frontend
 /// persists it via project.synthesis.
 #[tauri::command]
-async fn generate_synthesis(state: State<'_, AppState>) -> Result<String, String> {
+async fn generate_synthesis(state: State<'_, AppState>) -> Result<DraftResponse, String> {
     let db = state.current().await.ok_or("no project open")?;
     let settings = db.all_settings().await.map_err(err)?;
     let base_url = settings.get("lmstudio.base_url").and_then(|v| v.as_str()).unwrap_or("http://127.0.0.1:1234/v1").to_string();
@@ -5992,10 +6070,23 @@ async fn generate_synthesis(state: State<'_, AppState>) -> Result<String, String
         dims.push((dim.clone(), codes, excerpts));
     }
 
-    suggest::generate_synthesis(&base_url, &chat_model, &domain, &framework, &rq_refs, &dims, &prompt_setting(&settings, "prompts.synthesis"), temperature, seed, api_key.as_deref())
+    let result = suggest::generate_synthesis(&base_url, &chat_model, &domain, &framework, &rq_refs, &dims, &prompt_setting(&settings, "prompts.synthesis"), temperature, seed, api_key.as_deref())
         .await
-        .map(|(text, _meta)| text)
-        .map_err(err)
+        .map_err(err)?;
+    let (text, meta) = result;
+    let output_id = agent_log::log_output(
+        &db,
+        agent_stage("synthesis"),
+        "synthesis",
+        "synthesis",
+        &meta,
+        serde_json::json!({ "dimensions": dims.iter().map(|d| &d.0).collect::<Vec<_>>(), "draft": text }),
+        None,
+    )
+    .await
+    .ok();
+    remember_draft(&db, "synthesis", output_id).await;
+    Ok(DraftResponse { text, output_id })
 }
 
 /// Export the full report — manuscript + a Findings-by-dimension table + the
@@ -6352,6 +6443,7 @@ pub fn run() {
             log_setup_assistant_outcome,
             semantic_search_articles,
             log_agent_action,
+            log_draft_saved,
             glossary_merge_suggestions,
             accept_glossary_merge,
             dismiss_glossary_merge,
