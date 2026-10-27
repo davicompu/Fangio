@@ -2,6 +2,30 @@
 
 All notable user-facing changes to Reeves.
 
+## 0.4.3 — October 2026
+
+### Added
+
+- **Windows version (untested).** Reeves now builds for Windows 10/11 (64-bit)
+  as a per-user setup program and an MSI package. It uses the native Windows
+  title bar, opens and reveals files with the standard Windows apps, and shows
+  Ctrl shortcuts. The installers aren't code-signed yet, so Windows shows a
+  "Windows protected your PC" prompt: choose More info, then Run anyway. See
+  docs/building-on-windows.md.
+- **"Undo AI suggestion"** link under the search query after accepting the
+  query agent's suggestion (⌘Z didn't work for this on macOS).
+
+### Fixed
+
+- One damaged entry in the recent-projects list no longer hides all of them.
+- Glossary merge suggestions show the same paper counts as the glossary list.
+- The glossary's A–Z index no longer gets cut off when the merges panel is open.
+- AI screening decisions recorded without a reason now say so, and always
+  show the decision.
+- PDF passage previews start and end on whole words; search boxes no longer
+  auto-capitalise.
+- Removed outdated text on the Stage 1 checkpoint.
+
 ## 0.4.2 — October 2026
 
 ### Fixed
