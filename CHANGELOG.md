@@ -2,6 +2,17 @@
 
 All notable user-facing changes to Reeves.
 
+## 0.3.1 — October 2026
+
+### Added
+
+- **Setup assistant log** — every use of "Ask assistant" during setup (and when
+  editing the setup answers later) is recorded in the decision log: the text in
+  the field, the earlier answers sent as context, the clarifying questions and
+  the researcher's answers (or "Skip — just suggest"), the suggestion and its
+  reason, the model that answered, and whether the researcher used it, undid it
+  or kept their own answer. The decision report lists these in a new section.
+
 ## 0.3.0 — October 2026
 
 ### Added
