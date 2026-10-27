@@ -5771,6 +5771,10 @@ async fn semantic_search_articles(
     })
 }
 
+/// Only one title/abstract indexing run at a time; a second caller waits and
+/// then finds little or nothing left to do.
+static ABSTRACT_EMBED_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// Embed every article's title + abstract that is missing, stale or from a
 /// different embedding model. Returns how many were (re)embedded.
 async fn embed_titles_abstracts_inner(
@@ -5780,6 +5784,7 @@ async fn embed_titles_abstracts_inner(
     embed_model: &str,
     api_key: Option<&str>,
 ) -> Result<usize, String> {
+    let _guard = ABSTRACT_EMBED_LOCK.lock().await;
     let targets = db.abstract_embedding_targets(embed_model).await.map_err(err)?;
     let total = targets.len();
     let mut done = 0usize;

@@ -770,7 +770,12 @@ pub async fn generate_decision_report(db: &ProjectDb) -> Result<String> {
     // Setup-assistant entries are reported in §1a, not as protocol decisions.
     let protocol: Vec<&crate::db::DecisionLogRow> = log
         .iter()
-        .filter(|d| !d.decision_key.starts_with(crate::setup_assistant::KEY_PREFIX) && !d.decision_key.starts_with("agent."))
+        .filter(|d| {
+            !d.decision_key.starts_with(crate::setup_assistant::KEY_PREFIX)
+                && !d.decision_key.starts_with("agent.")
+                // Ask the Literature settings (0.3.3 logged the cluster count) aren't protocol decisions.
+                && !d.decision_key.starts_with("rag.")
+        })
         .collect();
     let effective: Vec<&&crate::db::DecisionLogRow> = protocol.iter().filter(|d| d.superseded_by.is_none()).collect();
     if effective.is_empty() {

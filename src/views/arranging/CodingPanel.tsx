@@ -1485,6 +1485,12 @@ function DimensionRow({
       const r = await api.suggestCodes(article.id, dimension.name);
       setSuggestions(r.suggestions);
       setSuggestModel(r.model);
+      // They're on screen now: record each as opened, so a code accepted from
+      // this list keeps its open history.
+      void api.recordAiOutputOpen(
+        "coding",
+        r.suggestions.map((s) => ({ article_id: article.id, dimension: dimension.name, code: s.code })),
+      );
     } catch (e: any) {
       setSuggestError(e?.toString() || "Suggestion failed");
     } finally {

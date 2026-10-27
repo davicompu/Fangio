@@ -204,9 +204,9 @@ export function LibraryTab() {
             <input
               type="range"
               min={5}
-              max={Math.max(5, articles.length)}
+              max={Math.max(5, Math.ceil(articles.length / 5) * 5)}
               step={5}
-              value={Math.min(resultCount, Math.max(5, articles.length))}
+              value={Math.min(resultCount, Math.max(5, Math.ceil(articles.length / 5) * 5))}
               onChange={(e) => chooseResultCount(Number(e.target.value))}
               aria-label="Number of results to show"
             />

@@ -2659,8 +2659,8 @@ impl ProjectDb {
     /// Articles with a PDF whose text isn't embedded with `embed_model` yet.
     pub async fn pdfs_not_embedded(&self, embed_model: &str) -> Result<i64> {
         Ok(sqlx::query_scalar(
-            "SELECT COUNT(DISTINCT p.article_id) FROM pdf p \
-             WHERE p.article_id IS NOT NULL AND p.article_id NOT IN \
+            "SELECT COUNT(DISTINCT p.article_id) FROM pdf p JOIN article a ON a.id = p.article_id \
+             WHERE a.status != 'excluded' AND p.article_id NOT IN \
              (SELECT article_id FROM pdf_chunk WHERE embedding IS NOT NULL AND embedding_model = ?)",
         )
         .bind(embed_model)
@@ -4453,8 +4453,12 @@ impl ProjectDb {
             .await?)
     }
 
-    /// Undo an accepted merge: the kept term gets back its own papers and
-    /// aliases, and the other term returns as it was.
+    /// Undo an accepted merge. Works from the glossary as it is now, so papers
+    /// added since the merge (e.g. by "Update") stay linked: the kept term loses
+    /// only the papers and names it gained from the merge, and the other term
+    /// returns with its own papers and aliases. Refuses (leaving everything as
+    /// is) when the kept term no longer exists under its name, e.g. because it
+    /// was itself merged into another term later: undo that merge first.
     pub async fn undo_glossary_merge(&self, merge_id: i64) -> Result<()> {
         let row = sqlx::query("SELECT status, snapshot FROM glossary_merge WHERE id = ?")
             .bind(merge_id)
@@ -4467,20 +4471,54 @@ impl ProjectDb {
         }
         let snap: serde_json::Value = serde_json::from_str(&row.get::<Option<String>, _>("snapshot").unwrap_or_default())?;
         let (keep, other) = (&snap["keep"], &snap["other"]);
+        let ids = |v: &serde_json::Value| -> Vec<i64> { serde_json::from_value(v["article_ids"].clone()).unwrap_or_default() };
+        let names = |v: &serde_json::Value| -> Vec<String> { serde_json::from_value(v["aliases"].clone()).unwrap_or_default() };
+        let keep_term = keep["term"].as_str().unwrap_or("");
+        let other_term = other["term"].as_str().unwrap_or("");
+        let keep_key = crate::semantic::term_key(keep_term);
+
+        let terms = self.list_glossary_terms().await?;
+        let Some(current) = terms.iter().find(|t| crate::semantic::term_key(&t.term) == keep_key) else {
+            anyhow::bail!(
+                "\u{201c}{keep_term}\u{201d} is no longer a term of its own (it may have been merged into another term since). Undo that later merge first."
+            );
+        };
+        if terms.iter().any(|t| crate::semantic::term_key(&t.term) == crate::semantic::term_key(other_term)) {
+            anyhow::bail!("\u{201c}{other_term}\u{201d} already exists as a term again, so this merge can't be undone.");
+        }
+
+        // Papers the merge brought in = other's papers that keep didn't have.
+        let keep_own: std::collections::HashSet<i64> = ids(keep).into_iter().collect();
+        let gained: std::collections::HashSet<i64> = ids(other).into_iter().filter(|i| !keep_own.contains(i)).collect();
+        let current_ids: Vec<i64> = serde_json::from_str(&current.article_ids).unwrap_or_default();
+        let restored_ids: Vec<i64> = current_ids.into_iter().filter(|i| !gained.contains(i)).collect();
+        // Names the merge brought in = other's name and aliases keep didn't have.
+        let keep_alias_keys: std::collections::HashSet<String> = names(keep).iter().map(|a| crate::semantic::term_key(a)).collect();
+        let gained_names: std::collections::HashSet<String> = std::iter::once(other_term.to_string())
+            .chain(names(other))
+            .map(|n| crate::semantic::term_key(&n))
+            .filter(|k| !keep_alias_keys.contains(k))
+            .collect();
+        let current_aliases: Vec<String> = serde_json::from_str(&current.aliases).unwrap_or_default();
+        let restored_aliases: Vec<String> = current_aliases
+            .into_iter()
+            .filter(|a| !gained_names.contains(&crate::semantic::term_key(a)))
+            .collect();
+
         let now = chrono::Utc::now().to_rfc3339();
         let mut tx = self.pool.begin().await?;
-        sqlx::query("UPDATE glossary_term SET article_ids = ?, aliases = ?, updated_at = ? WHERE lower(term) = lower(?)")
-            .bind(keep["article_ids"].to_string())
-            .bind(keep["aliases"].to_string())
+        sqlx::query("UPDATE glossary_term SET article_ids = ?, aliases = ?, updated_at = ? WHERE id = ?")
+            .bind(serde_json::to_string(&restored_ids)?)
+            .bind(serde_json::to_string(&restored_aliases)?)
             .bind(&now)
-            .bind(keep["term"].as_str().unwrap_or(""))
+            .bind(current.id)
             .execute(&mut *tx)
             .await?;
         sqlx::query(
             "INSERT INTO glossary_term (term, definition, article_ids, aliases, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
+             VALUES (?, ?, ?, ?, ?, ?)",
         )
-        .bind(other["term"].as_str().unwrap_or(""))
+        .bind(other_term)
         .bind(other["definition"].as_str().unwrap_or(""))
         .bind(other["article_ids"].to_string())
         .bind(other["aliases"].to_string())
@@ -5591,5 +5629,46 @@ mod glossary_mention_tests {
         db.accept_glossary_merge(keep, other, Some(0.96), Some("m")).await.unwrap();
         let terms = db.list_glossary_terms_with_mentions().await.unwrap();
         assert_eq!(terms.iter().find(|t| t.term == "Generative AI").unwrap().mention_ids, format!("[{b}]"));
+    }
+
+}
+
+#[cfg(test)]
+mod glossary_undo_tests {
+    use super::test_db;
+
+    async fn id(db: &super::ProjectDb, term: &str) -> i64 {
+        db.list_glossary_terms().await.unwrap().into_iter().find(|t| t.term == term).unwrap().id
+    }
+
+    #[tokio::test]
+    async fn undo_keeps_papers_added_after_the_merge() {
+        let (db, _d) = test_db().await;
+        db.upsert_glossary_term("Generative AI", "d", 1).await.unwrap();
+        db.upsert_glossary_term("GenAI tools", "d", 2).await.unwrap();
+        let m = db.accept_glossary_merge(id(&db, "Generative AI").await, id(&db, "GenAI tools").await, Some(0.9), Some("m")).await.unwrap();
+        // Later, paper 9 arrives under the kept term.
+        sqlx::query("UPDATE glossary_term SET article_ids = '[1,2,9]' WHERE term = 'Generative AI'").execute(&db.pool).await.unwrap();
+        db.undo_glossary_merge(m).await.unwrap();
+        let t = db.list_glossary_terms().await.unwrap();
+        assert_eq!(t.iter().find(|x| x.term == "Generative AI").unwrap().article_ids, "[1,9]", "paper 9 stays linked");
+        assert_eq!(t.iter().find(|x| x.term == "GenAI tools").unwrap().article_ids, "[2]");
+        assert!(!t.iter().find(|x| x.term == "Generative AI").unwrap().aliases.contains("GenAI tools"));
+    }
+
+    #[tokio::test]
+    async fn chained_undo_out_of_order_is_refused_and_changes_nothing() {
+        let (db, _d) = test_db().await;
+        for (t, a) in [("A", 1), ("B", 2), ("C", 3)] {
+            db.upsert_glossary_term(t, "d", a).await.unwrap();
+        }
+        let cb = db.accept_glossary_merge(id(&db, "B").await, id(&db, "C").await, None, None).await.unwrap();
+        let _ba = db.accept_glossary_merge(id(&db, "A").await, id(&db, "B").await, None, None).await.unwrap();
+        let before = db.list_glossary_terms().await.unwrap();
+        let err = db.undo_glossary_merge(cb).await.unwrap_err().to_string();
+        assert!(err.contains("Undo that later merge first"), "{err}");
+        let after = db.list_glossary_terms().await.unwrap();
+        assert_eq!(before.len(), after.len());
+        assert_eq!(db.list_glossary_merges().await.unwrap().iter().filter(|m| m.status == "accepted").count(), 2);
     }
 }

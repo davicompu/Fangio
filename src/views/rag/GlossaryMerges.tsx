@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowLeftRight, Check, ChevronDown, ChevronRight, Loader2, RotateCcw, Sparkles, X } from "lucide-react";
 import { api, type GlossaryMergeOverview, type MergeSuggestion } from "../../lib/api";
 import { cn } from "../../lib/utils";
@@ -26,12 +26,17 @@ export function GlossaryMerges({ termCount, onChanged }: { termCount: number; on
       .catch(() => {});
   }, []);
 
+  // Only the latest request may update the panel (the slider fires often).
+  const seq = useRef(0);
   const load = useCallback(async (t: number) => {
+    const mine = ++seq.current;
     setLoading(true);
     setError(null);
     try {
-      setData(await api.glossaryMergeSuggestions(t));
+      const d = await api.glossaryMergeSuggestions(t);
+      if (mine === seq.current) setData(d);
     } catch (e) {
+      if (mine !== seq.current) return;
       const msg = e instanceof Error ? e.message : String(e);
       setError(msg.includes("Connection refused") || msg.includes("error sending request")
         ? "LM Studio isn't reachable, so merge suggestions can't be computed."
@@ -57,6 +62,8 @@ export function GlossaryMerges({ termCount, onChanged }: { termCount: number; on
     try {
       await fn();
       await onChanged();
+      // Dismissing doesn't change the term count, so reload explicitly; the
+      // sequence guard makes the extra reload after a merge harmless.
       await load(threshold);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
