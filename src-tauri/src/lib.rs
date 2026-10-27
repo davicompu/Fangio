@@ -2205,6 +2205,8 @@ struct AiCodingProgress {
     disagreements: usize,
     /// True when agreed codes are shown as suggestions, not applied.
     suggest_mode: bool,
+    /// Whether two coding agents ran (otherwise suggestions come from one agent).
+    dual_rater: bool,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -2232,6 +2234,8 @@ struct AiCodingResult {
     consolidations: Vec<ConsolidationSummary>,
     /// True when agreed codes are shown as suggestions, not applied.
     suggest_mode: bool,
+    /// Whether two coding agents ran (otherwise suggestions come from one agent).
+    dual_rater: bool,
     /// Consolidation runs only when agreed codes are applied automatically.
     consolidation_skipped: bool,
 }
@@ -3231,6 +3235,7 @@ async fn run_ai_coding(
         .unwrap_or("suggest")
         .to_string();
     let suggest_mode = agreed_mode == "suggest";
+    let dual_rater = args.rater2_model.as_deref().is_some_and(|m| !m.is_empty());
 
     // Reset flags from any previous run
     state.coding_paused.store(false, Ordering::SeqCst);
@@ -3341,6 +3346,7 @@ async fn run_ai_coding(
                     consensus,
                     disagreements,
                     suggest_mode,
+                    dual_rater,
                 },
             );
             continue;
@@ -3369,6 +3375,7 @@ async fn run_ai_coding(
                     consensus,
                     disagreements,
                     suggest_mode,
+                    dual_rater,
                 },
             );
 
@@ -3429,6 +3436,7 @@ async fn run_ai_coding(
                 consensus,
                 disagreements,
                 suggest_mode,
+                dual_rater,
             },
         );
 
@@ -3478,6 +3486,7 @@ async fn run_ai_coding(
                     consensus,
                     disagreements,
                     suggest_mode,
+                    dual_rater,
                 },
             );
             match suggest::code_article_for_dimensions(
@@ -3525,6 +3534,7 @@ async fn run_ai_coding(
                 consensus,
                 disagreements,
                 suggest_mode,
+                dual_rater,
             },
         );
 
@@ -3612,6 +3622,7 @@ async fn run_ai_coding(
                         consensus,
                         disagreements,
                         suggest_mode,
+                        dual_rater,
                     },
                 );
                 // Need leftovers from BOTH raters to have a pair to adjudicate.
@@ -3709,6 +3720,7 @@ async fn run_ai_coding(
                         consensus,
                         disagreements,
                         suggest_mode,
+                        dual_rater,
                     },
                 );
 
@@ -3791,6 +3803,7 @@ async fn run_ai_coding(
         consolidated,
         consolidations,
         suggest_mode,
+        dual_rater,
         consolidation_skipped,
     })
 }

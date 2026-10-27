@@ -488,6 +488,8 @@ export interface AiCodingProgress {
   disagreements: number;
   /** True when agreed codes are shown as suggestions, not applied. */
   suggest_mode: boolean;
+  /** Whether two coding agents ran (otherwise suggestions come from one agent). */
+  dual_rater: boolean;
 }
 
 /** One variant→canonical merge from the corpus-level consolidation phase. */
@@ -513,6 +515,8 @@ export interface AiCodingResult {
   consolidations: ConsolidationSummary[];
   /** True when agreed codes are shown as suggestions, not applied. */
   suggest_mode: boolean;
+  /** Whether two coding agents ran (otherwise suggestions come from one agent). */
+  dual_rater: boolean;
   /** Consolidation runs only when agreed codes are applied automatically. */
   consolidation_skipped: boolean;
 }

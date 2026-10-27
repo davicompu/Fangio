@@ -744,7 +744,7 @@ export function ArrangingStage({ project, onLeaveStage, onProjectChanged, onAdva
                     <p className="text-[12px] font-semibold text-[var(--color-ink-800)]">AI coding complete</p>
                     <p className="text-[11px] text-[var(--color-paper-500)] mt-0.5">
                       {coding.result.suggest_mode
-                        ? `${coding.result.consensus} agreed suggestions`
+                        ? `${coding.result.consensus} ${coding.result.dual_rater ? "agreed suggestions" : "suggestions"}`
                         : `${coding.result.consensus} consensus applied`}
                       {coding.result.disagreements > 0 && ` · ${coding.result.disagreements} need review`}
                     </p>

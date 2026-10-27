@@ -582,7 +582,7 @@ export function AiCodingModal({
                   <div className="flex gap-4 text-[11px] text-[var(--color-paper-500)]">
                     {progress.consensus > 0 && (
                       <span className="text-[var(--color-ok-600)]">
-                        ✓ {progress.consensus} {progress.suggest_mode ? "agreed suggestions" : "consensus"}
+                        ✓ {progress.consensus} {progress.suggest_mode ? (progress.dual_rater ? "agreed suggestions" : "suggestions") : "consensus"}
                       </span>
                     )}
                     {progress.disagreements > 0 && (
@@ -611,7 +611,7 @@ export function AiCodingModal({
                 </div>
                 <div className="flex justify-between px-3 py-2 text-[12px]">
                   <span className="text-[var(--color-ok-600)]">
-                    {coding.result.suggest_mode ? "Agreed suggestions" : "Consensus codes applied"}
+                    {coding.result.suggest_mode ? (coding.result.dual_rater ? "Agreed suggestions" : "Suggestions") : "Consensus codes applied"}
                   </span>
                   <span className="font-medium text-[var(--color-ok-700)]">{coding.result.consensus}</span>
                 </div>
