@@ -2862,6 +2862,7 @@ impl ProjectDb {
         // how to apply (criterion 2 year filter, criterion 0 = legacy quality
         // sentinel). This makes the run idempotent: deleting a criterion or
         // changing its underlying threshold never leaves stale exclusions.
+        self.clear_rule_overrides("exclusion_criterion IN (0, 2)").await?;
         sqlx::query(
             "UPDATE article SET status = 'retrieved', exclusion_criterion = NULL, \
              exclusion_rationale = NULL, screened_at = NULL, updated_at = ? \
@@ -2933,7 +2934,7 @@ impl ProjectDb {
                         .fetch_all(&self.pool)
                         .await?;
                         for id in &ids {
-                            self.mark_ai_decision_overridden(*id, "title_abstract", "exclude").await?;
+                            self.mark_ai_decision_overridden_by_rule(*id).await?;
                         }
                         excluded += ids.len() as i64;
                     }
@@ -2951,7 +2952,7 @@ impl ProjectDb {
                         .fetch_all(&self.pool)
                         .await?;
                         for id in &ids {
-                            self.mark_ai_decision_overridden(*id, "title_abstract", "exclude").await?;
+                            self.mark_ai_decision_overridden_by_rule(*id).await?;
                         }
                         excluded += ids.len() as i64;
                     }
@@ -3042,6 +3043,7 @@ impl ProjectDb {
 
         // 1. Reset previously auto-excluded articles so re-saves are idempotent
         let now = chrono::Utc::now().to_rfc3339();
+        self.clear_rule_overrides("exclusion_criterion = 0").await?;
         sqlx::query(
             "UPDATE article SET status = 'retrieved', exclusion_criterion = NULL, \
              exclusion_rationale = NULL, screened_at = NULL, updated_at = ? \
@@ -3110,7 +3112,7 @@ impl ProjectDb {
                     .bind(article_id)
                     .execute(&self.pool)
                     .await?;
-                    self.mark_ai_decision_overridden(article_id, "title_abstract", "exclude").await?;
+                    self.mark_ai_decision_overridden_by_rule(article_id).await?;
                     excluded_count += 1;
                 }
             } else {
@@ -3125,7 +3127,7 @@ impl ProjectDb {
                 .bind(article_id)
                 .execute(&self.pool)
                 .await?;
-                self.mark_ai_decision_overridden(article_id, "title_abstract", "exclude").await?;
+                self.mark_ai_decision_overridden_by_rule(article_id).await?;
                 excluded_count += 1;
             }
         }
@@ -3995,6 +3997,37 @@ impl ProjectDb {
         .bind(human_decision)
         .execute(&self.pool)
         .await?;
+        Ok(())
+    }
+
+    /// A purification or journal-quality rule excluded this article: mark its
+    /// latest AI decision overridden (unless the AI also said exclude), as
+    /// `exclude_by_rule` so a later re-run can tell it from the researcher's.
+    pub async fn mark_ai_decision_overridden_by_rule(&self, article_id: i64) -> Result<()> {
+        sqlx::query(
+            "UPDATE ai_screening_proposal SET overridden_at = ?, overridden_to = 'exclude_by_rule' \
+             WHERE id = (SELECT id FROM ai_screening_proposal \
+                         WHERE article_id = ? AND stage = 'title_abstract' ORDER BY id DESC LIMIT 1) \
+               AND overridden_at IS NULL \
+               AND decision NOT IN ('error','skipped','uncertain','exclude')",
+        )
+        .bind(chrono::Utc::now().to_rfc3339())
+        .bind(article_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Before a rule's earlier exclusions are reset, lift the overrides those
+    /// exclusions set. `article_filter` selects the rule-excluded articles
+    /// (a fixed SQL condition on `article`, never user input).
+    async fn clear_rule_overrides(&self, article_filter: &str) -> Result<()> {
+        let sql = format!(
+            "UPDATE ai_screening_proposal SET overridden_at = NULL, overridden_to = NULL \
+             WHERE overridden_to = 'exclude_by_rule' AND article_id IN \
+             (SELECT id FROM article WHERE status = 'excluded' AND {article_filter})"
+        );
+        sqlx::query(&sql).execute(&self.pool).await?;
         Ok(())
     }
 
@@ -5260,9 +5293,33 @@ mod final_fix_tests {
         assert_eq!(n, 1);
         let p = db.get_ai_screening_proposal_by_id(id).await.unwrap().unwrap();
         assert!(p.overridden_at.is_some());
-        assert_eq!(p.overridden_to.as_deref(), Some("exclude"));
+        assert_eq!(p.overridden_to.as_deref(), Some("exclude_by_rule"));
         let log = db.list_ai_screening_log(Some(&[a]), None).await.unwrap();
         assert_eq!(log[0].review_status.as_deref(), Some("overridden"));
+    }
+
+    #[tokio::test]
+    async fn loosening_a_rule_lifts_its_override_but_not_the_researchers() {
+        let (db, _d) = test_db().await;
+        let a = art(&db, "included").await;
+        let b = art(&db, "included").await;
+        for x in [a, b] {
+            sqlx::query("UPDATE article SET journal='Unknown Journal' WHERE id=?").bind(x).execute(&db.pool).await.unwrap();
+        }
+        let pa = db.save_ai_screening_decision(&nd(a, "include", true, Some(0.95))).await.unwrap();
+        let pb = db.save_ai_screening_decision(&nd(b, "include", true, Some(0.95))).await.unwrap();
+        // The researcher overrode b themselves before any rule ran.
+        db.mark_ai_decision_overridden(b, "title_abstract", "exclude").await.unwrap();
+
+        db.apply_quality_exclusions(Some("4".into()), None, None).await.unwrap();
+        assert!(db.get_ai_screening_proposal_by_id(pa).await.unwrap().unwrap().overridden_at.is_some());
+
+        // Thresholds removed: the rule's exclusions are reset.
+        db.apply_quality_exclusions(None, None, None).await.unwrap();
+        let p = db.get_ai_screening_proposal_by_id(pa).await.unwrap().unwrap();
+        assert!(p.overridden_at.is_none() && p.overridden_to.is_none(), "the rule's override is lifted");
+        let p = db.get_ai_screening_proposal_by_id(pb).await.unwrap().unwrap();
+        assert_eq!(p.overridden_to.as_deref(), Some("exclude"), "the researcher's override stays");
     }
 
     #[tokio::test]
