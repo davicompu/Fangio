@@ -37,3 +37,9 @@ export function parseAliases(raw: string | null | undefined): string[] {
     return [];
   }
 }
+
+/** Every paper linked to a glossary term: the papers it was extracted from
+ *  plus the papers whose text mentions it. */
+export function termPaperIds(t: { article_ids: string; mention_ids?: string }): number[] {
+  return [...new Set([...parseArticleIds(t.article_ids), ...parseArticleIds(t.mention_ids)])];
+}

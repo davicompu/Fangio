@@ -542,6 +542,9 @@ export interface GlossaryTerm {
   aliases: string;
   created_at: string;
   updated_at: string;
+  /** JSON array of papers (with a PDF, still in the review) whose text uses the
+   *  term or one of its aliases. May overlap `article_ids`. */
+  mention_ids: string;
 }
 
 export interface GlossaryProgress {

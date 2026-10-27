@@ -209,6 +209,32 @@ pub fn merged_term(
     (ids, aliases)
 }
 
+/// Whether `text` uses `name` as a whole word or phrase. Short all-caps
+/// abbreviations ("CT", "LLM") must match case exactly so they don't hit
+/// ordinary words; everything else matches ignoring case.
+/// `text_lower` is `text` lowercased (passed in to avoid repeating it).
+pub fn mentions(text: &str, text_lower: &str, name: &str) -> bool {
+    let name = name.trim();
+    if name.chars().count() < 2 {
+        return false;
+    }
+    let exact_case = name.chars().count() <= 5 && name.chars().all(|c| !c.is_lowercase()) && name.chars().any(|c| c.is_alphabetic());
+    let (hay, needle) = if exact_case { (text, name.to_string()) } else { (text_lower, name.to_lowercase()) };
+    let mut start = 0;
+    while let Some(pos) = hay[start..].find(&needle) {
+        let i = start + pos;
+        let j = i + needle.len();
+        let before = hay[..i].chars().next_back();
+        let after = hay[j..].chars().next();
+        let boundary = |c: Option<char>| c.map_or(true, |c| !c.is_alphanumeric());
+        if boundary(before) && boundary(after) {
+            return true;
+        }
+        start = i + needle.chars().next().map_or(1, char::len_utf8);
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -319,5 +345,32 @@ mod tests {
         );
         assert_eq!(ids, vec![1, 2, 3]);
         assert_eq!(aliases, vec!["GenAI", "Generative Artificial Intelligence", "GAI"]);
+    }
+
+    #[test]
+    fn mentions_whole_words_ignoring_case() {
+        let t = "Students engaged in Cognitive offloading, not offloadings.";
+        let l = t.to_lowercase();
+        assert!(mentions(t, &l, "cognitive offloading"));
+        assert!(!mentions(t, &l, "offload"));
+        assert!(mentions(t, &l, "Students"));
+    }
+
+    #[test]
+    fn short_abbreviations_match_case_exactly() {
+        let t = "We used CT measures; the act of selecting matters.";
+        let l = t.to_lowercase();
+        assert!(mentions(t, &l, "CT"));
+        let t2 = "the act of selecting";
+        assert!(!mentions(t2, &t2.to_lowercase(), "CT"));
+        let t3 = "Large language models (LLMs) and an LLM.";
+        assert!(mentions(t3, &t3.to_lowercase(), "LLM"));
+    }
+
+    #[test]
+    fn unicode_text_does_not_panic() {
+        let t = "Bloom’s taxonomy — naïve façade";
+        assert!(mentions(t, &t.to_lowercase(), "Bloom’s taxonomy"));
+        assert!(mentions(t, &t.to_lowercase(), "façade"));
     }
 }

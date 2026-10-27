@@ -4772,7 +4772,15 @@ struct AskResult {
 #[tauri::command]
 async fn list_glossary_terms(state: State<'_, AppState>) -> Result<Vec<db::GlossaryTerm>, String> {
     let db = state.current().await.ok_or("no project open")?;
-    db.list_glossary_terms().await.map_err(err)
+    // Projects whose glossary predates mention links get them on first view.
+    let scanned: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM glossary_mention")
+        .fetch_one(&db.pool)
+        .await
+        .map_err(err)?;
+    if scanned == 0 {
+        let _ = db.recompute_glossary_mentions().await;
+    }
+    db.list_glossary_terms_with_mentions().await.map_err(err)
 }
 
 #[tauri::command]
@@ -4893,6 +4901,8 @@ async fn extract_glossary(
     let _ = db.coalesce_glossary_aliases().await;
     // Merges the researcher accepted earlier apply to the new extraction too.
     let _ = db.reapply_glossary_merges().await;
+    // Link every term to the PDF papers that use it, not only its sources.
+    let _ = db.recompute_glossary_mentions().await;
 
     let _ = app.emit("glossary:progress", GlossaryProgress {
         done: total,
@@ -5734,6 +5744,9 @@ async fn build_rag_index(
         db.mark_pdf_embedded(*pdf_id).await.map_err(err)?;
         indexed += 1;
     }
+
+    // Newly indexed PDF text may mention glossary terms.
+    let _ = db.recompute_glossary_mentions().await;
 
     // Step 4: titles + abstracts of every article, for meaning-based search.
     // A failure here must not discard the PDF work above, so it's reported

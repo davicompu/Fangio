@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { CircleDot, Loader2, RefreshCw } from "lucide-react";
 import { api, type ArticleRow, type GlossaryTerm } from "../../lib/api";
 import { cn } from "../../lib/utils";
-import { parseArticleIds } from "../../lib/articleMeta";
+import { termPaperIds } from "../../lib/articleMeta";
 
 const COLORS = ["var(--color-accent-500)", "var(--color-ok-500)", "var(--color-warn-500)"];
 
@@ -48,7 +48,7 @@ export function ConceptOverlapTab() {
       selected
         .map((id) => terms.find((t) => t.id === id))
         .filter((t): t is GlossaryTerm => !!t)
-        .map((t) => ({ term: t, ids: new Set(parseArticleIds(t.article_ids)) })),
+        .map((t) => ({ term: t, ids: new Set(termPaperIds(t)) })),
     [selected, terms],
   );
 
@@ -98,7 +98,7 @@ export function ConceptOverlapTab() {
               {visibleTerms.map((t) => {
                 const idx = selected.indexOf(t.id);
                 const on = idx >= 0;
-                const count = parseArticleIds(t.article_ids).length;
+                const count = termPaperIds(t).length;
                 const blocked = !on && atMax;
                 return (
                   <button

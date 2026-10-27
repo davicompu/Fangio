@@ -457,6 +457,10 @@ pub struct GlossaryTerm {
     pub aliases: String,
     pub created_at: String,
     pub updated_at: String,
+    /// JSON array of papers (with a PDF, still in the review) whose text uses
+    /// the term or one of its aliases. May overlap `article_ids`.
+    #[serde(default)]
+    pub mention_ids: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -4177,8 +4181,95 @@ impl ProjectDb {
                 aliases: r.get("aliases"),
                 created_at: r.get("created_at"),
                 updated_at: r.get("updated_at"),
+                mention_ids: "[]".into(),
             })
             .collect())
+    }
+
+    /// Glossary terms with `mention_ids` filled in: papers that use the term
+    /// or any of its aliases, limited to papers still in the review.
+    pub async fn list_glossary_terms_with_mentions(&self) -> Result<Vec<GlossaryTerm>> {
+        let mut terms = self.list_glossary_terms().await?;
+        let rows = sqlx::query(
+            "SELECT m.name_key, m.article_id FROM glossary_mention m \
+             JOIN article a ON a.id = m.article_id WHERE a.status != 'excluded'",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        let mut by_key: std::collections::HashMap<String, Vec<i64>> = std::collections::HashMap::new();
+        for r in rows {
+            by_key.entry(r.get("name_key")).or_default().push(r.get("article_id"));
+        }
+        for t in &mut terms {
+            let aliases: Vec<String> = serde_json::from_str(&t.aliases).unwrap_or_default();
+            let mut ids: Vec<i64> = std::iter::once(t.term.as_str())
+                .chain(aliases.iter().map(String::as_str))
+                .flat_map(|n| by_key.get(&crate::semantic::term_key(n)).cloned().unwrap_or_default())
+                .collect();
+            ids.sort_unstable();
+            ids.dedup();
+            t.mention_ids = serde_json::to_string(&ids)?;
+        }
+        Ok(terms)
+    }
+
+    /// Rescan which papers mention each glossary name (terms and aliases).
+    /// Covers papers still in the review that have indexed PDF text; scans
+    /// that text plus the title and abstract. Returns the number of links.
+    pub async fn recompute_glossary_mentions(&self) -> Result<usize> {
+        let terms = self.list_glossary_terms().await?;
+        let mut names: Vec<(String, String)> = Vec::new(); // (key, name as written)
+        for t in &terms {
+            let aliases: Vec<String> = serde_json::from_str(&t.aliases).unwrap_or_default();
+            for n in std::iter::once(t.term.clone()).chain(aliases) {
+                let k = crate::semantic::term_key(&n);
+                if !names.iter().any(|(x, _)| *x == k) {
+                    names.push((k, n));
+                }
+            }
+        }
+        let rows = sqlx::query(
+            "SELECT a.id, a.title, a.abstract, pc.text FROM pdf_chunk pc \
+             JOIN article a ON a.id = pc.article_id WHERE a.status != 'excluded' ORDER BY a.id",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        let mut texts: Vec<(i64, String)> = Vec::new();
+        for r in rows {
+            let id: i64 = r.get("id");
+            let chunk: String = r.get("text");
+            match texts.last_mut() {
+                Some((last, t)) if *last == id => {
+                    t.push('\n');
+                    t.push_str(&chunk);
+                }
+                _ => {
+                    let title: String = r.get("title");
+                    let abs: Option<String> = r.get("abstract");
+                    texts.push((id, format!("{title}\n{}\n{chunk}", abs.unwrap_or_default())));
+                }
+            }
+        }
+        let mut links: Vec<(String, i64)> = Vec::new();
+        for (id, text) in &texts {
+            let lower = text.to_lowercase();
+            for (key, name) in &names {
+                if crate::semantic::mentions(text, &lower, name) {
+                    links.push((key.clone(), *id));
+                }
+            }
+        }
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("DELETE FROM glossary_mention").execute(&mut *tx).await?;
+        for (key, id) in &links {
+            sqlx::query("INSERT OR IGNORE INTO glossary_mention (name_key, article_id) VALUES (?, ?)")
+                .bind(key)
+                .bind(id)
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await?;
+        Ok(links.len())
     }
 
     pub async fn glossary_term_embeddings(&self, embed_model: &str) -> Result<std::collections::HashMap<String, Vec<f32>>> {
@@ -5418,5 +5509,56 @@ mod glossary_merge_tests {
         assert_eq!(terms[0].article_ids, "[3,5]");
         // Reapplying again is a no-op.
         assert_eq!(db.reapply_glossary_merges().await.unwrap(), 0);
+    }
+}
+
+#[cfg(test)]
+mod glossary_mention_tests {
+    use super::{test_db, NewArticle};
+
+    #[tokio::test]
+    async fn mentions_link_pdf_papers_in_review_and_follow_merges() {
+        let (db, _d) = test_db().await;
+        let art = |t: &str| NewArticle {
+            title: t.into(), authors: None, year: None, journal: None, abstract_text: None,
+            doi: None, url: None, source_databases: vec![], import_batches: vec![],
+        };
+        let a = db.insert_article(&art("Paper A")).await.unwrap();
+        let b = db.insert_article(&art("Paper B")).await.unwrap();
+        let c = db.insert_article(&art("Paper C, excluded")).await.unwrap();
+        let d = db.insert_article(&art("Paper D mentions Cognitive offloading but has no PDF")).await.unwrap();
+        sqlx::query("UPDATE article SET status = 'excluded' WHERE id = ?").bind(c).execute(&db.pool).await.unwrap();
+        for (aid, text) in [
+            (a, "We observed cognitive offloading among students."),
+            (b, "Generative Artificial Intelligence tools were used."),
+            (c, "cognitive offloading again"),
+        ] {
+            let pdf: i64 = sqlx::query_scalar(
+                "INSERT INTO pdf (filename, stored_path, source_path, article_id, created_at) VALUES ('f.pdf', '/x', '/x', ?, 'now') RETURNING id",
+            )
+            .bind(aid)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+            db.save_pdf_chunks(pdf, aid, text.len() as i64, &[(0, text.into())]).await.unwrap();
+        }
+        db.upsert_glossary_term("Cognitive Offloading", "Relying on tools.", a).await.unwrap();
+        db.upsert_glossary_term("Generative AI", "AI that generates.", a).await.unwrap();
+        db.upsert_glossary_term("Generative Artificial Intelligence", "Same.", b).await.unwrap();
+        let _ = d;
+
+        db.recompute_glossary_mentions().await.unwrap();
+        let terms = db.list_glossary_terms_with_mentions().await.unwrap();
+        let ids = |name: &str| terms.iter().find(|t| t.term == name).unwrap().mention_ids.clone();
+        // Paper A mentions it; C is excluded; D has no PDF text.
+        assert_eq!(ids("Cognitive Offloading"), format!("[{a}]"));
+        assert_eq!(ids("Generative AI"), "[]");
+
+        // After merging, the kept term carries the absorbed name's mentions.
+        let keep = terms.iter().find(|t| t.term == "Generative AI").unwrap().id;
+        let other = terms.iter().find(|t| t.term == "Generative Artificial Intelligence").unwrap().id;
+        db.accept_glossary_merge(keep, other, Some(0.96), Some("m")).await.unwrap();
+        let terms = db.list_glossary_terms_with_mentions().await.unwrap();
+        assert_eq!(terms.iter().find(|t| t.term == "Generative AI").unwrap().mention_ids, format!("[{b}]"));
     }
 }

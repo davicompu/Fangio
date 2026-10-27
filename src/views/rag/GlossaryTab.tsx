@@ -3,7 +3,7 @@ import { BookOpen, Loader2, Plus, RefreshCw, Search, Trash2, X } from "lucide-re
 import { confirm as confirmDialog } from "@tauri-apps/plugin-dialog";
 import { api, type ArticleRow, type GlossaryTerm } from "../../lib/api";
 import { startGlossaryExtract, useGlossaryTask } from "../../lib/bgTasks";
-import { parseArticleIds, parseAliases } from "../../lib/articleMeta";
+import { parseArticleIds, parseAliases, termPaperIds } from "../../lib/articleMeta";
 import { GlossaryMerges } from "./GlossaryMerges";
 
 export function GlossaryTab() {
@@ -207,8 +207,10 @@ export function GlossaryTab() {
         {!loading && filtered.length > 0 && (
           <div className="divide-y divide-[var(--color-paper-100)]">
             {filtered.map((term) => {
-              const articleIds = parseArticleIds(term.article_ids);
+              const extractedIds = new Set(parseArticleIds(term.article_ids));
+              const articleIds = termPaperIds(term);
               const articleCount = articleIds.length;
+              const mentionOnly = articleIds.filter((id) => !extractedIds.has(id)).length;
               const isExpanded = expandedId === term.id;
 
               const sources: ArticleRow[] = articleIds
@@ -247,9 +249,10 @@ export function GlossaryTab() {
                               ? "bg-[var(--color-accent-100)] text-[var(--color-accent-700)]"
                               : "bg-[var(--color-paper-100)] text-[var(--color-paper-500)] hover:bg-[var(--color-paper-200)] hover:text-[var(--color-ink-700)]")
                           }
-                          title="Show source articles"
+                          title={`Extracted from ${extractedIds.size}; mentioned in ${mentionOnly} more PDF${mentionOnly === 1 ? "" : "s"}`}
                         >
                           {articleCount} article{articleCount !== 1 ? "s" : ""}
+                          {mentionOnly > 0 && <span className="opacity-70"> · {mentionOnly} by mention</span>}
                         </button>
                       </div>
                       <p
@@ -282,6 +285,9 @@ export function GlossaryTab() {
                                     <div className="font-medium text-[var(--color-ink-800)] leading-snug">{a.title}</div>
                                   )}
                                   <div className="text-[11px] text-[var(--color-paper-500)] mt-0.5">
+                                    <span className="mr-2 font-medium text-[var(--color-paper-600)]">
+                                      {extractedIds.has(a.id) ? "extracted from" : "mentions it"}
+                                    </span>
                                     {[a.authors, a.year, a.journal].filter(Boolean).join(" · ") || "—"}
                                     {!pdfPath && (
                                       <span className="ml-2 italic text-[var(--color-paper-400)]">no PDF attached</span>

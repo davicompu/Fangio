@@ -6,6 +6,7 @@ import ForceGraph2D, { type ForceGraphMethods } from "react-force-graph-2d";
 import { forceX, forceY } from "d3-force-3d";
 import { Loader2, Network, RefreshCw } from "lucide-react";
 import { api, type ArticleRow, type GlossaryTerm } from "../../lib/api";
+import { termPaperIds } from "../../lib/articleMeta";
 
 // ── Graph types ─────────────────────────────────────────────────────────────
 
@@ -58,12 +59,7 @@ function buildGraph(
 
   for (const term of terms) {
     const termId = `t:${term.id}`;
-    let articleIds: number[] = [];
-    try {
-      articleIds = JSON.parse(term.article_ids);
-    } catch {
-      continue;
-    }
+    const articleIds = termPaperIds(term);
     for (const aid of articleIds) {
       if (!articleById.has(aid)) continue; // term references an article that's no longer in the corpus
       referencedArticleIds.add(aid);
