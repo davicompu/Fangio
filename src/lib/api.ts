@@ -591,6 +591,23 @@ export interface AskResult {
   embed_model: string;
 }
 
+export interface SemanticHit {
+  article_id: number;
+  /** Ranking score (abstract, or best passage adjusted for the passage gap). */
+  score: number;
+  abstract_score: number | null;
+  passage_score: number | null;
+  /** Start of the best-matching PDF passage, when the PDF matched. */
+  passage: string | null;
+}
+
+export interface SemanticSearchResult {
+  embedding_model: string;
+  hits: SemanticHit[];
+  newly_indexed: number;
+  pdfs_not_indexed: number;
+}
+
 export interface RagStatus {
   /** Non-excluded articles that have an attached PDF. */
   articles_with_pdf: number;
@@ -1029,6 +1046,9 @@ export const api = {
   },
   purgeEmbeddings() {
     return invoke<number>("purge_embeddings");
+  },
+  semanticSearchArticles(query: string) {
+    return invoke<SemanticSearchResult>("semantic_search_articles", { query });
   },
   getRagStatus() {
     return invoke<RagStatus>("get_rag_status");

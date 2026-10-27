@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
@@ -9,10 +10,11 @@ import {
   Plus,
   RefreshCw,
   Search,
+  Sparkles,
   Upload,
   X,
 } from "lucide-react";
-import { api, type ArticleFields, type ArticleRow } from "../../lib/api";
+import { api, type ArticleFields, type ArticleRow, type BuildRagProgress, type SemanticHit } from "../../lib/api";
 import { Card } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
 import { cn } from "../../lib/utils";
@@ -43,6 +45,18 @@ export function LibraryTab() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  // Search mode: "traditional" (word match, the default) or "ai" (by meaning).
+  const [mode, setMode] = useState<"traditional" | "ai">("traditional");
+  const [resultCount, setResultCount] = useState(25);
+  const [aiHits, setAiHits] = useState<SemanticHit[] | null>(null);
+  const [aiState, setAiState] = useState<
+    | { kind: "idle" }
+    | { kind: "indexing"; done: number; total: number }
+    | { kind: "searching" }
+    | { kind: "done"; model: string; newlyIndexed: number; pdfsNotIndexed: number }
+    | { kind: "fallback"; reason: string }
+  >({ kind: "idle" });
+  const searchSeq = useRef(0);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [adding, setAdding] = useState(false);
 
@@ -68,14 +82,76 @@ export function LibraryTab() {
 
   useEffect(() => { void load(); }, [load]);
 
+  // Remember the researcher's search preferences per project.
+  useEffect(() => {
+    api.getSettings()
+      .then((s) => {
+        if (s["library.search_mode"] === "ai") setMode("ai");
+        const n = s["library.ai_result_count"];
+        if (typeof n === "number") setResultCount(n);
+      })
+      .catch(() => {});
+  }, []);
+  const chooseMode = (m: "traditional" | "ai") => {
+    setMode(m);
+    api.setSetting("library.search_mode", m).catch(() => {});
+  };
+  const chooseResultCount = (n: number) => {
+    setResultCount(n);
+    api.setSetting("library.ai_result_count", n).catch(() => {});
+  };
+
+  // AI-enhanced search runs when typing pauses. If it can't run (no embedding
+  // model, LM Studio unreachable) it falls back to traditional search.
+  useEffect(() => {
+    if (mode !== "ai") return;
+    const q = query.trim();
+    if (!q) { setAiHits(null); setAiState({ kind: "idle" }); return; }
+    const seq = ++searchSeq.current;
+    const timer = setTimeout(async () => {
+      setAiState({ kind: "searching" });
+      const unlisten = await listen<BuildRagProgress>("rag:progress", (e) => {
+        if (seq === searchSeq.current && e.payload.phase === "abstracts" && e.payload.total > 0) {
+          setAiState({ kind: "indexing", done: e.payload.done, total: e.payload.total });
+        }
+      });
+      try {
+        const r = await api.semanticSearchArticles(q);
+        if (seq !== searchSeq.current) return;
+        setAiHits(r.hits);
+        setAiState({ kind: "done", model: r.embedding_model, newlyIndexed: r.newly_indexed, pdfsNotIndexed: r.pdfs_not_indexed });
+      } catch (e) {
+        if (seq !== searchSeq.current) return;
+        const msg = e instanceof Error ? e.message : String(e);
+        setAiHits(null);
+        setAiState({
+          kind: "fallback",
+          reason: msg.includes("Connection refused") || msg.includes("error sending request")
+            ? "LM Studio isn't reachable"
+            : msg,
+        });
+      } finally {
+        unlisten();
+      }
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [mode, query]);
+
   const q = query.trim().toLowerCase();
-  const filtered = q
+  const traditional = q
     ? articles.filter((a) =>
         [a.title, a.authors, a.journal, a.doi, ...parseSources(a.source_databases)]
           .filter(Boolean)
           .some((f) => (f as string).toLowerCase().includes(q)),
       )
     : articles;
+  const byId = new Map(articles.map((a) => [a.id, a]));
+  const hitById = new Map((aiHits ?? []).map((h) => [h.article_id, h]));
+  const useAi = mode === "ai" && q.length > 0 && aiHits !== null && aiState.kind === "done";
+  const filtered = useAi
+    ? aiHits!.slice(0, resultCount).map((h) => byId.get(h.article_id)).filter((a): a is ArticleRow => !!a)
+    : traditional;
+  const weakBest = useAi && aiHits!.length > 0 && aiHits![0].score < 0.45;
 
   return (
     <div className="max-w-4xl mx-auto px-6 py-6">
@@ -100,15 +176,80 @@ export function LibraryTab() {
       </div>
 
       {/* Search */}
-      <div className="relative mb-4">
+      <div className="flex items-center gap-2 mb-2">
+        <div className="inline-flex rounded-[var(--radius-sm)] border border-[var(--color-paper-300)] bg-white p-0.5 text-[12px]" role="radiogroup" aria-label="Search mode">
+          {(["traditional", "ai"] as const).map((m) => (
+            <button
+              key={m}
+              type="button"
+              role="radio"
+              aria-checked={mode === m}
+              onClick={() => chooseMode(m)}
+              className={cn(
+                "inline-flex items-center gap-1 px-2.5 py-1 rounded-[var(--radius-xs)] transition-paper",
+                mode === m ? "bg-[var(--color-ink-800)] text-white" : "text-[var(--color-paper-600)] hover:text-[var(--color-ink-800)]",
+              )}
+              title={m === "traditional"
+                ? "Match the exact words in title, author, journal, DOI or database"
+                : "Find papers by meaning across title, abstract and indexed PDF text, using your embedding model"}
+            >
+              {m === "ai" && <Sparkles size={11} strokeWidth={2} />}
+              {m === "traditional" ? "Traditional search" : "AI-enhanced search"}
+            </button>
+          ))}
+        </div>
+        {mode === "ai" && (
+          <label className="ml-auto flex items-center gap-2 text-[11px] text-[var(--color-paper-600)]">
+            Show top
+            <input
+              type="range"
+              min={5}
+              max={Math.max(5, articles.length)}
+              step={5}
+              value={Math.min(resultCount, Math.max(5, articles.length))}
+              onChange={(e) => chooseResultCount(Number(e.target.value))}
+              aria-label="Number of results to show"
+            />
+            <span className="tabular-nums w-10">{resultCount >= articles.length ? "all" : resultCount}</span>
+          </label>
+        )}
+      </div>
+      <div className="relative mb-2">
         <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--color-paper-400)]" />
         <input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search title, author, journal, DOI, database…"
+          placeholder={mode === "ai"
+            ? "Describe what you're looking for, e.g. students relying on chatbots instead of thinking"
+            : "Search title, author, journal, DOI, database…"}
           className="w-full pl-9 pr-3 py-2 text-[13px] rounded-[var(--radius-sm)] border border-[var(--color-paper-300)] bg-white focus:outline-none focus:ring-1 focus:ring-[var(--color-accent-400)]"
         />
       </div>
+      {mode === "ai" && q.length > 0 && (
+        <div className="mb-4 text-[11px] leading-snug">
+          {aiState.kind === "searching" && (
+            <p className="text-[var(--color-paper-500)] inline-flex items-center gap-1.5"><Loader2 size={11} className="animate-spin" /> Searching by meaning…</p>
+          )}
+          {aiState.kind === "indexing" && (
+            <p className="text-[var(--color-paper-500)] inline-flex items-center gap-1.5">
+              <Loader2 size={11} className="animate-spin" />
+              {aiState.total} paper{aiState.total === 1 ? " isn't" : "s aren't"} indexed yet. Indexing their titles and abstracts first… {aiState.done}/{aiState.total}
+            </p>
+          )}
+          {aiState.kind === "fallback" && (
+            <p className="text-[var(--color-warn-700)]">AI-enhanced search couldn't run ({aiState.reason}), so these are traditional search results.</p>
+          )}
+          {aiState.kind === "done" && (
+            <p className="text-[var(--color-paper-500)]">
+              Ranked by similarity to your description ({aiState.model})
+              {aiState.newlyIndexed > 0 && ` · indexed ${aiState.newlyIndexed} new title${aiState.newlyIndexed === 1 ? "" : "s"} & abstract${aiState.newlyIndexed === 1 ? "" : "s"} first`}
+              {aiState.pdfsNotIndexed > 0 && ` · ${aiState.pdfsNotIndexed} PDF${aiState.pdfsNotIndexed === 1 ? " isn't" : "s aren't"} indexed yet, so ${aiState.pdfsNotIndexed === 1 ? "its" : "their"} full text isn't searched. Run Build index in Chat to include ${aiState.pdfsNotIndexed === 1 ? "it" : "them"}.`}
+              {weakBest && <span className="block text-[var(--color-warn-700)]">Even the best match is weak. Your library may not cover this topic.</span>}
+            </p>
+          )}
+        </div>
+      )}
+      {!(mode === "ai" && q.length > 0) && <div className="mb-2" />}
 
       {error && <p className="mb-3 text-[12px] text-[var(--color-error-600)]">{error}</p>}
 
@@ -145,6 +286,7 @@ export function LibraryTab() {
             <LibraryCard
               key={a.id}
               article={a}
+              match={useAi ? hitById.get(a.id) ?? null : null}
               pdfPath={pdfPaths.get(a.id) ?? null}
               onEdit={() => { setEditingId(a.id); setAdding(false); }}
               onChanged={load}
@@ -159,12 +301,15 @@ export function LibraryTab() {
 
 function LibraryCard({
   article,
+  match = null,
   pdfPath,
   onEdit,
   onChanged,
   onError,
 }: {
   article: ArticleRow;
+  /** The AI-enhanced search match for this paper, when ranked by meaning. */
+  match?: SemanticHit | null;
   pdfPath: string | null;
   onEdit: () => void;
   onChanged: () => Promise<void>;
@@ -210,6 +355,23 @@ function LibraryCard({
               </button>
             )}
           </div>
+          {match && (
+            <div
+              className="mt-2 text-[11px] leading-snug text-[var(--color-paper-600)]"
+              title="Cosine similarity to your description. PDF passages are adjusted for ranking, because the best of many passages scores higher than an abstract on average."
+            >
+              <span className="inline-flex items-center gap-1 font-medium text-[var(--color-accent-700)]">
+                <Sparkles size={10} strokeWidth={2} /> {match.score.toFixed(2)}
+              </span>
+              <span className="text-[var(--color-paper-400)]">
+                {match.abstract_score !== null && ` · abstract ${match.abstract_score.toFixed(2)}`}
+                {match.passage_score !== null && ` · best passage ${match.passage_score.toFixed(2)}`}
+              </span>
+              {match.passage && match.passage_score !== null && match.passage_score > (match.abstract_score ?? -1) && (
+                <p className="mt-1 italic text-[var(--color-paper-500)] line-clamp-2">“{match.passage}…”</p>
+              )}
+            </div>
+          )}
           {/* Source databases + status */}
           <div className="flex flex-wrap items-center gap-1.5 mt-2.5">
             {sources.length === 0 ? (

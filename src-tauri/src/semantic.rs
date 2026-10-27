@@ -82,6 +82,77 @@ pub fn kmeans(items: &[Vec<f32>], k: usize) -> Vec<usize> {
     assignments
 }
 
+/// One paper's match for a meaning-based search.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct PaperMatch {
+    pub article_id: i64,
+    /// Score used for ranking: the abstract score, or the best PDF passage
+    /// score after removing the typical passage-over-abstract gap.
+    pub score: f32,
+    pub abstract_score: Option<f32>,
+    pub passage_score: Option<f32>,
+    /// The chunk behind `passage_score`.
+    pub passage_chunk_id: Option<i64>,
+}
+
+/// Rank papers by similarity to `query`. `abstracts` are `(article_id, vector)`;
+/// `chunks` are `(chunk_id, article_id, vector)`. A paper's best passage is
+/// picked from many chunks, so it scores higher than its abstract on average;
+/// that gap (mean over papers with both, never negative) is subtracted from
+/// passage scores so papers with and without PDFs are ranked fairly.
+pub fn rank_papers(
+    query: &[f32],
+    abstracts: &[(i64, Vec<f32>)],
+    chunks: &[(i64, i64, Vec<f32>)],
+) -> Vec<PaperMatch> {
+    use std::collections::HashMap;
+    let mut by_paper: HashMap<i64, PaperMatch> = HashMap::new();
+    for (aid, v) in abstracts {
+        let s = crate::vector::cosine(query, v);
+        by_paper.insert(*aid, PaperMatch {
+            article_id: *aid,
+            score: s,
+            abstract_score: Some(s),
+            passage_score: None,
+            passage_chunk_id: None,
+        });
+    }
+    for (cid, aid, v) in chunks {
+        let s = crate::vector::cosine(query, v);
+        let m = by_paper.entry(*aid).or_insert(PaperMatch {
+            article_id: *aid,
+            score: f32::MIN,
+            abstract_score: None,
+            passage_score: None,
+            passage_chunk_id: None,
+        });
+        if m.passage_score.map_or(true, |p| s > p) {
+            m.passage_score = Some(s);
+            m.passage_chunk_id = Some(*cid);
+        }
+    }
+    let gaps: Vec<f32> = by_paper
+        .values()
+        .filter_map(|m| Some(m.passage_score? - m.abstract_score?))
+        .collect();
+    let gap = if gaps.is_empty() { 0.0 } else { (gaps.iter().sum::<f32>() / gaps.len() as f32).max(0.0) };
+    let mut out: Vec<PaperMatch> = by_paper
+        .into_values()
+        .map(|mut m| {
+            let adjusted = m.passage_score.map(|p| p - gap);
+            m.score = match (m.abstract_score, adjusted) {
+                (Some(a), Some(p)) => a.max(p),
+                (Some(a), None) => a,
+                (None, Some(p)) => p,
+                (None, None) => f32::MIN,
+            };
+            m
+        })
+        .collect();
+    out.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal).then(a.article_id.cmp(&b.article_id)));
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -135,5 +206,39 @@ mod tests {
         assert_eq!(a[0], a[1]);
         assert_eq!(a[2], a[3]);
         assert_ne!(a[0], a[2]);
+    }
+
+    #[test]
+    fn ranks_by_similarity_and_keeps_both_scores() {
+        let q = vec![1.0, 0.0];
+        let abstracts = vec![(1, vec![1.0, 0.0]), (2, vec![0.0, 1.0])];
+        let r = rank_papers(&q, &abstracts, &[]);
+        assert_eq!(r.iter().map(|m| m.article_id).collect::<Vec<_>>(), vec![1, 2]);
+        assert_eq!(r[0].abstract_score, Some(1.0));
+        assert_eq!(r[0].passage_score, None);
+    }
+
+    #[test]
+    fn passage_gap_is_removed_so_pdf_papers_are_not_favoured() {
+        let q = vec![1.0, 0.0];
+        // Paper 1: abstract 0.6, best passage 0.8 → gap 0.2 (only paper with both).
+        // Paper 2: abstract-only, 0.7 — should outrank paper 1 (0.8 - 0.2 = 0.6).
+        let v = |c: f32| vec![c, (1.0 - c * c).sqrt()];
+        let abstracts = vec![(1, v(0.6)), (2, v(0.7))];
+        let chunks = vec![(10, 1, v(0.5)), (11, 1, v(0.8))];
+        let r = rank_papers(&q, &abstracts, &chunks);
+        assert_eq!(r[0].article_id, 2);
+        assert_eq!(r[1].passage_chunk_id, Some(11));
+        assert!((r[1].passage_score.unwrap() - 0.8).abs() < 1e-4);
+        assert!((r[1].score - 0.6).abs() < 1e-4);
+    }
+
+    #[test]
+    fn paper_with_only_pdf_text_is_still_ranked() {
+        let q = vec![1.0, 0.0];
+        let r = rank_papers(&q, &[], &[(5, 9, vec![1.0, 0.0])]);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].article_id, 9);
+        assert_eq!(r[0].abstract_score, None);
     }
 }

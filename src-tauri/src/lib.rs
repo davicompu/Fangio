@@ -5353,6 +5353,92 @@ async fn get_rag_status(state: State<'_, AppState>) -> Result<db::RagStatusDetai
     db.rag_status(&embed_model).await.map_err(err)
 }
 
+#[derive(Debug, Serialize)]
+struct SemanticHit {
+    article_id: i64,
+    score: f32,
+    abstract_score: Option<f32>,
+    passage_score: Option<f32>,
+    /// Start of the best-matching PDF passage, when the PDF matched.
+    passage: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct SemanticSearchResult {
+    embedding_model: String,
+    /// Every paper with an embedding, best match first.
+    hits: Vec<SemanticHit>,
+    /// Titles/abstracts embedded just now because they weren't yet.
+    newly_indexed: usize,
+    /// Papers with a PDF whose full text isn't indexed (not searched).
+    pdfs_not_indexed: i64,
+}
+
+/// Meaning-based Library search over titles, abstracts and PDF text. Missing
+/// title/abstract embeddings are created first (progress on "rag:progress",
+/// phase "abstracts"); PDFs are only searched if already indexed.
+#[tauri::command]
+async fn semantic_search_articles(
+    query: String,
+    app: tauri::AppHandle<tauri::Wry>,
+    state: State<'_, AppState>,
+) -> Result<SemanticSearchResult, String> {
+    let db = state.current().await.ok_or("no project open")?;
+    let settings = db.all_settings().await.map_err(err)?;
+    let base_url = settings
+        .get("lmstudio.base_url")
+        .and_then(|v| v.as_str())
+        .unwrap_or("http://127.0.0.1:1234/v1")
+        .to_string();
+    let api_key = settings.get("lmstudio.api_key").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let embed_model = settings
+        .get("lmstudio.embed_model")
+        .and_then(|v| v.as_str())
+        .unwrap_or("text-embedding-embeddinggemma-300m-qat")
+        .to_string();
+    if embed_model.is_empty() {
+        return Err("Pick an embedding model in Settings first.".into());
+    }
+    let query = query.trim().to_string();
+    if query.is_empty() {
+        return Err("Type something to search for.".into());
+    }
+
+    let newly_indexed =
+        embed_titles_abstracts_inner(&db, &app, &base_url, &embed_model, api_key.as_deref()).await?;
+    let q = lmstudio::embed(&base_url, &embed_model, &[query.as_str()], api_key.as_deref())
+        .await
+        .map_err(err)?
+        .into_iter()
+        .next()
+        .ok_or("the embedding model returned nothing")?;
+
+    let abstracts = db.abstract_vectors(&embed_model).await.map_err(err)?;
+    let chunks = db.chunk_vectors(&embed_model).await.map_err(err)?;
+    let ranked = semantic::rank_papers(&q, &abstracts, &chunks);
+    let chunk_ids: Vec<i64> = ranked.iter().filter_map(|m| m.passage_chunk_id).collect();
+    let texts = db.chunk_texts(&chunk_ids).await.map_err(err)?;
+    let hits = ranked
+        .into_iter()
+        .map(|m| SemanticHit {
+            article_id: m.article_id,
+            score: m.score,
+            abstract_score: m.abstract_score,
+            passage_score: m.passage_score,
+            passage: m
+                .passage_chunk_id
+                .and_then(|id| texts.get(&id))
+                .map(|t| t.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(280).collect()),
+        })
+        .collect();
+    Ok(SemanticSearchResult {
+        embedding_model: embed_model.clone(),
+        hits,
+        newly_indexed,
+        pdfs_not_indexed: db.pdfs_not_embedded(&embed_model).await.map_err(err)?,
+    })
+}
+
 /// Embed every article's title + abstract that is missing, stale or from a
 /// different embedding model. Returns how many were (re)embedded.
 async fn embed_titles_abstracts_inner(
@@ -6058,6 +6144,7 @@ pub fn run() {
             suggest_step,
             suggest_step_questions,
             log_setup_assistant_outcome,
+            semantic_search_articles,
             suggest_boolean_query,
             add_pdf,
             list_pdfs,

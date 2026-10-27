@@ -2595,6 +2595,61 @@ impl ProjectDb {
         Ok(out)
     }
 
+    /// Title + abstract vectors embedded with `embed_model`.
+    pub async fn abstract_vectors(&self, embed_model: &str) -> Result<Vec<(i64, Vec<f32>)>> {
+        let rows = sqlx::query("SELECT article_id, embedding FROM article_embedding WHERE embedding_model = ?")
+            .bind(embed_model)
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows
+            .iter()
+            .map(|r| (r.get("article_id"), crate::vector::bytes_to_f32s(&r.get::<Vec<u8>, _>("embedding"))))
+            .collect())
+    }
+
+    /// PDF chunk vectors embedded with `embed_model`: `(chunk_id, article_id, vector)`.
+    pub async fn chunk_vectors(&self, embed_model: &str) -> Result<Vec<(i64, i64, Vec<f32>)>> {
+        let rows = sqlx::query(
+            "SELECT id, article_id, embedding FROM pdf_chunk \
+             WHERE embedding IS NOT NULL AND embedding_model = ?",
+        )
+        .bind(embed_model)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .iter()
+            .map(|r| (r.get("id"), r.get("article_id"), crate::vector::bytes_to_f32s(&r.get::<Vec<u8>, _>("embedding"))))
+            .collect())
+    }
+
+    pub async fn chunk_texts(&self, ids: &[i64]) -> Result<std::collections::HashMap<i64, String>> {
+        let mut out = std::collections::HashMap::new();
+        for chunk in ids.chunks(500) {
+            let placeholders = vec!["?"; chunk.len()].join(",");
+            let sql = format!("SELECT id, text FROM pdf_chunk WHERE id IN ({placeholders})");
+            let mut q = sqlx::query(&sql);
+            for id in chunk {
+                q = q.bind(id);
+            }
+            for r in q.fetch_all(&self.pool).await? {
+                out.insert(r.get("id"), r.get("text"));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Articles with a PDF whose text isn't embedded with `embed_model` yet.
+    pub async fn pdfs_not_embedded(&self, embed_model: &str) -> Result<i64> {
+        Ok(sqlx::query_scalar(
+            "SELECT COUNT(DISTINCT p.article_id) FROM pdf p \
+             WHERE p.article_id IS NOT NULL AND p.article_id NOT IN \
+             (SELECT article_id FROM pdf_chunk WHERE embedding IS NOT NULL AND embedding_model = ?)",
+        )
+        .bind(embed_model)
+        .fetch_one(&self.pool)
+        .await?)
+    }
+
     pub async fn save_abstract_embedding(
         &self,
         article_id: i64,
