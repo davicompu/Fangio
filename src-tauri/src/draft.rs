@@ -832,8 +832,11 @@ pub async fn generate_decision_report(db: &ProjectDb) -> Result<String> {
                         human_or_auto
                     }
                 }
-                // No log row at that stage (decisions made before the log existed).
-                None if a.ai_rationale.is_some() && !logged_articles.contains(&a.id) => "AI",
+                // No log row at all, but an AI rationale: decided before the
+                // full log existed. Old data can't tell an automatic AI
+                // decision from the researcher deciding after an unsure AI
+                // note, so don't claim either.
+                None if a.ai_rationale.is_some() && !logged_articles.contains(&a.id) => "Can't be determined (before the log)",
                 None => human_or_auto,
             };
             let criterion = if a.status == "excluded" {
@@ -1535,6 +1538,8 @@ mod report_tests {
         db.apply_ai_outcome(a, "include", None, "old", 0.95).await.unwrap();
         let md = generate_decision_report(&db).await.unwrap();
         assert!(md.contains("1 earlier AI screening decision was recorded before this log existed, or was decided outside it; its review status can't be determined."), "{md}");
+        assert!(md.contains("Can't be determined (before the log)"), "§2 must not claim the AI decided a pre-log article");
+        assert!(!md.contains("| AI |"), "{md}");
     }
 }
 
