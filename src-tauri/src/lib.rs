@@ -17,6 +17,7 @@ mod pdf;
 mod recent;
 mod stats;
 mod suggest;
+mod semantic;
 mod setup_assistant;
 mod transparency;
 mod svg;
@@ -5360,7 +5361,44 @@ When you genuinely cannot answer: \
 #[tauri::command]
 async fn get_rag_status(state: State<'_, AppState>) -> Result<db::RagStatusDetail, String> {
     let db = state.current().await.ok_or("no project open")?;
-    db.rag_status().await.map_err(err)
+    let settings = db.all_settings().await.map_err(err)?;
+    let embed_model = settings
+        .get("lmstudio.embed_model")
+        .and_then(|v| v.as_str())
+        .unwrap_or("text-embedding-embeddinggemma-300m-qat")
+        .to_string();
+    db.rag_status(&embed_model).await.map_err(err)
+}
+
+/// Embed every article's title + abstract that is missing, stale or from a
+/// different embedding model. Returns how many were (re)embedded.
+async fn embed_titles_abstracts_inner(
+    db: &db::ProjectDb,
+    app: &tauri::AppHandle<tauri::Wry>,
+    base_url: &str,
+    embed_model: &str,
+    api_key: Option<&str>,
+) -> Result<usize, String> {
+    let targets = db.abstract_embedding_targets(embed_model).await.map_err(err)?;
+    let total = targets.len();
+    let mut done = 0usize;
+    for batch in targets.chunks(16) {
+        let _ = app.emit(
+            "rag:progress",
+            BuildRagProgress { done, total, article_title: String::new(), phase: "abstracts".into() },
+        );
+        let texts: Vec<&str> = batch.iter().map(|(_, t, _)| t.as_str()).collect();
+        let embeddings = lmstudio::embed(base_url, embed_model, &texts, api_key)
+            .await
+            .map_err(err)?;
+        for ((article_id, _, hash), emb) in batch.iter().zip(embeddings.iter()) {
+            db.save_abstract_embedding(*article_id, hash, &vector::f32s_to_bytes(emb), embed_model)
+                .await
+                .map_err(err)?;
+            done += 1;
+        }
+    }
+    Ok(done)
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -5368,13 +5406,15 @@ struct BuildRagProgress {
     done: usize,
     total: usize,
     article_title: String,
-    phase: String, // "indexing" | "embedding" | "done"
+    phase: String, // "indexing" | "embedding" | "abstracts" | "done"
 }
 
 #[derive(Debug, Serialize)]
 struct BuildRagResult {
     indexed: usize,
     embedded_chunks: usize,
+    /// Titles + abstracts (re)embedded in this build.
+    abstracts_embedded: usize,
 }
 
 #[tauri::command]
@@ -5491,6 +5531,10 @@ async fn build_rag_index(
         indexed += 1;
     }
 
+    // Step 4: titles + abstracts of every article, for meaning-based search.
+    let abstracts_embedded =
+        embed_titles_abstracts_inner(&db, &app, &base_url, &embed_model, api_key.as_deref()).await?;
+
     let _ = app.emit(
         "rag:progress",
         BuildRagProgress {
@@ -5501,7 +5545,7 @@ async fn build_rag_index(
         },
     );
 
-    Ok(BuildRagResult { indexed, embedded_chunks })
+    Ok(BuildRagResult { indexed, embedded_chunks, abstracts_embedded })
 }
 
 #[tauri::command]

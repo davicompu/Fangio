@@ -151,6 +151,13 @@ pub struct RagStatusDetail {
     pub orphaned_chunks: usize,
     /// Chunks that have been fully embedded (ready for search).
     pub embedded_chunks: usize,
+    /// All imported articles (any status).
+    pub articles_total: usize,
+    /// Articles whose title + abstract is embedded with the current model and
+    /// up to date with the current text.
+    pub abstracts_embedded: usize,
+    /// Articles with at least one PDF chunk embedded with the current model.
+    pub articles_with_pdf_embedded: usize,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -2503,7 +2510,7 @@ impl ProjectDb {
     }
 
     /// Returns (included_with_pdf, total_chunks, embedded_chunks).
-    pub async fn rag_status(&self) -> Result<RagStatusDetail> {
+    pub async fn rag_status(&self, embed_model: &str) -> Result<RagStatusDetail> {
         // Articles with a PDF that are not excluded
         let articles_with_pdf: i64 = sqlx::query_scalar(
             "SELECT COUNT(DISTINCT a.id) FROM article a \
@@ -2538,12 +2545,79 @@ impl ProjectDb {
                 .fetch_one(&self.pool)
                 .await?;
 
+        let articles_total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM article")
+            .fetch_one(&self.pool)
+            .await?;
+        let abstracts_embedded = self.abstract_embedding_targets(embed_model).await?;
+        let abstracts_embedded = articles_total as usize - abstracts_embedded.len();
+        let articles_with_pdf_embedded: i64 = sqlx::query_scalar(
+            "SELECT COUNT(DISTINCT article_id) FROM pdf_chunk \
+             WHERE embedding IS NOT NULL AND embedding_model = ?",
+        )
+        .bind(embed_model)
+        .fetch_one(&self.pool)
+        .await?;
+
         Ok(RagStatusDetail {
             articles_with_pdf: articles_with_pdf as usize,
             unindexed_articles: unindexed_articles as usize,
             orphaned_chunks: orphaned_chunks as usize,
             embedded_chunks: embedded_chunks as usize,
+            articles_total: articles_total as usize,
+            abstracts_embedded,
+            articles_with_pdf_embedded: articles_with_pdf_embedded as usize,
         })
+    }
+
+    /// Articles whose title + abstract embedding is missing, stale (text
+    /// changed) or from another model: `(article_id, text, text_hash)`.
+    pub async fn abstract_embedding_targets(&self, embed_model: &str) -> Result<Vec<(i64, String, String)>> {
+        let rows = sqlx::query(
+            "SELECT a.id, a.title, a.abstract, e.text_hash, e.embedding_model \
+             FROM article a LEFT JOIN article_embedding e ON e.article_id = a.id \
+             ORDER BY a.id",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        let mut out = Vec::new();
+        for r in rows {
+            let title: String = r.get("title");
+            let abstract_text: Option<String> = r.get("abstract");
+            let text = crate::semantic::title_abstract_text(&title, abstract_text.as_deref());
+            let hash = crate::semantic::text_hash(&text);
+            let stored_hash: Option<String> = r.get("text_hash");
+            let stored_model: Option<String> = r.get("embedding_model");
+            let stored = stored_hash.as_deref().zip(stored_model.as_deref());
+            if crate::semantic::needs_embedding(stored, &hash, embed_model) {
+                out.push((r.get("id"), text, hash));
+            }
+        }
+        Ok(out)
+    }
+
+    pub async fn save_abstract_embedding(
+        &self,
+        article_id: i64,
+        text_hash: &str,
+        embedding: &[u8],
+        embed_model: &str,
+    ) -> Result<()> {
+        let now = chrono::Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT INTO article_embedding (article_id, text_hash, embedding, embedding_model, created_at) \
+             VALUES (?, ?, ?, ?, ?) \
+             ON CONFLICT(article_id) DO UPDATE SET text_hash = excluded.text_hash, \
+             embedding = excluded.embedding, embedding_model = excluded.embedding_model, \
+             created_at = excluded.created_at",
+        )
+        .bind(article_id)
+        .bind(text_hash)
+        .bind(embedding)
+        .bind(embed_model)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
     pub async fn list_included_articles_full(&self) -> Result<Vec<ArticleRow>> {
@@ -4922,5 +4996,52 @@ mod coding_transparency_tests {
         let (db, _d) = test_db_before(28).await;
         finish_migrations(&db).await;
         assert_eq!(db.get_setting("coding.agreed_codes_mode").await.unwrap(), None);
+    }
+}
+
+#[cfg(test)]
+mod abstract_embedding_tests {
+    use super::{test_db, NewArticle};
+
+    fn article(title: &str, abs: Option<&str>) -> NewArticle {
+        NewArticle {
+            title: title.into(),
+            authors: None,
+            year: None,
+            journal: None,
+            abstract_text: abs.map(Into::into),
+            doi: None,
+            url: None,
+            source_databases: vec![],
+            import_batches: vec![],
+        }
+    }
+
+    #[tokio::test]
+    async fn targets_follow_missing_changed_text_and_model() {
+        let (db, _d) = test_db().await;
+        let a = db.insert_article(&article("Generative AI in class", Some("We study ChatGPT."))).await.unwrap();
+        let b = db.insert_article(&article("No abstract here", None)).await.unwrap();
+
+        let t = db.abstract_embedding_targets("m1").await.unwrap();
+        assert_eq!(t.iter().map(|x| x.0).collect::<Vec<_>>(), vec![a, b]);
+        assert_eq!(t[0].1, "Generative AI in class\n\nWe study ChatGPT.");
+        assert_eq!(t[1].1, "No abstract here");
+
+        for (id, _, hash) in &t {
+            db.save_abstract_embedding(*id, hash, &[0u8; 8], "m1").await.unwrap();
+        }
+        assert!(db.abstract_embedding_targets("m1").await.unwrap().is_empty());
+        assert_eq!(db.rag_status("m1").await.unwrap().abstracts_embedded, 2);
+
+        // Editing the abstract makes only that article stale.
+        sqlx::query("UPDATE article SET abstract = 'Revised.' WHERE id = ?").bind(a).execute(&db.pool).await.unwrap();
+        let t = db.abstract_embedding_targets("m1").await.unwrap();
+        assert_eq!(t.iter().map(|x| x.0).collect::<Vec<_>>(), vec![a]);
+        assert_eq!(db.rag_status("m1").await.unwrap().abstracts_embedded, 1);
+
+        // A different embedding model makes every article stale.
+        assert_eq!(db.abstract_embedding_targets("m2").await.unwrap().len(), 2);
+        assert_eq!(db.rag_status("m2").await.unwrap().abstracts_embedded, 0);
     }
 }

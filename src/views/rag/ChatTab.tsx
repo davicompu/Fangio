@@ -198,7 +198,7 @@ export function ChatTab({ onOpenSettings }: Props) {
                   ? "Loading…"
                   : status.articles_with_pdf === 0
                   ? "No articles with PDFs yet"
-                  : `${status.articles_with_pdf} article${status.articles_with_pdf !== 1 ? "s" : ""} with PDFs · ${status.embedded_chunks.toLocaleString()} chunks indexed`}
+                  : `${status.articles_with_pdf} article${status.articles_with_pdf !== 1 ? "s" : ""} with PDFs · ${status.embedded_chunks.toLocaleString()} chunks indexed · ${status.abstracts_embedded}/${status.articles_total} titles & abstracts embedded`}
               </p>
               {status !== null && status.articles_with_pdf > 0 && (
                 <p className={cn(
@@ -268,7 +268,7 @@ export function ChatTab({ onOpenSettings }: Props) {
                 {progress
                   ? progress.phase === "done"
                     ? "Finalising…"
-                    : `${progress.phase === "indexing" ? "Chunking" : "Embedding"} · ${progress.done}/${progress.total}`
+                    : `${progress.phase === "indexing" ? "Chunking" : progress.phase === "abstracts" ? "Embedding titles & abstracts" : "Embedding"} · ${progress.done}/${progress.total}`
                   : "Starting…"}
                 {progress && progress.total > 0 && (
                   <span className="text-[var(--color-paper-400)]">({progressPct}%)</span>

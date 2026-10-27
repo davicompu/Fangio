@@ -590,18 +590,25 @@ export interface RagStatus {
   orphaned_chunks: number;
   /** Chunks that have been fully embedded (ready for search). */
   embedded_chunks: number;
+  /** All imported articles (any status). */
+  articles_total: number;
+  /** Articles whose title + abstract is embedded with the current model. */
+  abstracts_embedded: number;
+  /** Articles with at least one PDF chunk embedded with the current model. */
+  articles_with_pdf_embedded: number;
 }
 
 export interface BuildRagProgress {
   done: number;
   total: number;
   article_title: string;
-  phase: "indexing" | "embedding" | "done";
+  phase: "indexing" | "embedding" | "abstracts" | "done";
 }
 
 export interface BuildRagResult {
   indexed: number;
   embedded_chunks: number;
+  abstracts_embedded: number;
 }
 
 export interface ExportSummary {
