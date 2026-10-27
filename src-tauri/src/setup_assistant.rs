@@ -101,6 +101,14 @@ pub fn outcome_entry(
     }))
 }
 
+/// Add the call's sampling settings and prompt fingerprint to an entry.
+pub fn with_provenance(mut entry: Value, temperature: f32, prompt_hash: &str, seed: Option<i64>) -> Value {
+    entry["temperature"] = json!(temperature);
+    entry["prompt_hash"] = json!(prompt_hash);
+    entry["seed"] = json!(seed);
+    entry
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -142,6 +150,14 @@ mod tests {
         let v = suggestion_entry("c2", "rq_what", "What?", &ctx(), &[], true, Ok("S"), "m");
         assert_eq!(v["skipped"], true);
         assert_eq!(v["answers"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn provenance_is_added() {
+        let v = with_provenance(json!({ "call_id": "c1" }), 0.4, "abc123abc123", None);
+        assert_eq!(v["prompt_hash"], "abc123abc123");
+        assert!((v["temperature"].as_f64().unwrap() - 0.4).abs() < 1e-6);
+        assert!(v["seed"].is_null());
     }
 
     #[test]

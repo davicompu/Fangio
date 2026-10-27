@@ -157,6 +157,7 @@ pub async fn suggest_step_questions(
     framework: &str,
     domain: &str,
     temperature: f32,
+    seed: Option<i64>,
     api_key: Option<&str>,
 ) -> Result<StepQuestionsResult> {
     let prompt = step_questions_prompt(step_id, current_value, project_name, slr_type, framework, domain)?;
@@ -167,7 +168,7 @@ pub async fn suggest_step_questions(
         ChatMessage { role: "user".into(), content: user },
     ];
 
-    let result = lmstudio::chat(base_url, model, &messages, Some(temperature), api_key).await?;
+    let result = lmstudio::chat_seeded(base_url, model, &messages, Some(temperature), seed, api_key).await?;
 
     let questions = parse_step_questions(&result.content)
         .ok_or_else(|| anyhow!("could not parse clarifying questions from model output"))?;
@@ -200,6 +201,7 @@ pub async fn suggest_step(
     domain: &str,
     answers: Option<&[QAndA]>,
     temperature: f32,
+    seed: Option<i64>,
     api_key: Option<&str>,
 ) -> Result<StepSuggestion> {
     let prompt = step_suggest_prompt(step_id, current_value, project_name, slr_type, framework, domain)?;
@@ -223,7 +225,7 @@ pub async fn suggest_step(
         ChatMessage { role: "user".into(), content: user },
     ];
 
-    let result = lmstudio::chat(base_url, model, &messages, Some(temperature), api_key).await?;
+    let result = lmstudio::chat_seeded(base_url, model, &messages, Some(temperature), seed, api_key).await?;
 
     // Extract the first JSON object from the response
     let bytes = result.content.as_bytes();

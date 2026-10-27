@@ -4166,7 +4166,7 @@ struct SuggestStepResult {
 /// Endpoint, key, model and temperature the setup assistant uses.
 async fn setup_assistant_config(
     db: &db::ProjectDb,
-) -> Result<(String, Option<String>, String, f32), String> {
+) -> Result<(String, Option<String>, String, f32, Option<i64>), String> {
     let settings = db.all_settings().await.map_err(err)?;
     let base_url = settings
         .get("lmstudio.base_url")
@@ -4186,7 +4186,7 @@ async fn setup_assistant_config(
         return Err("Pick a reasoning model in Settings first.".into());
     }
     let temperature = load_temperature(&settings, "temperature.suggestions", 0.4);
-    Ok((base_url, api_key, model, temperature))
+    Ok((base_url, api_key, model, temperature, load_seed(&settings)))
 }
 
 #[tauri::command]
@@ -4196,7 +4196,7 @@ async fn suggest_step(
 ) -> Result<SuggestStepResult, String> {
     let db = state.current().await.ok_or("no project open")?;
     let project = db.get_project().await.map_err(err)?;
-    let (base_url, api_key, model, temperature) = setup_assistant_config(&db).await?;
+    let (base_url, api_key, model, temperature, seed) = setup_assistant_config(&db).await?;
     let call_id = args.call_id.clone().unwrap_or_else(|| setup_assistant::new_call_id(&args.step_id));
     let answers = args.answers.clone().unwrap_or_default();
     let (slr_type, framework, domain) = (
@@ -4215,6 +4215,7 @@ async fn suggest_step(
         &domain,
         Some(&answers),
         temperature,
+        seed,
         api_key.as_deref(),
     )
     .await;
@@ -4256,6 +4257,12 @@ async fn suggest_step(
             )
         }
     };
+    let prompt_hash = suggest::step_suggest_prompt(
+        &args.step_id, &args.current_value, &project.name, &slr_type, &framework, &domain,
+    )
+    .map(|p| transparency::prompt_fingerprint(&p.system))
+    .unwrap_or_default();
+    let entry = setup_assistant::with_provenance(entry, temperature, &prompt_hash, seed);
     let _ = db
         .append_decision_log_entry(
             "onboarding",
@@ -4297,7 +4304,7 @@ async fn suggest_step_questions(
 ) -> Result<StepQuestionsResponse, String> {
     let db = state.current().await.ok_or("no project open")?;
     let project = db.get_project().await.map_err(err)?;
-    let (base_url, api_key, model, temperature) = setup_assistant_config(&db).await?;
+    let (base_url, api_key, model, temperature, seed) = setup_assistant_config(&db).await?;
     let call_id = setup_assistant::new_call_id(&args.step_id);
     let (slr_type, framework, domain) = (
         project.slr_type.clone().unwrap_or_default(),
@@ -4314,6 +4321,7 @@ async fn suggest_step_questions(
         &framework,
         &domain,
         temperature,
+        seed,
         api_key.as_deref(),
     )
     .await;
@@ -4343,6 +4351,12 @@ async fn suggest_step_questions(
             )
         }
     };
+    let prompt_hash = suggest::step_questions_prompt(
+        &args.step_id, &args.current_value, &project.name, &slr_type, &framework, &domain,
+    )
+    .map(|p| transparency::prompt_fingerprint(&p.system))
+    .unwrap_or_default();
+    let entry = setup_assistant::with_provenance(entry, temperature, &prompt_hash, seed);
     let _ = db
         .append_decision_log_entry(
             "onboarding",

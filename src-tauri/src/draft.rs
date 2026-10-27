@@ -551,6 +551,22 @@ fn setup_outcome_label(outcome: &str) -> &str {
     }
 }
 
+/// "model, temperature 0.4, prompt a1b2c3d4e5f6, seed 7" for a setup-assistant
+/// entry; older entries only carry the model.
+fn setup_call_label(v: &serde_json::Value) -> String {
+    let mut parts = vec![v["model"].as_str().unwrap_or("\u{2014}").to_string()];
+    if let Some(t) = v["temperature"].as_f64() {
+        parts.push(format!("temperature {}", crate::transparency::format_temperature(t)));
+    }
+    if let Some(h) = v["prompt_hash"].as_str().filter(|h| !h.is_empty()) {
+        parts.push(format!("prompt {h}"));
+    }
+    if let Some(seed) = v["seed"].as_i64() {
+        parts.push(format!("seed {seed}"));
+    }
+    parts.join(", ")
+}
+
 /// One line of text for a report bullet: no newlines, quoted.
 fn quoted(s: &str) -> String {
     format!("\u{201c}{}\u{201d}", s.split_whitespace().collect::<Vec<_>>().join(" "))
@@ -610,7 +626,7 @@ fn setup_assistant_section(log: &[crate::db::DecisionLogRow]) -> String {
         ));
 
         if let Some((_, q)) = questions {
-            let model = q["model"].as_str().unwrap_or("\u{2014}");
+            let model = setup_call_label(q);
             if let Some(err) = q["error"].as_str() {
                 s.push_str(&format!("- AI \u{2014} clarifying questions failed ({model}): {}\n", quoted(err)));
             } else {
@@ -652,7 +668,7 @@ fn setup_assistant_section(log: &[crate::db::DecisionLogRow]) -> String {
                     s.push_str(&format!("- Researcher \u{2014} answers: {}\n", answers.join("; ")));
                 }
             }
-            let model = v["model"].as_str().unwrap_or("\u{2014}");
+            let model = setup_call_label(v);
             if let Some(err) = v["error"].as_str() {
                 s.push_str(&format!("- AI \u{2014} suggestion failed ({model}): {}\n", quoted(err)));
             } else {
@@ -1416,5 +1432,19 @@ mod setup_assistant_report_tests {
         let (db, _d) = test_db().await;
         let md = generate_decision_report(&db).await.unwrap();
         assert!(md.contains("## 1a. Setup assistant\n\n_The setup assistant was not used._"));
+    }
+
+    #[tokio::test]
+    async fn report_shows_temperature_prompt_and_seed_when_recorded() {
+        let (db, _d) = test_db().await;
+        let q = crate::setup_assistant::with_provenance(
+            questions_entry("c9", "name", "x", &[], Ok(&[]), "qwen3-8b"),
+            0.4,
+            "a1b2c3d4e5f6",
+            Some(7),
+        );
+        db.append_decision_log_entry("onboarding", Some("name"), KEY_QUESTIONS, &q, None, "ai").await.unwrap();
+        let md = generate_decision_report(&db).await.unwrap();
+        assert!(md.contains("clarifying questions (qwen3-8b, temperature 0.4, prompt a1b2c3d4e5f6, seed 7)"));
     }
 }
