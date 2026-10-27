@@ -2,6 +2,17 @@
 
 All notable user-facing changes to Reeves.
 
+## 0.4.1 — October 2026
+
+### Fixed
+
+- The decision report no longer says older screening decisions (made before
+  the full log existed) were decided by the AI; it says this can't be
+  determined.
+- Switching embedding model without rebuilding the index could crash Clusters.
+  Ask the corpus, Ask this article, Clusters and Synthesis now only use PDF
+  text embedded with the current model.
+
 ## 0.4.0 — October 2026
 
 ### Added
