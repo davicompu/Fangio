@@ -2,6 +2,24 @@
 
 All notable user-facing changes to Reeves.
 
+## 0.4.2 — October 2026
+
+### Fixed
+
+- Re-running a purification or journal-quality rule with a looser setting now
+  clears the "Overridden" mark it had set on AI decisions (your own overrides
+  are kept).
+- Saving a synthesis or agenda you rewrote from scratch is no longer logged as
+  an edited AI draft, and saving the same text twice isn't logged twice.
+- A one-agent coding run in suggestion mode now says "Suggestions", not
+  "Agreed suggestions".
+- Renaming a code keeps its "opened" history; consolidated codes count opens
+  under their earlier wording too.
+- A glossary merge whose kept term disappeared after re-extracting is shown as
+  "not in effect now" (it reapplies if the term comes back).
+- If the backup before a database upgrade fails, Reeves explains why and what
+  to do; the project is left unchanged.
+
 ## 0.4.1 — October 2026
 
 ### Fixed
