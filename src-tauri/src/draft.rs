@@ -713,6 +713,14 @@ pub async fn generate_decision_report(db: &ProjectDb) -> Result<String> {
     let adjudications = db.list_adjudications_for_articles(&ids).await?;
     let consolidations = db.list_all_consolidations().await?;
     let review_events = db.list_review_events().await?;
+    let coding_opens = db.ai_output_open_stats("coding").await?;
+    let agent_opens: std::collections::HashMap<String, std::collections::HashMap<String, (i64, String, String, String)>> = {
+        let mut m = std::collections::HashMap::new();
+        for k in ["codebook", "synthesis", "agenda"] {
+            m.insert(k.to_string(), db.ai_output_open_stats(k).await?);
+        }
+        m
+    };
     let fulltext_status = db.fulltext_status_map().await?;
     let ai_log = db.list_ai_screening_log(None, None).await?;
     let ai_calls = db.list_ai_calls().await?;
@@ -762,7 +770,7 @@ pub async fn generate_decision_report(db: &ProjectDb) -> Result<String> {
     // Setup-assistant entries are reported in §1a, not as protocol decisions.
     let protocol: Vec<&crate::db::DecisionLogRow> = log
         .iter()
-        .filter(|d| !d.decision_key.starts_with(crate::setup_assistant::KEY_PREFIX))
+        .filter(|d| !d.decision_key.starts_with(crate::setup_assistant::KEY_PREFIX) && !d.decision_key.starts_with("agent."))
         .collect();
     let effective: Vec<&&crate::db::DecisionLogRow> = protocol.iter().filter(|d| d.superseded_by.is_none()).collect();
     if effective.is_empty() {
@@ -957,7 +965,7 @@ pub async fn generate_decision_report(db: &ProjectDb) -> Result<String> {
     if codings.is_empty() {
         s.push_str("_No codes applied yet._\n\n");
     } else {
-        s.push_str("| Article | Dimension | Code | Applied by | Confidence (rater 1 / rater 2) | Reasons | Model used | Prompt fingerprint | Temperature | When |\n|---|---|---|---|---|---|---|---|---|---|\n");
+        s.push_str("| Article | Dimension | Code | Applied by | Confidence (rater 1 / rater 2) | Reasons | Model used | Prompt fingerprint | Temperature | Opened | When |\n|---|---|---|---|---|---|---|---|---|---|---|\n");
         for c in &codings {
             let by = match c.source.as_str() {
                 "researcher" => "Human",
@@ -996,8 +1004,17 @@ pub async fn generate_decision_report(db: &ProjectDb) -> Result<String> {
                 c.temperature.map(crate::transparency::format_temperature),
                 c.temperature2.map(crate::transparency::format_temperature),
             );
+            // Opens of the suggestion behind an AI code (researcher codes have none).
+            let opened = if c.source.starts_with("model-") {
+                match coding_opens.get(&crate::agent_log::coding_target(c.article_id, &c.dimension, &c.code)) {
+                    Some((n, f, l, by)) => crate::transparency::opens_cell(*n, Some(f), Some(l), Some(by)),
+                    None => crate::transparency::opens_cell(0, None, None, None),
+                }
+            } else {
+                "—".into()
+            };
             s.push_str(&format!(
-                "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
+                "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
                 cell(&short(&title, 48)),
                 cell(&c.dimension),
                 cell(&c.code),
@@ -1007,6 +1024,7 @@ pub async fn generate_decision_report(db: &ProjectDb) -> Result<String> {
                 cell(&model),
                 cell(&hash),
                 temp,
+                cell(&opened),
                 cell(&crate::transparency::utc_time(&c.created_at)),
             ));
         }
@@ -1082,7 +1100,188 @@ pub async fn generate_decision_report(db: &ProjectDb) -> Result<String> {
         s.push_str("\n");
     }
 
+    s.push_str(&agents_section(&log, &agent_opens));
+
     Ok(s)
+}
+
+type OpenStats = std::collections::HashMap<String, (i64, String, String, String)>;
+
+fn agent_title(agent: &str) -> &str {
+    match agent {
+        "query" => "Query agent (search strategy)",
+        "codebook" => "Codebook builder",
+        "synthesis" => "Synthesis agent",
+        "agenda" => "Research agenda agent",
+        other => other,
+    }
+}
+
+/// "model, temperature 0.3, prompt abc123abc123, seed 7" from an agent entry.
+fn agent_call_label(v: &serde_json::Value) -> String {
+    let mut parts = vec![v["model_used"].as_str().or(v["model_requested"].as_str()).unwrap_or("\u{2014}").to_string()];
+    if let Some(t) = v["temperature"].as_f64() {
+        parts.push(format!("temperature {}", crate::transparency::format_temperature(t)));
+    }
+    if let Some(h) = v["prompt_hash"].as_str() {
+        parts.push(format!("prompt {h}"));
+    }
+    if let Some(seed) = v["seed"].as_i64() {
+        parts.push(format!("seed {seed}"));
+    }
+    parts.join(", ")
+}
+
+/// One line describing a researcher action on an agent output.
+fn agent_action_line(d: &crate::db::DecisionLogRow, v: &serde_json::Value) -> String {
+    let when = crate::transparency::utc_time(&d.created_at);
+    let det = &v["details"];
+    let what = match v["action"].as_str().unwrap_or("") {
+        "accepted" => match det["query"].as_str() {
+            Some(q) => format!("accepted it as the query {}", quoted(q)),
+            None => "accepted it".into(),
+        },
+        "undone" => "undid it".into(),
+        "dismissed" => "dismissed it".into(),
+        "saved" => match (det["unchanged"].as_bool(), det["percent_changed"].as_u64()) {
+            (Some(true), _) => "saved it unchanged".into(),
+            (_, Some(p)) => format!("saved it after editing (about {p}% of the words changed)"),
+            _ => "saved it".into(),
+        },
+        "edited" => {
+            let change = det["change"].as_str().unwrap_or("changed");
+            let code = det["code"].as_str().unwrap_or("");
+            let dim = det["dimension"].as_str().unwrap_or("");
+            match det["from"].as_str() {
+                Some(from) => format!("{change} code {} to {} in {dim}", quoted(from), quoted(code)),
+                None => format!("{change} code {} in {dim}", quoted(code)),
+            }
+        }
+        other => other.to_string(),
+    };
+    format!("  - Researcher \u{2014} {when}: {what}\n")
+}
+
+/// §6: every logged agent output with its provenance and what the researcher
+/// did with it.
+fn agents_section(log: &[crate::db::DecisionLogRow], opens: &std::collections::HashMap<String, OpenStats>) -> String {
+    let mut s = String::from("## 6. AI agents\n\n");
+    let entries: Vec<(&crate::db::DecisionLogRow, serde_json::Value)> = log
+        .iter()
+        .filter(|d| d.decision_key.starts_with("agent."))
+        .filter_map(|d| serde_json::from_str(&d.value_json).ok().map(|v| (d, v)))
+        .collect();
+    if entries.is_empty() {
+        s.push_str("_No AI agent outputs recorded yet._\n\n");
+        return s;
+    }
+    s.push_str("Each output below was produced by an AI agent (**AI**) or computed by the app without a model (**App**); what the researcher then did is marked **Researcher**. Model outputs may vary between runs even with the same settings.\n\n");
+    let actions_for = |id: i64| -> Vec<&(&crate::db::DecisionLogRow, serde_json::Value)> {
+        entries
+            .iter()
+            .filter(|(d, v)| d.decision_key.ends_with(".action") && v["output_id"].as_i64() == Some(id))
+            .collect()
+    };
+    let opened_line = |agent: &str, id: i64| -> String {
+        let cell = match opens.get(agent).and_then(|m| m.get(&id.to_string())) {
+            Some((n, f, l, by)) => crate::transparency::opens_cell(*n, Some(f), Some(l), Some(by)),
+            None => crate::transparency::opens_cell(0, None, None, None),
+        };
+        format!("  - Opened: {cell}\n")
+    };
+
+    for agent in crate::agent_log::AGENTS {
+        let outputs: Vec<&(&crate::db::DecisionLogRow, serde_json::Value)> = entries
+            .iter()
+            .filter(|(d, _)| d.decision_key == format!("agent.{agent}.output") || d.decision_key == format!("agent.{agent}.result"))
+            .collect();
+        if outputs.is_empty() {
+            continue;
+        }
+        s.push_str(&format!("### {}\n\n", agent_title(agent)));
+        if agent == "codebook" {
+            let proposals = outputs.iter().filter(|(d, _)| d.decision_key.ends_with(".output")).count();
+            let models: std::collections::BTreeSet<String> = outputs
+                .iter()
+                .filter(|(d, _)| d.decision_key.ends_with(".output"))
+                .map(|(_, v)| agent_call_label(v))
+                .collect();
+            if proposals > 0 {
+                s.push_str(&format!(
+                    "- AI \u{2014} {proposals} proposal call{} (one per article and rater): {}\n",
+                    if proposals == 1 { "" } else { "s" },
+                    models.into_iter().collect::<Vec<_>>().join("; ")
+                ));
+            }
+            for (d, v) in outputs.iter().filter(|(d, _)| d.decision_key.ends_with(".result")) {
+                let added = v["codes_added"].as_array().cloned().unwrap_or_default();
+                s.push_str(&format!(
+                    "- App \u{2014} {}: {} code{} added{}\n",
+                    crate::transparency::utc_time(&d.created_at),
+                    added.len(),
+                    if added.len() == 1 { "" } else { "s" },
+                    if v["extend_only"].as_bool() == Some(true) { " (extending the codebook)" } else { "" }
+                ));
+                if let Some(r) = d.rationale.as_deref() {
+                    s.push_str(&format!("  - How: {r}\n"));
+                }
+                for c in &added {
+                    let from: Vec<String> = c["from_proposals"]
+                        .as_array()
+                        .map(|a| a.iter().map(|p| format!("{} \u{00d7}{}", quoted(p["wording"].as_str().unwrap_or("")), p["times_proposed"])).collect())
+                        .unwrap_or_default();
+                    s.push_str(&format!(
+                        "  - {} / {} \u{2190} {}\n",
+                        c["dimension"].as_str().unwrap_or(""),
+                        quoted(c["code"].as_str().unwrap_or("")),
+                        from.join(", ")
+                    ));
+                }
+                for a in actions_for(d.id) {
+                    s.push_str(&agent_action_line(a.0, &a.1));
+                }
+                s.push_str(&opened_line(agent, d.id));
+            }
+            s.push('\n');
+            continue;
+        }
+        for (d, v) in &outputs {
+            s.push_str(&format!("- AI \u{2014} {} ({})\n", crate::transparency::utc_time(&d.created_at), agent_call_label(v)));
+            match agent {
+                "query" => {
+                    let mode = v["mode"].as_str().unwrap_or("");
+                    if let Some(q) = v["existing_query"].as_str().filter(|q| !q.trim().is_empty()) {
+                        s.push_str(&format!("  - Researcher's query when asking ({mode}): {}\n", quoted(q)));
+                    }
+                    s.push_str(&format!("  - Suggestion: {}\n", quoted(v["suggestion"].as_str().unwrap_or(""))));
+                    if let Some(r) = d.rationale.as_deref().filter(|r| !r.trim().is_empty()) {
+                        s.push_str(&format!("  - Reason: {}\n", quoted(r)));
+                    }
+                }
+                _ => {
+                    if v["mode"].as_str() == Some("revise") {
+                        s.push_str(&format!("  - Revision requested: {}\n", quoted(v["instruction"].as_str().unwrap_or(""))));
+                    } else if let Some(g) = v["guidance"].as_str().filter(|g| !g.trim().is_empty()) {
+                        s.push_str(&format!("  - Researcher's guidance: {}\n", quoted(g)));
+                    }
+                    let words = v["draft"].as_str().map(|t| t.split_whitespace().count()).unwrap_or(0);
+                    s.push_str(&format!("  - Draft: {words} words\n"));
+                }
+            }
+            let acts = actions_for(d.id);
+            if acts.is_empty() {
+                s.push_str("  - Researcher \u{2014} no action recorded\n");
+            }
+            for a in acts {
+                s.push_str(&agent_action_line(a.0, &a.1));
+            }
+            if agent == "synthesis" || agent == "agenda" {
+                s.push_str(&opened_line(agent, d.id));
+            }
+        }
+        s.push('\n');
+    }
+    s
 }
 
 fn capitalize(s: &str) -> String {
@@ -1446,5 +1645,40 @@ mod setup_assistant_report_tests {
         db.append_decision_log_entry("onboarding", Some("name"), KEY_QUESTIONS, &q, None, "ai").await.unwrap();
         let md = generate_decision_report(&db).await.unwrap();
         assert!(md.contains("clarifying questions (qwen3-8b, temperature 0.4, prompt a1b2c3d4e5f6, seed 7)"));
+    }
+
+    #[tokio::test]
+    async fn agents_section_lists_outputs_actions_and_opens() {
+        use crate::agent_log::{log_action, log_app_result, log_output};
+        use crate::suggest::CallMeta;
+        let (db, _d) = test_db().await;
+        let meta = CallMeta { model_requested: "qwen3".into(), model_used: "qwen3-8b".into(), prompt_hash: "abcdefabcdef".into(), temperature: 0.3, seed: None };
+        let q = log_output(&db, "assembling", "query", "query", &meta,
+            serde_json::json!({ "mode": "suggest", "existing_query": null, "suggestion": "\"AI\" AND bias" }), Some("Covers both concepts.")).await.unwrap();
+        log_action(&db, "assembling", "query", q, "accepted", serde_json::json!({ "query": "\"AI\" AND bias" })).await.unwrap();
+        let syn = log_output(&db, "assessing", "synthesis", "synthesis", &meta,
+            serde_json::json!({ "draft": "one two three four" }), None).await.unwrap();
+        log_action(&db, "assessing", "synthesis", syn, "saved", serde_json::json!({ "percent_changed": 35, "unchanged": false })).await.unwrap();
+        db.record_ai_output_open("synthesis", &syn.to_string(), "tester").await.unwrap();
+        let cb = log_app_result(&db, "arranging", "codebook", serde_json::json!({ "codes_added": [
+            { "dimension": "Method", "code": "Survey", "from_proposals": [{ "wording": "Survey", "times_proposed": 3 }, { "wording": "Surveys", "times_proposed": 1 }] }
+        ] }), Some("Grouped by wording.")).await.unwrap();
+        log_action(&db, "arranging", "codebook", cb, "edited", serde_json::json!({ "change": "removed", "dimension": "Method", "code": "Survey" })).await.unwrap();
+
+        let md = generate_decision_report(&db).await.unwrap();
+        let s1 = &md[md.find("## 1. Configuration decisions").unwrap()..md.find("## 1a.").unwrap()];
+        assert!(!s1.contains("agent"), "agent entries are not protocol decisions");
+        let s6 = &md[md.find("## 6. AI agents").unwrap()..];
+        assert!(s6.contains("### Query agent (search strategy)"));
+        assert!(s6.contains("(qwen3-8b, temperature 0.3, prompt abcdefabcdef)"));
+        assert!(s6.contains("Suggestion: \u{201c}\"AI\" AND bias\u{201d}"));
+        assert!(s6.contains("Reason: \u{201c}Covers both concepts.\u{201d}"));
+        assert!(s6.contains("accepted it as the query"));
+        assert!(s6.contains("saved it after editing (about 35% of the words changed)"));
+        assert!(s6.contains("Opened: 1 ("));
+        assert!(s6.contains("App \u{2014}"));
+        assert!(s6.contains("Method / \u{201c}Survey\u{201d} \u{2190} \u{201c}Survey\u{201d} \u{00d7}3, \u{201c}Surveys\u{201d} \u{00d7}1"));
+        assert!(s6.contains("removed code \u{201c}Survey\u{201d} in Method"));
+        assert!(!s6.contains("Research agenda agent"), "agents with no outputs are omitted");
     }
 }
