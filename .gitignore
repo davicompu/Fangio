@@ -28,3 +28,4 @@ companion/node_modules
 .worktrees/
 .superpowers/
 memory/
+test_max_final
