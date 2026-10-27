@@ -593,12 +593,26 @@ async fn backup_before_pending_migrations(
         target = dir.join(format!("pre-migration-{stamp}-{n}.sqlite"));
         n += 1;
     }
-    sqlx::query("VACUUM INTO ?")
+    if let Err(e) = sqlx::query("VACUUM INTO ?")
         .bind(target.to_string_lossy().to_string())
         .execute(pool)
         .await
-        .with_context(|| format!("backing up project to {} before migrating", target.display()))?;
+    {
+        // Leave the project untouched and say why, where, and what to do.
+        anyhow::bail!(backup_failed_message(&target, &e.to_string()));
+    }
     Ok(())
+}
+
+/// Shown when the pre-upgrade backup can't be written; nothing was changed.
+fn backup_failed_message(target: &Path, reason: &str) -> String {
+    format!(
+        "This version of Reeves needs to upgrade the project's database, and it makes a backup first. \
+         The backup couldn't be written to {} ({reason}). The project hasn't been changed. \
+         Free up disk space or check that the project folder can be written to, or make a copy of the \
+         project folder yourself, then open the project again.",
+        target.display()
+    )
 }
 
 impl ProjectDb {
@@ -5851,5 +5865,28 @@ mod rename_and_stale_merge_tests {
         let m = &db.list_glossary_merges().await.unwrap()[0];
         assert_eq!(m.status, "accepted");
         assert!(!m.in_effect);
+    }
+}
+
+#[cfg(test)]
+mod backup_failure_tests {
+    #[tokio::test]
+    async fn failed_backup_leaves_the_project_unchanged_and_explains() {
+        let (db, dir) = super::test_db_before(28).await;
+        drop(db);
+        // A file where the backups folder should be makes the backup fail.
+        let backups = dir.path().join("backups");
+        let _ = std::fs::remove_dir_all(&backups);
+        std::fs::write(&backups, b"not a folder").unwrap();
+        let err = match super::ProjectDb::open_or_create(dir.path(), None).await {
+            Ok(_) => panic!("opening should fail when the backup can't be written"),
+            Err(e) => e.to_string(),
+        };
+        assert!(err.contains("The project hasn't been changed"), "{err}");
+        assert!(err.contains("make a copy of the project folder yourself"), "{err}");
+        // Still at the old schema: the upgrade didn't run.
+        let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", dir.path().join("project.sqlite").display())).await.unwrap();
+        let max: i64 = sqlx::query_scalar("SELECT MAX(version) FROM _sqlx_migrations").fetch_one(&pool).await.unwrap();
+        assert!(max < 28, "{max}");
     }
 }
