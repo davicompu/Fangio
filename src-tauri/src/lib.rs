@@ -5121,15 +5121,26 @@ async fn cluster_corpus(
     let _ = app.emit("clusters:progress", ClusterProgress { phase: "embedding".into(), done: 0, total: 0 });
 
     // Gather per-article centroid embeddings
-    let all_chunks = db.all_embedded_chunks().await.map_err(err)?;
+    let embed_model = settings
+        .get("lmstudio.embed_model")
+        .and_then(|v| v.as_str())
+        .unwrap_or("text-embedding-embeddinggemma-300m-qat")
+        .to_string();
+    let all_chunks = db.all_embedded_chunks(&embed_model).await.map_err(err)?;
     if all_chunks.is_empty() {
-        return Err("No embedded chunks. Index and embed PDFs first.".into());
+        return Err("No PDF text embedded with the current embedding model. Run Build index first.".into());
     }
 
     // Group chunks by article_id, average embeddings to get one centroid per article
     let mut article_chunks: std::collections::HashMap<i64, (String, Vec<Vec<f32>>)> = std::collections::HashMap::new();
+    // All vectors must have one size to be averaged; skip any that don't
+    // (a damaged stored embedding would otherwise crash the averaging below).
+    let dim = all_chunks.iter().map(|c| vector::bytes_to_f32s(&c.5).len()).find(|&d| d > 0).unwrap_or(0);
     for (_chunk_id, art_id, title, _ci, _text, bytes) in &all_chunks {
         let emb = vector::bytes_to_f32s(bytes);
+        if emb.len() != dim || dim == 0 {
+            continue;
+        }
         article_chunks.entry(*art_id).or_insert_with(|| (title.clone(), vec![])).1.push(emb);
     }
 
@@ -5276,7 +5287,7 @@ async fn ask_corpus(args: AskArgs, state: State<'_, AppState>) -> Result<AskResu
         .ok_or("embedding model returned no vectors")?;
 
     // Pull all embedded chunks and score
-    let all = db.all_embedded_chunks().await.map_err(err)?;
+    let all = db.all_embedded_chunks(&embed_model).await.map_err(err)?;
     if all.is_empty() {
         return Err(
             "No embedded chunks yet. Add a PDF, link it to an article, then index + embed it."
@@ -5441,7 +5452,7 @@ async fn ask_article(args: AskArticleArgs, state: State<'_, AppState>) -> Result
         .next()
         .ok_or("embedding model returned no vectors")?;
 
-    let all = db.embedded_chunks_for_article(args.article_id).await.map_err(err)?;
+    let all = db.embedded_chunks_for_article(args.article_id, &embed_model).await.map_err(err)?;
     let (context, citations) = if all.is_empty() {
         // No indexed chunks — fall back to the article's title + abstract.
         let article = db
@@ -6167,7 +6178,7 @@ async fn generate_synthesis(state: State<'_, AppState>) -> Result<DraftResponse,
         framework::dimensions_for(&framework).into_iter().map(|d| d.to_string()).collect()
     };
 
-    let all_chunks = db.all_embedded_chunks().await.map_err(err)?;
+    let all_chunks = db.all_embedded_chunks(&embed_model).await.map_err(err)?;
     if all_chunks.is_empty() {
         return Err("No embedded chunks yet. Add PDFs and run Index corpus first.".into());
     }

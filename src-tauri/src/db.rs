@@ -2445,14 +2445,16 @@ impl ProjectDb {
     pub async fn embedded_chunks_for_article(
         &self,
         article_id: i64,
+        embed_model: &str,
     ) -> Result<Vec<(i64, i64, String, i64, String, Vec<u8>)>> {
         let rows = sqlx::query(
             "SELECT pc.id, pc.article_id, a.title, pc.chunk_index, pc.text, pc.embedding \
              FROM pdf_chunk pc \
              INNER JOIN article a ON a.id = pc.article_id \
-             WHERE pc.embedding IS NOT NULL AND pc.article_id = ?",
+             WHERE pc.embedding IS NOT NULL AND pc.article_id = ? AND pc.embedding_model = ?",
         )
         .bind(article_id)
+        .bind(embed_model)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows
@@ -2472,16 +2474,20 @@ impl ProjectDb {
 
     /// All embedded chunks across the project, with the article id and a
     /// short title slug for citation purposes.
+    /// Chunks embedded with `embed_model`. Vectors from another model live in a
+    /// different space (often a different size), so they're never mixed in.
     pub async fn all_embedded_chunks(
         &self,
+        embed_model: &str,
     ) -> Result<Vec<(i64, i64, String, i64, String, Vec<u8>)>> {
         // (chunk_id, article_id, article_title, chunk_index, text, embedding bytes)
         let rows = sqlx::query(
             "SELECT pc.id, pc.article_id, a.title, pc.chunk_index, pc.text, pc.embedding \
              FROM pdf_chunk pc \
              INNER JOIN article a ON a.id = pc.article_id \
-             WHERE pc.embedding IS NOT NULL",
+             WHERE pc.embedding IS NOT NULL AND pc.embedding_model = ?",
         )
+        .bind(embed_model)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows
@@ -5670,5 +5676,39 @@ mod glossary_undo_tests {
         let after = db.list_glossary_terms().await.unwrap();
         assert_eq!(before.len(), after.len());
         assert_eq!(db.list_glossary_merges().await.unwrap().iter().filter(|m| m.status == "accepted").count(), 2);
+    }
+}
+
+#[cfg(test)]
+mod embedding_model_filter_tests {
+    use super::{test_db, NewArticle};
+
+    #[tokio::test]
+    async fn chunks_from_another_model_are_never_mixed_in() {
+        let (db, _d) = test_db().await;
+        let a = db
+            .insert_article(&NewArticle {
+                title: "A".into(), authors: None, year: None, journal: None, abstract_text: None,
+                doi: None, url: None, source_databases: vec![], import_batches: vec![],
+            })
+            .await
+            .unwrap();
+        let pdf: i64 = sqlx::query_scalar(
+            "INSERT INTO pdf (filename, stored_path, source_path, article_id, created_at) VALUES ('f', '/x', '/x', ?, 'now') RETURNING id",
+        )
+        .bind(a)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        db.save_pdf_chunks(pdf, a, 10, &[(0, "one".into()), (1, "two".into())]).await.unwrap();
+        let chunks = db.list_chunks_for_pdf(pdf).await.unwrap();
+        db.save_chunk_embedding(chunks[0].id, &[0u8; 12], "old-model").await.unwrap(); // 3 dims
+        db.save_chunk_embedding(chunks[1].id, &[0u8; 16], "new-model").await.unwrap(); // 4 dims
+
+        let all = db.all_embedded_chunks("new-model").await.unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].4, "two");
+        assert_eq!(db.embedded_chunks_for_article(a, "old-model").await.unwrap().len(), 1);
+        assert!(db.all_embedded_chunks("unused").await.unwrap().is_empty());
     }
 }
