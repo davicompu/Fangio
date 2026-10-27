@@ -5,6 +5,9 @@ protocol (Paul et al. 2021) and PRISMA 2020 (Page et al. 2021). Your project
 lives in a folder on your computer. Some features go online; see
 [What goes over the network](#what-goes-over-the-network).
 
+**[Reeves in pictures](docs/reeves-in-pictures.md)** walks through a real review
+screen by screen, for anyone who'd like to see the app before installing it.
+
 Tested on macOS with LM Studio. A Windows version builds from the same code
 (see [Building on Windows](docs/building-on-windows.md)) but hasn't been tested
 yet. Ollama should work but is untested. Linux is untested.
