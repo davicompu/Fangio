@@ -3,6 +3,7 @@ name = "reeves"
 version = "0.4.3"
 description = "Reeves — systematic literature reviews on your own machine"
 authors = ["Reeves contributors"]
+license = "AGPL-3.0-only"
 edition = "2021"
 
 [[bin]]

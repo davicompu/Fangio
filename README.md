@@ -112,3 +112,11 @@ reqwest with rustls, etc.). Subsequent runs are fast.
 - **Database browser and "Find online"**: the pages you open, as in any browser.
 - **Your AI model server**: titles, abstracts, full-text excerpts, codes and prompts. With LM Studio on your own computer nothing leaves it. A remote server address sends this content to that server.
 - **Stays local**: the project database, PDFs, drafts, backups, and usage statistics (telemetry). Reeves sends no usage data anywhere.
+
+## License
+
+Reeves is free software, released under the
+[GNU Affero General Public License v3.0](LICENSE) (AGPL-3.0). You may use,
+study, modify and share it. If you distribute it, or run a modified version
+for others over a network, you must make your source code available under
+the same license.
